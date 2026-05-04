@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PHASES, SEVERITIES } from './data.js';
 
+let EVENT_SEQ = 0;
+const nextEventId = () => ++EVENT_SEQ;
+
 function formatElapsed(ms) {
   if (ms < 0) ms = 0;
   const totalSeconds = Math.floor(ms / 1000);
@@ -33,8 +36,19 @@ export default function App() {
   const [now, setNow] = useState(Date.now());
   const [checks, setChecks] = useState(buildInitialChecks);
   const [notes, setNotes] = useState(buildInitialNotes);
+  const [events, setEvents] = useState([]);
+  const [timelineOpen, setTimelineOpen] = useState(false);
 
   const running = startTime !== null && endTime === null;
+  const runningRef = useRef(running);
+  useEffect(() => { runningRef.current = running; }, [running]);
+
+  function logEvent(type, message) {
+    setEvents((prev) => [
+      ...prev,
+      { id: nextEventId(), ts: Date.now(), type, message },
+    ]);
+  }
 
   useEffect(() => {
     if (!running) return;
@@ -61,29 +75,64 @@ export default function App() {
   }, [checks]);
 
   function declareIncident() {
-    setStartTime(Date.now());
+    const t = Date.now();
+    setStartTime(t);
     setEndTime(null);
-    setNow(Date.now());
+    setNow(t);
+    setEvents([{
+      id: nextEventId(),
+      ts: t,
+      type: 'declare',
+      message: `Incident declared — severity ${severity}`,
+    }]);
   }
 
   function resolveIncident() {
-    if (startTime && !endTime) setEndTime(Date.now());
+    if (startTime && !endTime) {
+      setEndTime(Date.now());
+      logEvent('resolve', 'Incident marked resolved');
+    }
   }
 
   function resetIncident() {
-    if (!confirm('Reset the entire incident? This clears the timer, checklist, and notes.')) return;
+    if (!confirm('Reset the entire incident? This clears the timer, checklist, notes, and timeline.')) return;
     setStartTime(null);
     setEndTime(null);
     setChecks(buildInitialChecks());
     setNotes(buildInitialNotes());
+    setEvents([]);
     setIncidentName('');
     setActivePhase(PHASES[0].id);
+  }
+
+  function changeSeverity(s) {
+    if (s === severity) return;
+    if (runningRef.current) logEvent('severity', `Severity changed: ${severity} → ${s}`);
+    setSeverity(s);
+  }
+
+  function changePhase(id) {
+    if (id === activePhase) return;
+    if (runningRef.current) {
+      const target = PHASES.find((p) => p.id === id);
+      if (target) logEvent('phase', `Switched to phase: ${target.name}`);
+    }
+    setActivePhase(id);
   }
 
   function toggleCheck(phaseId, idx) {
     setChecks((prev) => {
       const next = { ...prev, [phaseId]: [...prev[phaseId]] };
-      next[phaseId][idx] = !next[phaseId][idx];
+      const newVal = !next[phaseId][idx];
+      next[phaseId][idx] = newVal;
+      if (runningRef.current) {
+        const p = PHASES.find((x) => x.id === phaseId);
+        const taskText = p?.tasks[idx] ?? '';
+        logEvent(
+          newVal ? 'check' : 'uncheck',
+          `${newVal ? 'Checked' : 'Unchecked'} [${p?.short ?? ''}]: ${taskText}`,
+        );
+      }
       return next;
     });
   }
@@ -132,6 +181,18 @@ export default function App() {
       lines.push('');
     }
 
+    if (events.length > 0) {
+      lines.push('----------------------------------------');
+      lines.push('TIMELINE');
+      lines.push('----------------------------------------');
+      for (const ev of events) {
+        const abs = new Date(ev.ts).toISOString();
+        const rel = startTime ? formatElapsed(ev.ts - startTime) : '--:--:--';
+        lines.push(`  ${abs}  T+${rel}  ${ev.message}`);
+      }
+      lines.push('');
+    }
+
     lines.push('========================================');
     lines.push('  END OF REPORT');
     lines.push('========================================');
@@ -153,7 +214,7 @@ export default function App() {
     <div className="min-h-screen flex bg-slate-950 text-slate-200">
       <Sidebar
         activePhase={activePhase}
-        onSelect={setActivePhase}
+        onSelect={changePhase}
         checks={checks}
         sev={sev}
         running={running}
@@ -162,7 +223,7 @@ export default function App() {
       <div className="flex-1 flex flex-col min-w-0">
         <TopBar
           severity={severity}
-          setSeverity={setSeverity}
+          setSeverity={changeSeverity}
           sev={sev}
           incidentName={incidentName}
           setIncidentName={setIncidentName}
@@ -175,6 +236,8 @@ export default function App() {
           resetIncident={resetIncident}
           exportReport={exportReport}
           totals={totals}
+          eventCount={events.length}
+          onToggleTimeline={() => setTimelineOpen((v) => !v)}
         />
 
         <main className="flex-1 overflow-y-auto p-8">
@@ -188,6 +251,14 @@ export default function App() {
           />
         </main>
       </div>
+
+      <TimelineDrawer
+        open={timelineOpen}
+        onClose={() => setTimelineOpen(false)}
+        events={events}
+        startTime={startTime}
+        sev={sev}
+      />
     </div>
   );
 }
@@ -254,7 +325,7 @@ function TopBar({
   incidentName, setIncidentName,
   running, startTime, endTime, elapsed,
   declareIncident, resolveIncident, resetIncident, exportReport,
-  totals,
+  totals, eventCount, onToggleTimeline,
 }) {
   const status =
     !startTime ? 'STANDBY'
@@ -335,6 +406,15 @@ function TopBar({
               Reset
             </button>
           )}
+          <button
+            onClick={onToggleTimeline}
+            className="border border-slate-700 text-slate-200 px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 transition flex items-center gap-2"
+          >
+            Timeline
+            <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${eventCount > 0 ? sev.accent + ' text-slate-950' : 'bg-slate-800 text-slate-400'}`}>
+              {eventCount}
+            </span>
+          </button>
           <button
             onClick={exportReport}
             className="border border-slate-700 text-slate-200 px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 transition"
@@ -424,5 +504,84 @@ function PhaseView({ phase, checks, note, onToggle, onNoteChange, sev }) {
         />
       </section>
     </div>
+  );
+}
+
+const EVENT_STYLES = {
+  declare:  { dot: 'bg-rose-500',    label: 'DECLARE'  },
+  resolve:  { dot: 'bg-emerald-500', label: 'RESOLVE'  },
+  severity: { dot: 'bg-amber-500',   label: 'SEVERITY' },
+  phase:    { dot: 'bg-sky-500',     label: 'PHASE'    },
+  check:    { dot: 'bg-emerald-400', label: 'CHECK'    },
+  uncheck:  { dot: 'bg-slate-500',   label: 'UNCHECK'  },
+};
+
+function TimelineDrawer({ open, onClose, events, startTime, sev }) {
+  const reversed = useMemo(() => [...events].reverse(), [events]);
+
+  return (
+    <>
+      {open && (
+        <div
+          className="fixed inset-0 bg-black/40 z-40"
+          onClick={onClose}
+        />
+      )}
+      <aside
+        className={`fixed top-0 right-0 h-full w-96 bg-slate-900 border-l border-slate-800 z-50 transform transition-transform duration-200 flex flex-col ${
+          open ? 'translate-x-0' : 'translate-x-full'
+        }`}
+      >
+        <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-100">Incident Timeline</h3>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              {events.length} event{events.length === 1 ? '' : 's'} · auto-recorded while incident is active
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-slate-500 hover:text-slate-200 text-lg leading-none w-7 h-7 flex items-center justify-center rounded hover:bg-slate-800"
+            aria-label="Close timeline"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4">
+          {events.length === 0 ? (
+            <div className="text-center text-slate-500 text-sm py-12 px-4">
+              No events yet. Once you declare an incident, every checklist toggle, phase switch, and severity change is recorded here with a timestamp.
+            </div>
+          ) : (
+            <ol className="space-y-3">
+              {reversed.map((ev) => {
+                const style = EVENT_STYLES[ev.type] ?? { dot: 'bg-slate-500', label: ev.type.toUpperCase() };
+                const rel = startTime ? formatElapsed(ev.ts - startTime) : '--:--:--';
+                const abs = new Date(ev.ts).toLocaleTimeString();
+                return (
+                  <li key={ev.id} className="flex gap-3">
+                    <div className="flex flex-col items-center pt-1">
+                      <div className={`w-2 h-2 rounded-full ${style.dot}`} />
+                      <div className="flex-1 w-px bg-slate-800 mt-1" />
+                    </div>
+                    <div className="flex-1 pb-2 min-w-0">
+                      <div className="flex items-baseline gap-2 text-[10px] uppercase tracking-wider">
+                        <span className="text-slate-500">{style.label}</span>
+                        <span className="font-mono text-slate-400">T+{rel}</span>
+                        <span className="text-slate-600 ml-auto">{abs}</span>
+                      </div>
+                      <div className="text-sm text-slate-200 mt-0.5 break-words">
+                        {ev.message}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </div>
+      </aside>
+    </>
   );
 }
