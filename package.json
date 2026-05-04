@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:wasm": "cd crates/ioc-extractor && wasm-pack build --target web --out-dir ../../src/wasm/ioc-extractor --release && rm -f ../../src/wasm/ioc-extractor/.gitignore"
   },
   "dependencies": {
     "react": "^18.3.1",

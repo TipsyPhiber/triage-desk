@@ -1,0 +1,16 @@
+{
+  "name": "ioc-extractor",
+  "type": "module",
+  "description": "IOC extractor for Triage Desk — compiled to WASM",
+  "version": "0.1.0",
+  "files": [
+    "ioc_extractor_bg.wasm",
+    "ioc_extractor.js",
+    "ioc_extractor.d.ts"
+  ],
+  "main": "ioc_extractor.js",
+  "types": "ioc_extractor.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

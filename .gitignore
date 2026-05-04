@@ -3,6 +3,9 @@ dist
 dist-ssr
 *.local
 
+crates/*/target
+crates/*/Cargo.lock.bak
+
 .vite
 .cache
 
