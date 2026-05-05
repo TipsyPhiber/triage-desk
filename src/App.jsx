@@ -5,6 +5,8 @@ import { loadIocExtractor } from './iocLoader.js';
 let EVENT_SEQ = 0;
 const nextEventId = () => ++EVENT_SEQ;
 
+const STORAGE_KEY = 'triage-desk-state-v1';
+
 function formatElapsed(ms) {
   if (ms < 0) ms = 0;
   const totalSeconds = Math.floor(ms / 1000);
@@ -28,17 +30,84 @@ function buildInitialNotes() {
   return out;
 }
 
+function buildInitialIocIndex() {
+  const out = {};
+  for (const phase of PHASES) out[phase.id] = [];
+  return out;
+}
+
+// Reconcile persisted per-phase data against the current PHASES schema. If
+// task lists have changed since the save, drop just the affected phase rather
+// than the whole incident.
+function reconcileChecks(persisted) {
+  const fresh = buildInitialChecks();
+  if (!persisted || typeof persisted !== 'object') return fresh;
+  for (const p of PHASES) {
+    const arr = persisted[p.id];
+    if (Array.isArray(arr) && arr.length === p.tasks.length) {
+      fresh[p.id] = arr.map(Boolean);
+    }
+  }
+  return fresh;
+}
+
+function reconcileByPhase(persisted, fallback) {
+  const fresh = fallback();
+  if (!persisted || typeof persisted !== 'object') return fresh;
+  for (const p of PHASES) {
+    if (Object.prototype.hasOwnProperty.call(persisted, p.id)) {
+      fresh[p.id] = persisted[p.id];
+    }
+  }
+  return fresh;
+}
+
+function loadPersisted() {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+const PERSISTED = loadPersisted();
+if (Array.isArray(PERSISTED?.events) && PERSISTED.events.length > 0) {
+  EVENT_SEQ = PERSISTED.events.reduce((m, e) => Math.max(m, e?.id ?? 0), 0);
+}
+
 export default function App() {
-  const [activePhase, setActivePhase] = useState(PHASES[0].id);
-  const [severity, setSeverity] = useState('Medium');
-  const [incidentName, setIncidentName] = useState('');
-  const [startTime, setStartTime] = useState(null);
-  const [endTime, setEndTime] = useState(null);
+  const [activePhase, setActivePhase] = useState(() => {
+    const id = PERSISTED?.activePhase;
+    return PHASES.some((p) => p.id === id) ? id : PHASES[0].id;
+  });
+  const [severity, setSeverity] = useState(() =>
+    PERSISTED?.severity && SEVERITIES[PERSISTED.severity] ? PERSISTED.severity : 'Medium',
+  );
+  const [incidentName, setIncidentName] = useState(PERSISTED?.incidentName ?? '');
+  const [startTime, setStartTime] = useState(PERSISTED?.startTime ?? null);
+  const [endTime, setEndTime] = useState(PERSISTED?.endTime ?? null);
   const [now, setNow] = useState(Date.now());
-  const [checks, setChecks] = useState(buildInitialChecks);
-  const [notes, setNotes] = useState(buildInitialNotes);
-  const [events, setEvents] = useState([]);
+  const [checks, setChecks] = useState(() => reconcileChecks(PERSISTED?.checks));
+  const [notes, setNotes] = useState(() => reconcileByPhase(PERSISTED?.notes, buildInitialNotes));
+  const [events, setEvents] = useState(() => (Array.isArray(PERSISTED?.events) ? PERSISTED.events : []));
+  const [iocIndex, setIocIndex] = useState(() => reconcileByPhase(PERSISTED?.iocIndex, buildInitialIocIndex));
   const [timelineOpen, setTimelineOpen] = useState(false);
+
+  useEffect(() => {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          activePhase, severity, incidentName, startTime, endTime,
+          checks, notes, events, iocIndex,
+        }),
+      );
+    } catch {}
+  }, [activePhase, severity, incidentName, startTime, endTime, checks, notes, events, iocIndex]);
 
   const running = startTime !== null && endTime === null;
   const runningRef = useRef(running);
@@ -96,14 +165,18 @@ export default function App() {
   }
 
   function resetIncident() {
-    if (!confirm('Reset the entire incident? This clears the timer, checklist, notes, and timeline.')) return;
+    if (!confirm('Reset the entire incident? This clears the timer, checklist, notes, IOC index, timeline, and saved state.')) return;
     setStartTime(null);
     setEndTime(null);
     setChecks(buildInitialChecks());
     setNotes(buildInitialNotes());
     setEvents([]);
+    setIocIndex(buildInitialIocIndex());
     setIncidentName('');
     setActivePhase(PHASES[0].id);
+    if (typeof localStorage !== 'undefined') {
+      try { localStorage.removeItem(STORAGE_KEY); } catch {}
+    }
   }
 
   function changeSeverity(s) {
@@ -150,6 +223,24 @@ export default function App() {
     });
   }
 
+  function recordIocs(phaseId, results) {
+    if (!results || results.length === 0) return;
+    setIocIndex((prev) => {
+      const existing = prev[phaseId] || [];
+      const seen = new Set(existing.map((i) => `${i.kind}\0${i.value}`));
+      const additions = [];
+      for (const r of results) {
+        const key = `${r.kind}\0${r.value}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          additions.push({ kind: r.kind, value: r.value });
+        }
+      }
+      if (additions.length === 0) return prev;
+      return { ...prev, [phaseId]: [...existing, ...additions] };
+    });
+  }
+
   function exportReport() {
     const lines = [];
     const title = incidentName.trim() || 'Untitled Incident';
@@ -185,6 +276,36 @@ export default function App() {
         lines.push('  Notes:');
         for (const line of note.split('\n')) {
           lines.push(`    ${line}`);
+        }
+      }
+      lines.push('');
+    }
+
+    // Build a deduped IOC index across all phases. Each (kind, value) lists
+    // the phases it was seen in, so the report shows where IOCs surfaced.
+    const iocByKey = new Map();
+    for (const p of PHASES) {
+      for (const ioc of iocIndex[p.id] || []) {
+        const key = `${ioc.kind}\0${ioc.value}`;
+        if (!iocByKey.has(key)) {
+          iocByKey.set(key, { kind: ioc.kind, value: ioc.value, phases: new Set() });
+        }
+        iocByKey.get(key).phases.add(p.short);
+      }
+    }
+    if (iocByKey.size > 0) {
+      lines.push('----------------------------------------');
+      lines.push(`IOC INDEX (${iocByKey.size} unique)`);
+      lines.push('----------------------------------------');
+      const grouped = {};
+      for (const entry of iocByKey.values()) {
+        (grouped[entry.kind] ||= []).push(entry);
+      }
+      for (const kind of Object.keys(grouped).sort()) {
+        lines.push(`  ${kind}:`);
+        for (const e of grouped[kind].sort((a, b) => a.value.localeCompare(b.value))) {
+          const phaseList = [...e.phases].join(', ');
+          lines.push(`    - ${e.value}  (${phaseList})`);
         }
       }
       lines.push('');
@@ -257,9 +378,10 @@ export default function App() {
             onToggle={(i) => toggleCheck(phase.id, i)}
             onNoteChange={(v) => setNote(phase.id, v)}
             onAppendNote={(text) => appendToNote(phase.id, text)}
-            onIocsExtracted={(count) => {
+            onIocsExtracted={(results) => {
+              recordIocs(phase.id, results);
               if (runningRef.current) {
-                logEvent('ioc', `Extracted ${count} IOC${count === 1 ? '' : 's'} into ${phase.name} notes`);
+                logEvent('ioc', `Extracted ${results.length} IOC${results.length === 1 ? '' : 's'} into ${phase.name} notes`);
               }
             }}
             sev={sev}
@@ -329,7 +451,7 @@ function Sidebar({ activePhase, onSelect, checks, sev, running }) {
 
       <div className="px-5 py-4 border-t border-slate-800 text-[11px] text-slate-500">
         <div>NIST SP 800-61 aligned</div>
-        <div className="mt-0.5">v0.1 · in-memory only</div>
+        <div className="mt-0.5">v0.2 · saved to browser</div>
       </div>
     </aside>
   );
@@ -649,7 +771,7 @@ function IocExtractor({ sev, onAppend, onExtracted }) {
       for (const v of grouped[kind]) lines.push(`  - ${v}`);
     }
     onAppend(lines.join('\n'));
-    onExtracted?.(results.length);
+    onExtracted?.(results);
     setResults(null);
     setInput('');
     setOpen(false);
