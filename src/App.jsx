@@ -4,12 +4,11 @@ import {
   buildInitialChecks,
   buildInitialNotes,
   buildInitialIocIndex,
-  reconcileChecks,
-  reconcileByPhase,
-  isValidSeverity,
+  hydrate,
   loadPersisted,
   savePersisted,
   clearPersisted,
+  STORAGE_KEY,
 } from './state/persistence.js';
 import { nextEventId, primeEventId } from './state/eventId.js';
 import { mergeIocs } from './state/iocIndex.js';
@@ -19,25 +18,20 @@ import { TopBar } from './components/TopBar.jsx';
 import { PhaseView } from './components/PhaseView.jsx';
 import { TimelineDrawer } from './components/TimelineDrawer.jsx';
 
-const PERSISTED = loadPersisted();
-primeEventId(PERSISTED?.events);
+const HYDRATED = hydrate(loadPersisted());
+primeEventId(HYDRATED.events);
 
 export default function App() {
-  const [activePhase, setActivePhase] = useState(() => {
-    const id = PERSISTED?.activePhase;
-    return PHASES.some((p) => p.id === id) ? id : PHASES[0].id;
-  });
-  const [severity, setSeverity] = useState(() =>
-    isValidSeverity(PERSISTED?.severity) ? PERSISTED.severity : 'Medium',
-  );
-  const [incidentName, setIncidentName] = useState(PERSISTED?.incidentName ?? '');
-  const [startTime, setStartTime] = useState(PERSISTED?.startTime ?? null);
-  const [endTime, setEndTime] = useState(PERSISTED?.endTime ?? null);
+  const [activePhase, setActivePhase] = useState(HYDRATED.activePhase);
+  const [severity, setSeverity] = useState(HYDRATED.severity);
+  const [incidentName, setIncidentName] = useState(HYDRATED.incidentName);
+  const [startTime, setStartTime] = useState(HYDRATED.startTime);
+  const [endTime, setEndTime] = useState(HYDRATED.endTime);
   const [now, setNow] = useState(Date.now());
-  const [checks, setChecks] = useState(() => reconcileChecks(PERSISTED?.checks));
-  const [notes, setNotes] = useState(() => reconcileByPhase(PERSISTED?.notes, buildInitialNotes));
-  const [events, setEvents] = useState(() => (Array.isArray(PERSISTED?.events) ? PERSISTED.events : []));
-  const [iocIndex, setIocIndex] = useState(() => reconcileByPhase(PERSISTED?.iocIndex, buildInitialIocIndex));
+  const [checks, setChecks] = useState(HYDRATED.checks);
+  const [notes, setNotes] = useState(HYDRATED.notes);
+  const [events, setEvents] = useState(HYDRATED.events);
+  const [iocIndex, setIocIndex] = useState(HYDRATED.iocIndex);
   const [timelineOpen, setTimelineOpen] = useState(false);
 
   useEffect(() => {
@@ -46,6 +40,30 @@ export default function App() {
       checks, notes, events, iocIndex,
     });
   }, [activePhase, severity, incidentName, startTime, endTime, checks, notes, events, iocIndex]);
+
+  // Cross-tab sync: when another tab writes the incident, rehydrate this one.
+  // The `storage` event only fires in tabs other than the writer, so this
+  // doesn't loop back through our own save effect.
+  useEffect(() => {
+    function onStorage(e) {
+      if (e.key !== STORAGE_KEY || e.newValue == null) return;
+      let parsed;
+      try { parsed = JSON.parse(e.newValue); } catch { return; }
+      const h = hydrate(parsed);
+      primeEventId(h.events);
+      setActivePhase(h.activePhase);
+      setSeverity(h.severity);
+      setIncidentName(h.incidentName);
+      setStartTime(h.startTime);
+      setEndTime(h.endTime);
+      setChecks(h.checks);
+      setNotes(h.notes);
+      setEvents(h.events);
+      setIocIndex(h.iocIndex);
+    }
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   const running = startTime !== null && endTime === null;
   const runningRef = useRef(running);
