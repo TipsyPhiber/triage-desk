@@ -1,9 +1,10 @@
 import { IocExtractor } from './IocExtractor.jsx';
 
-export function PhaseView({ phase, checks, note, onToggle, onNoteChange, onAppendNote, onIocsExtracted, sev }) {
+export function PhaseView({ phase, checks, note, onToggle, onNoteChange, onAppendNote, onIocsExtracted, sev, phaseStatus, advisory }) {
   const done = (checks || []).filter(Boolean).length;
   const total = phase.tasks.length;
   const pct = total ? Math.round((done / total) * 100) : 0;
+  const outOfPhase = phaseStatus === 'out-of-phase';
 
   return (
     <div className="max-w-3xl mx-auto">
@@ -11,6 +12,11 @@ export function PhaseView({ phase, checks, note, onToggle, onNoteChange, onAppen
         <div className="flex items-baseline gap-3 mb-2">
           <h2 className="text-2xl font-semibold text-slate-100">{phase.name}</h2>
           <span className={`text-sm ${sev.accentText}`}>{done} / {total} complete</span>
+          {outOfPhase && (
+            <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded border border-slate-700 text-slate-400 bg-slate-800/40">
+              Out of phase
+            </span>
+          )}
         </div>
         <p className="text-sm text-slate-400">{phase.description}</p>
 
@@ -21,6 +27,13 @@ export function PhaseView({ phase, checks, note, onToggle, onNoteChange, onAppen
           />
         </div>
       </div>
+
+      {outOfPhase && advisory && (
+        <div className="mb-6 px-4 py-3 rounded-lg border border-slate-700 bg-slate-900/60 text-sm text-slate-300">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Lifecycle advisory</div>
+          {advisory}
+        </div>
+      )}
 
       <section className="mb-8">
         <h3 className="text-[11px] uppercase tracking-wider text-slate-500 mb-3">Checklist</h3>

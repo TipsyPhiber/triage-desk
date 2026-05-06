@@ -13,6 +13,7 @@ import {
 import { nextEventId, primeEventId } from './state/eventId.js';
 import { mergeIocs } from './state/iocIndex.js';
 import { buildReport, downloadReport } from './lib/exportReport.js';
+import { incidentLifecycle, phaseActivity, phaseAdvisory } from './lib/phaseActivity.js';
 import { Sidebar } from './components/Sidebar.jsx';
 import { TopBar } from './components/TopBar.jsx';
 import { PhaseView } from './components/PhaseView.jsx';
@@ -85,6 +86,9 @@ export default function App() {
   const elapsed = startTime ? (endTime ?? now) - startTime : 0;
   const sev = SEVERITIES[severity];
   const phase = PHASES.find((p) => p.id === activePhase);
+  const lifecycle = incidentLifecycle(startTime, endTime);
+  const phaseStatus = phaseActivity(phase.stage, lifecycle);
+  const advisory = phaseAdvisory(phase.stage, lifecycle);
 
   const totals = useMemo(() => {
     let done = 0;
@@ -198,6 +202,7 @@ export default function App() {
         checks={checks}
         sev={sev}
         running={running}
+        lifecycle={lifecycle}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
@@ -235,6 +240,8 @@ export default function App() {
               }
             }}
             sev={sev}
+            phaseStatus={phaseStatus}
+            advisory={advisory}
           />
         </main>
       </div>

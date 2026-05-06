@@ -3,6 +3,7 @@ export const PHASES = [
     id: 'preparation',
     name: 'Preparation',
     short: 'Prep',
+    stage: 'pre-incident',
     description: 'Ensure people, tooling, and process are ready before an incident occurs.',
     tasks: [
       'Review and update the incident response plan',
@@ -18,6 +19,7 @@ export const PHASES = [
     id: 'identification',
     name: 'Identification',
     short: 'Identify',
+    stage: 'response',
     description: 'Determine whether an event is a real incident, and document its scope.',
     tasks: [
       'Triage initial alert and rule out false positive',
@@ -33,6 +35,7 @@ export const PHASES = [
     id: 'containment',
     name: 'Containment',
     short: 'Contain',
+    stage: 'response',
     description: 'Limit the blast radius — short-term and long-term containment.',
     tasks: [
       'Isolate affected hosts from the network (quarantine VLAN or EDR)',
@@ -48,6 +51,7 @@ export const PHASES = [
     id: 'eradication',
     name: 'Eradication',
     short: 'Eradicate',
+    stage: 'response',
     description: 'Remove the threat and close the door behind it.',
     tasks: [
       'Identify and remove malware and persistence mechanisms',
@@ -62,6 +66,7 @@ export const PHASES = [
     id: 'recovery',
     name: 'Recovery',
     short: 'Recover',
+    stage: 'response',
     description: 'Bring systems back to production safely and watch for recurrence.',
     tasks: [
       'Restore systems from known-clean backups or rebuild from gold image',
@@ -76,6 +81,7 @@ export const PHASES = [
     id: 'lessons',
     name: 'Lessons Learned',
     short: 'Lessons',
+    stage: 'post-incident',
     description: 'Close the loop. Make the next incident shorter than this one.',
     tasks: [
       'Schedule post-incident review within two weeks of resolution',
