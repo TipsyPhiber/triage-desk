@@ -42,10 +42,26 @@ Then open http://localhost:5173/.
 
 ```
 src/
-  App.jsx      // layout, state, timer, export logic
-  data.js      // phase definitions, tasks, severity color tokens
-  main.jsx     // React entry
-  index.css    // Tailwind import
+  App.jsx                       // composition + state orchestration
+  data.js                       // phase definitions, tasks, severity color tokens
+  iocLoader.js                  // lazy WASM init for the IOC extractor
+  main.jsx                      // React entry
+  index.css                     // Tailwind import
+  lib/
+    time.js                     // formatElapsed
+    exportReport.js             // buildReport (pure) + downloadReport
+  state/
+    persistence.js              // localStorage load/save/reconcile
+    eventId.js                  // monotonic event id sequence
+    iocIndex.js                 // per-phase merge + cross-phase aggregate
+  styles/
+    eventStyles.js              // timeline + IOC kind color tokens
+  components/
+    Sidebar.jsx
+    TopBar.jsx
+    PhaseView.jsx
+    IocExtractor.jsx
+    TimelineDrawer.jsx
 ```
 
 ## Notes
