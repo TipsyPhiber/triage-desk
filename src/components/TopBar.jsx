@@ -22,7 +22,7 @@ export function TopBar({
     <header className={`border-b border-slate-800 bg-slate-900/40 backdrop-blur`}>
       <div className="px-6 py-4 flex items-center gap-6 flex-wrap">
         <div className="flex items-center gap-3">
-          <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-widest ${statusClass}`}>
+          <span className={`px-2 py-0.5 rounded text-[11px] font-bold tracking-widest ${statusClass}`}>
             {status}
           </span>
           <input
@@ -34,7 +34,7 @@ export function TopBar({
         </div>
 
         <div className="flex items-center gap-2 ml-auto">
-          <span className="text-[11px] uppercase tracking-wider text-slate-500">Severity</span>
+          <span className="text-xs uppercase tracking-wider text-slate-500">Severity</span>
           <div className="flex bg-slate-800/60 rounded-lg p-0.5 border border-slate-700">
             {Object.keys(SEVERITIES).map((s) => {
               const isActive = s === severity;
@@ -56,7 +56,7 @@ export function TopBar({
 
         <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border ${sev.accentBorder} ${sev.accentSoft}`}>
           <div className={`w-2 h-2 rounded-full ${running ? sev.accent + ' animate-pulse' : 'bg-slate-600'}`} />
-          <span className="text-[10px] uppercase tracking-wider text-slate-400">Elapsed</span>
+          <span className="text-[11px] uppercase tracking-wider text-slate-400">Elapsed</span>
           <span className="font-mono text-lg text-slate-100 tabular-nums">
             {formatElapsed(elapsed)}
           </span>
@@ -92,7 +92,7 @@ export function TopBar({
             className="border border-slate-700 text-slate-200 px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 transition flex items-center gap-2"
           >
             Timeline
-            <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${eventCount > 0 ? sev.accent + ' text-slate-950' : 'bg-slate-800 text-slate-400'}`}>
+            <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded ${eventCount > 0 ? sev.accent + ' text-slate-950' : 'bg-slate-800 text-slate-400'}`}>
               {eventCount}
             </span>
           </button>
@@ -105,7 +105,7 @@ export function TopBar({
         </div>
       </div>
 
-      <div className="px-6 pb-3 flex items-center gap-4 text-[11px] text-slate-500">
+      <div className="px-6 pb-3 flex items-center gap-4 text-xs text-slate-500">
         <span>Tasks complete: <span className="text-slate-300 font-medium">{totals.done}/{totals.total}</span></span>
         {startTime && (
           <span>

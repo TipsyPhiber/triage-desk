@@ -34,6 +34,13 @@ export default function App() {
   const [events, setEvents] = useState(HYDRATED.events);
   const [iocIndex, setIocIndex] = useState(HYDRATED.iocIndex);
   const [timelineOpen, setTimelineOpen] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(() => setToast(null), 1800);
+    return () => clearTimeout(id);
+  }, [toast]);
 
   useEffect(() => {
     savePersisted({
@@ -109,7 +116,10 @@ export default function App() {
     // Declaration is, by definition, entry into Identification (PICERL /
     // NIST SP 800-61). Jump there regardless of where the operator was.
     const entry = PHASES.find((p) => p.stage === 'response');
-    if (entry) setActivePhase(entry.id);
+    if (entry) {
+      setActivePhase(entry.id);
+      if (entry.id !== activePhase) setToast(`→ ${entry.name}`);
+    }
     setEvents([{
       id: nextEventId(),
       ts: t,
@@ -119,10 +129,10 @@ export default function App() {
   }
 
   function resolveIncident() {
-    if (startTime && !endTime) {
-      setEndTime(Date.now());
-      logEvent('resolve', 'Incident marked resolved');
-    }
+    if (!startTime || endTime) return;
+    if (!confirm('Mark this incident resolved? The timer will stop and the incident will move into Lessons Learned.')) return;
+    setEndTime(Date.now());
+    logEvent('resolve', 'Incident marked resolved');
   }
 
   function resetIncident() {
@@ -256,6 +266,12 @@ export default function App() {
         events={events}
         startTime={startTime}
       />
+
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-100 shadow-lg">
+          {toast}
+        </div>
+      )}
     </div>
   );
 }

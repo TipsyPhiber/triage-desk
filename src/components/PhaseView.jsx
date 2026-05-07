@@ -12,11 +12,6 @@ export function PhaseView({ phase, checks, note, onToggle, onNoteChange, onAppen
         <div className="flex items-baseline gap-3 mb-2">
           <h2 className="text-2xl font-semibold text-slate-100">{phase.name}</h2>
           <span className={`text-sm ${sev.accentText}`}>{done} / {total} complete</span>
-          {outOfPhase && (
-            <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded border border-slate-700 text-slate-400 bg-slate-800/40">
-              Out of phase
-            </span>
-          )}
         </div>
         <p className="text-sm text-slate-400">{phase.description}</p>
 
@@ -30,13 +25,13 @@ export function PhaseView({ phase, checks, note, onToggle, onNoteChange, onAppen
 
       {outOfPhase && advisory && (
         <div className="mb-6 px-4 py-3 rounded-lg border border-slate-700 bg-slate-900/60 text-sm text-slate-300">
-          <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Lifecycle advisory</div>
+          <div className="text-[11px] uppercase tracking-wider text-slate-500 mb-1">Lifecycle advisory</div>
           {advisory}
         </div>
       )}
 
       <section className="mb-8">
-        <h3 className="text-[11px] uppercase tracking-wider text-slate-500 mb-3">Checklist</h3>
+        <h3 className="text-xs uppercase tracking-wider text-slate-500 mb-3">Checklist</h3>
         <ul className="space-y-1.5">
           {phase.tasks.map((task, i) => {
             const isChecked = !!checks?.[i];
@@ -70,7 +65,7 @@ export function PhaseView({ phase, checks, note, onToggle, onNoteChange, onAppen
       )}
 
       <section>
-        <h3 className="text-[11px] uppercase tracking-wider text-slate-500 mb-3">Notes</h3>
+        <h3 className="text-xs uppercase tracking-wider text-slate-500 mb-3">Notes</h3>
         <textarea
           value={note}
           onChange={(e) => onNoteChange(e.target.value)}

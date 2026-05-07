@@ -21,7 +21,7 @@ export function TimelineDrawer({ open, onClose, events, startTime }) {
         <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
           <div>
             <h3 className="text-sm font-semibold text-slate-100">Incident Timeline</h3>
-            <p className="text-[11px] text-slate-500 mt-0.5">
+            <p className="text-xs text-slate-500 mt-0.5">
               {events.length} event{events.length === 1 ? '' : 's'} · auto-recorded while incident is active
             </p>
           </div>
@@ -52,7 +52,7 @@ export function TimelineDrawer({ open, onClose, events, startTime }) {
                       <div className="flex-1 w-px bg-slate-800 mt-1" />
                     </div>
                     <div className="flex-1 pb-2 min-w-0">
-                      <div className="flex items-baseline gap-2 text-[10px] uppercase tracking-wider">
+                      <div className="flex items-baseline gap-2 text-[11px] uppercase tracking-wider">
                         <span className="text-slate-500">{style.label}</span>
                         <span className="font-mono text-slate-400">T+{rel}</span>
                         <span className="text-slate-600 ml-auto">{abs}</span>

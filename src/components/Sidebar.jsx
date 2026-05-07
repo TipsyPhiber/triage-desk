@@ -44,7 +44,7 @@ export function Sidebar({ activePhase, onSelect, checks, sev, running, lifecycle
                   <span className={`text-xs ${sev.accentText}`}>✓</span>
                 )}
               </div>
-              <div className="mt-1.5 ml-7 text-[11px] text-slate-500">
+              <div className="mt-1.5 ml-7 text-xs text-slate-500">
                 {outOfPhase ? 'out of phase' : `${done}/${total} tasks`}
               </div>
             </button>
@@ -52,7 +52,7 @@ export function Sidebar({ activePhase, onSelect, checks, sev, running, lifecycle
         })}
       </nav>
 
-      <div className="px-5 py-4 border-t border-slate-800 text-[11px] text-slate-500">
+      <div className="px-5 py-4 border-t border-slate-800 text-xs text-slate-500">
         <div>NIST SP 800-61 aligned</div>
         <div className="mt-0.5">v0.2 · saved to browser</div>
       </div>
