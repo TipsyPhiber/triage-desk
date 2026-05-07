@@ -106,6 +106,10 @@ export default function App() {
     setStartTime(t);
     setEndTime(null);
     setNow(t);
+    // Declaration is, by definition, entry into Identification (PICERL /
+    // NIST SP 800-61). Jump there regardless of where the operator was.
+    const entry = PHASES.find((p) => p.stage === 'response');
+    if (entry) setActivePhase(entry.id);
     setEvents([{
       id: nextEventId(),
       ts: t,

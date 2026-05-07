@@ -65,7 +65,9 @@ export function PhaseView({ phase, checks, note, onToggle, onNoteChange, onAppen
         </ul>
       </section>
 
-      <IocExtractor sev={sev} onAppend={onAppendNote} onExtracted={onIocsExtracted} />
+      {phase.stage !== 'pre-incident' && (
+        <IocExtractor sev={sev} onAppend={onAppendNote} onExtracted={onIocsExtracted} />
+      )}
 
       <section>
         <h3 className="text-[11px] uppercase tracking-wider text-slate-500 mb-3">Notes</h3>
