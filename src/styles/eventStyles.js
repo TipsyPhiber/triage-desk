@@ -6,6 +6,7 @@ export const EVENT_STYLES = {
   check:    { dot: 'bg-emerald-400', label: 'CHECK'    },
   uncheck:  { dot: 'bg-slate-500',   label: 'UNCHECK'  },
   ioc:      { dot: 'bg-fuchsia-500', label: 'IOC'      },
+  note:     { dot: 'bg-indigo-400',  label: 'NOTE'     },
 };
 
 export const IOC_KIND_STYLES = {

@@ -1,5 +1,5 @@
 import { PHASES } from '../data.js';
-import { phaseActivity } from '../lib/phaseActivity.js';
+import { phaseActivity, phaseLocked } from '../lib/phaseActivity.js';
 
 export function Sidebar({ activePhase, onSelect, checks, sev, running, lifecycle }) {
   return (
@@ -20,16 +20,19 @@ export function Sidebar({ activePhase, onSelect, checks, sev, running, lifecycle
           const complete = done === total && total > 0;
           const isActive = p.id === activePhase;
           const outOfPhase = phaseActivity(p.stage, lifecycle) === 'out-of-phase';
+          const locked = phaseLocked(p.stage, lifecycle);
+          const subline = locked ? 'locked' : outOfPhase ? 'out of phase' : `${done}/${total} tasks`;
           return (
             <button
               key={p.id}
-              onClick={() => onSelect(p.id)}
-              title={outOfPhase ? 'Out of phase for current incident lifecycle' : undefined}
+              onClick={() => { if (!locked) onSelect(p.id); }}
+              disabled={locked}
+              title={locked ? 'Locked while incident is open' : (outOfPhase ? 'Out of phase for current incident lifecycle' : undefined)}
               className={`w-full text-left px-3 py-2.5 rounded-lg transition border ${
                 isActive
                   ? `${sev.accentSoft} ${sev.accentBorder} text-slate-100`
-                  : `border-transparent hover:bg-slate-800/60 ${outOfPhase ? 'text-slate-500' : 'text-slate-300'}`
-              } ${outOfPhase && !isActive ? 'opacity-60' : ''}`}
+                  : `border-transparent ${locked ? 'cursor-not-allowed' : 'hover:bg-slate-800/60'} ${outOfPhase ? 'text-slate-500' : 'text-slate-300'}`
+              } ${locked ? 'opacity-50' : (outOfPhase && !isActive ? 'opacity-60' : '')}`}
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5 min-w-0">
@@ -40,12 +43,12 @@ export function Sidebar({ activePhase, onSelect, checks, sev, running, lifecycle
                   </span>
                   <span className="font-medium text-sm truncate">{p.name}</span>
                 </div>
-                {complete && (
+                {complete && !locked && (
                   <span className={`text-xs ${sev.accentText}`}>✓</span>
                 )}
               </div>
               <div className="mt-1.5 ml-7 text-xs text-slate-500">
-                {outOfPhase ? 'out of phase' : `${done}/${total} tasks`}
+                {subline}
               </div>
             </button>
           );

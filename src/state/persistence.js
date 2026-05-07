@@ -4,7 +4,7 @@ export const STORAGE_KEY = 'triage-desk-state-v1';
 
 const PHASE_IDS = new Set(PHASES.map((p) => p.id));
 const EVENT_TYPES = new Set([
-  'declare', 'resolve', 'severity', 'phase', 'check', 'uncheck', 'ioc',
+  'declare', 'resolve', 'severity', 'phase', 'check', 'uncheck', 'ioc', 'note',
 ]);
 
 function isFiniteNumber(x) {

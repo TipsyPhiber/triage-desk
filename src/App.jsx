@@ -13,7 +13,7 @@ import {
 import { nextEventId, primeEventId } from './state/eventId.js';
 import { mergeIocs } from './state/iocIndex.js';
 import { buildReport, downloadReport } from './lib/exportReport.js';
-import { incidentLifecycle, phaseActivity, phaseAdvisory } from './lib/phaseActivity.js';
+import { incidentLifecycle, phaseActivity, phaseAdvisory, phaseLocked } from './lib/phaseActivity.js';
 import { Sidebar } from './components/Sidebar.jsx';
 import { TopBar } from './components/TopBar.jsx';
 import { PhaseView } from './components/PhaseView.jsx';
@@ -97,6 +97,15 @@ export default function App() {
   const phaseStatus = phaseActivity(phase.stage, lifecycle);
   const advisory = phaseAdvisory(phase.stage, lifecycle);
 
+  // If a lifecycle change leaves us on a now-locked phase (e.g. persisted
+  // state put us on Preparation but startTime is set), slide to the first
+  // in-phase phase rather than rendering a locked view.
+  useEffect(() => {
+    if (!phaseLocked(phase.stage, lifecycle)) return;
+    const fallback = PHASES.find((p) => phaseActivity(p.stage, lifecycle) === 'in-phase');
+    if (fallback) setActivePhase(fallback.id);
+  }, [phase.stage, lifecycle]);
+
   const totals = useMemo(() => {
     let done = 0;
     let total = 0;
@@ -156,10 +165,10 @@ export default function App() {
 
   function changePhase(id) {
     if (id === activePhase) return;
-    if (runningRef.current) {
-      const target = PHASES.find((p) => p.id === id);
-      if (target) logEvent('phase', `Switched to phase: ${target.name}`);
-    }
+    const target = PHASES.find((p) => p.id === id);
+    if (!target) return;
+    if (phaseLocked(target.stage, lifecycle)) return;
+    if (runningRef.current) logEvent('phase', `Switched to phase: ${target.name}`);
     setActivePhase(id);
   }
 
@@ -190,6 +199,14 @@ export default function App() {
       const sep = existing && !existing.endsWith('\n') ? '\n' : '';
       return { ...prev, [phaseId]: existing + sep + text };
     });
+  }
+
+  function addQuickNote(phaseId, text) {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    appendToNote(phaseId, `[${stamp}] ${trimmed}`);
+    if (runningRef.current) logEvent('note', trimmed);
   }
 
   function recordIocs(phaseId, results) {
@@ -247,6 +264,7 @@ export default function App() {
             onToggle={(i) => toggleCheck(phase.id, i)}
             onNoteChange={(v) => setNote(phase.id, v)}
             onAppendNote={(text) => appendToNote(phase.id, text)}
+            onQuickNote={(text) => addQuickNote(phase.id, text)}
             onIocsExtracted={(results) => {
               recordIocs(phase.id, results);
               if (runningRef.current) {
@@ -256,6 +274,7 @@ export default function App() {
             sev={sev}
             phaseStatus={phaseStatus}
             advisory={advisory}
+            running={running}
           />
         </main>
       </div>

@@ -25,6 +25,15 @@ export function phaseActivity(stage, lifecycle) {
   return 'in-phase';
 }
 
+// A phase is locked once an incident exists (active or resolved) AND the phase
+// is out-of-phase for that lifecycle state. During idle nothing locks, so the
+// operator can still browse readiness and post-incident phases for reference
+// before an incident has ever been declared.
+export function phaseLocked(stage, lifecycle) {
+  if (lifecycle === 'idle') return false;
+  return phaseActivity(stage, lifecycle) === 'out-of-phase';
+}
+
 export function phaseAdvisory(stage, lifecycle) {
   if (lifecycle === 'idle') {
     if (stage === 'response') {
