@@ -24,6 +24,7 @@ function watch(page, url) {
     const local = u.startsWith('data:') || u.startsWith('blob:') || u.startsWith('file:') || (origin !== 'null' && u.startsWith(origin));
     if (!local) problems.push(`network: ${u}`);
   });
+  page.on('response', (r) => { if (r.status() >= 400) problems.push(`http ${r.status()}: ${r.url()}`); });
   page.on('dialog', (d) => d.accept());
   return problems;
 }
