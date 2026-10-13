@@ -55,9 +55,21 @@ function cspPlugin({ singleFile, outDir }) {
   };
 }
 
+// End-to-end test builds ('e2e', 'e2e-single') verify licenses against a
+// throwaway key passed in TRIAGE_DESK_E2E_PUBLIC_KEY, so tests can activate
+// Pro without touching the real signing key. Only these modes read it, and
+// they write to their own output folders so they can't be mistaken for a
+// release build.
+const E2E_MODES = new Set(['e2e', 'e2e-single']);
+
 export default defineConfig(({ mode }) => {
-  const singleFile = mode === 'single';
-  const outDir = resolve(singleFile ? 'dist-single' : 'dist');
+  const singleFile = mode === 'single' || mode === 'e2e-single';
+  const e2e = E2E_MODES.has(mode);
+  const e2eKey = e2e ? (process.env.TRIAGE_DESK_E2E_PUBLIC_KEY || '') : '';
+  if (e2e && !/^[0-9a-f]{64}$/.test(e2eKey)) {
+    throw new Error(`mode "${mode}" requires TRIAGE_DESK_E2E_PUBLIC_KEY (64 hex chars)`);
+  }
+  const outDir = resolve(e2e ? `dist-${mode}` : (singleFile ? 'dist-single' : 'dist'));
   return {
     plugins: [
       react(),
@@ -68,6 +80,7 @@ export default defineConfig(({ mode }) => {
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
       __BUILD_DATE__: JSON.stringify(BUILD_DATE),
+      __E2E_PUBLIC_KEY__: JSON.stringify(e2eKey),
     },
     base: './',
     build: {
@@ -77,6 +90,7 @@ export default defineConfig(({ mode }) => {
     },
     test: {
       environment: 'node',
+      include: ['tests/**/*.test.js'],
     },
   };
 });

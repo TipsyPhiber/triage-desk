@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- CI on Windows and Linux: unit tests, builds, browser tests (Chromium, Firefox, WebKit, plus Edge on Windows), seller tooling, release packaging, and the WASM build.
+- Playwright browser tests (`npm run test:e2e`) covering the full customer flow and hostile input on both distributions.
+- `.gitattributes` to keep line endings consistent across platforms.
+
+### Changed
+- `npm run build:wasm` is now a Node script and works on Windows.
+- `npm run release` creates the zip with PowerShell on Windows.
+
 ## 1.0.0 — 2026-10-13
 
 First commercial release.

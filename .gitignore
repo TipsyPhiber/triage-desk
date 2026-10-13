@@ -36,3 +36,8 @@ release
 # License signing keys must never be committed
 *.key
 .triage-desk/
+dist-e2e
+dist-e2e-single
+test-results
+playwright-report
+e2e/.tmp

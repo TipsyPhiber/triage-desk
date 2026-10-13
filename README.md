@@ -53,15 +53,26 @@ npm test
 | --- | --- |
 | `npm run dev` | Vite dev server |
 | `npm test` | Unit tests (licensing, state, migration, reports) |
+| `npm run test:e2e` | Browser tests against both distributions (add `-- --project=chromium` to pick one browser) |
 | `npm run build` | Static build to `dist/` (for hosting on an internal web server) |
 | `npm run build:single` | One self-contained `dist-single/triage-desk.html` |
-| `npm run build:wasm` | Rebuild the IOC extractor (needs `wasm-pack`) |
+| `npm run build:wasm` | Rebuild the IOC extractor (needs Rust + [`wasm-pack`](https://rustwasm.github.io/wasm-pack/installer/)) |
 | `npm run license:keygen` | Create your license signing keypair (one time) |
 | `npm run license:issue -- --name … --email …` | Mint a license key |
 | `npm run license:verify -- TD1.…` | Check a license key |
 | `npm run release` | Test, build both variants, and package `release/triage-desk-v<version>.zip` |
 
 Developer builds have no public key, so Pro can't be unlocked until you run `license:keygen`. That's intentional: `npm run release` refuses to package a build without a key.
+
+## Platform support
+
+Triage Desk is a web page, so it runs wherever a current browser does: Windows, Linux, and macOS.
+
+CI (`.github/workflows/ci.yml`) runs on **Windows and Linux** on every push. It runs the unit tests, both builds, browser tests in **Chromium, Firefox, and WebKit (plus Microsoft Edge on Windows)** against both the single file and the hosted build, the seller license tools, release packaging, and the WASM build.
+
+The seller tooling is plain Node.js (22+) and works on Windows, Linux, and macOS. On Windows, `npm run release` zips with PowerShell's `Compress-Archive`, and the signing key goes in `%USERPROFILE%\.triage-desk\`, protected by your user profile's permissions rather than Unix file modes.
+
+Browser tests need Playwright's browsers once: `npx playwright install chromium firefox webkit`.
 
 ## Project layout
 
@@ -87,6 +98,8 @@ src/
 scripts/
   license.mjs             seller license CLI
   release.mjs             release packager
+  build-wasm.mjs          cross-platform WASM rebuild
+e2e/                      Playwright browser tests
 tests/                    Vitest suites
 site/index.html           marketing landing page
 ```

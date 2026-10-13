@@ -9,11 +9,12 @@
     "build:single": "vite build --mode single",
     "preview": "vite preview",
     "test": "vitest run",
-    "build:wasm": "cd crates/ioc-extractor && wasm-pack build --target web --out-dir ../../src/wasm/ioc-extractor --release && rm -f ../../src/wasm/ioc-extractor/.gitignore",
+    "build:wasm": "node scripts/build-wasm.mjs",
     "license:keygen": "node scripts/license.mjs keygen",
     "license:issue": "node scripts/license.mjs issue",
     "license:verify": "node scripts/license.mjs verify",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "test:e2e": "node e2e/prepare.mjs && playwright test"
   },
   "dependencies": {
     "@noble/ed25519": "^3.2.0",
@@ -22,6 +23,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.56.1",
     "@tailwindcss/vite": "^4.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "tailwindcss": "^4.0.0",

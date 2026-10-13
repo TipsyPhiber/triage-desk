@@ -8,6 +8,10 @@ Thanks for downloading Triage Desk.
 
 **Hosted:** copy the `web/` folder to any static web server (nginx, IIS, S3 + CloudFront, an internal wiki host). It's all static files; no backend.
 
+## Supported platforms
+
+Windows, Linux, and macOS, in current versions of Chrome, Edge, Firefox, or Safari. Nothing to install, and no admin rights needed.
+
 ## Activate Pro
 
 Open **Settings & license → License**, paste the `TD1.…` key from your purchase email, and click **Activate**. Keys are verified offline — nothing is sent anywhere.

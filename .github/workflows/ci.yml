@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build (hosted + single file)
+        run: |
+          npm run build
+          npm run build:single
+          test -f dist/index.html
+          test -f dist-single/triage-desk.html
+
+      - name: Install browsers
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      - name: Browser tests (Chromium, Firefox, WebKit; + Edge on Windows)
+        run: npm run test:e2e
+
+      - name: Seller license tools
+        env:
+          TRIAGE_DESK_SIGNING_KEY: ${{ runner.temp }}/ci-signing.key
+        run: |
+          npm run license:keygen
+          # keygen must refuse to overwrite an existing key
+          if npm run license:keygen; then echo "keygen overwrote an existing key"; exit 1; fi
+          KEY=$(npm run -s license:issue -- --name "CI Org" --email ci@example.test --seats 2 --updates-until 2099-01-01)
+          npm run -s license:verify -- "$KEY"
+          # a tampered key must fail verification
+          if npm run -s license:verify -- "${KEY}x"; then echo "tampered key verified"; exit 1; fi
+
+      - name: Release packaging
+        run: |
+          npm run release
+          ls release
+          test -f release/triage-desk-v*.zip
+
+      - name: Upload browser test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.os }}
+          path: |
+            playwright-report
+            test-results
+          retention-days: 7
+
+  wasm:
+    name: wasm build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo install wasm-pack --locked
+      - name: Build IOC extractor
+        run: npm run build:wasm
+      - name: App still builds with fresh WASM
+        run: npm run build

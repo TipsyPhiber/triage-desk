@@ -17,6 +17,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const run = (cmd) => execSync(cmd, { cwd: ROOT, stdio: 'inherit' });
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 
+if (process.env.TRIAGE_DESK_E2E_PUBLIC_KEY) {
+  console.error('error: TRIAGE_DESK_E2E_PUBLIC_KEY is set. Unset it before building a release.');
+  process.exit(1);
+}
 const pub = readFileSync(join(ROOT, 'src/license/publicKey.js'), 'utf8').match(/LICENSE_PUBLIC_KEY_HEX = '([0-9a-f]*)'/)?.[1];
 if (!pub || pub.length !== 64) {
   console.error('error: no license public key configured. Run "npm run license:keygen" first.');
@@ -39,9 +43,15 @@ for (const f of ['EULA.md', 'docs/CUSTOMER-README.md']) {
   if (existsSync(join(ROOT, f))) cpSync(join(ROOT, f), join(out, f.split('/').pop()));
 }
 
+const name = `triage-desk-v${pkg.version}`;
+const zipCmd = process.platform === 'win32'
+  // Windows has no `zip`, but every supported version ships PowerShell.
+  ? `powershell -NoProfile -NonInteractive -Command "Compress-Archive -Path '${name}' -DestinationPath '${name}.zip' -Force"`
+  : `zip -qr ${name}.zip ${name}`;
 try {
-  execSync(`zip -qr triage-desk-v${pkg.version}.zip triage-desk-v${pkg.version}`, { cwd: join(ROOT, 'release') });
-  console.log(`\nRelease ready: release/triage-desk-v${pkg.version}.zip`);
+  rmSync(join(ROOT, 'release', `${name}.zip`), { force: true });
+  execSync(zipCmd, { cwd: join(ROOT, 'release'), stdio: 'pipe' });
+  console.log(`\nRelease ready: release/${name}.zip`);
 } catch {
-  console.log(`\nRelease ready: release/triage-desk-v${pkg.version}/ (install "zip" to also produce an archive)`);
+  console.log(`\nRelease ready: release/${name}/ (couldn't create a zip; compress the folder yourself)`);
 }

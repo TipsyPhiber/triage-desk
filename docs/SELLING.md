@@ -14,7 +14,7 @@ This is the seller-side guide: everything between "the code works" and "money ar
 npm run license:keygen
 ```
 
-- The private key goes to `~/.triage-desk/license-signing.key` (mode 600). **Back it up offline**, e.g. on an encrypted USB drive and in a password manager. If you lose it, you can't issue keys that work with existing builds. If it leaks, anyone can mint licenses.
+- The private key goes to `~/.triage-desk/license-signing.key` (mode 600; on Windows `%USERPROFILE%\.triage-desk\license-signing.key`). **Back it up offline**, e.g. on an encrypted USB drive and in a password manager. If you lose it, you can't issue keys that work with existing builds. If it leaks, anyone can mint licenses.
 - The public key is written into `src/license/publicKey.js`. Commit that file; it's meant to be public.
 - Running keygen again refuses to overwrite the key unless you pass `--force`, because replacing it invalidates every license you've ever issued.
 
@@ -116,6 +116,7 @@ The "perpetual license plus a year of updates" model suits offline security tool
 - [ ] `npm run license:keygen`; private key backed up in two places
 - [ ] `src/config.js` purchase URL and support email set
 - [ ] EULA reviewed and the `[BRACKETED]` fields in `EULA.md` filled in
+- [ ] CI is green on Windows and Linux (GitHub → Actions)
 - [ ] `npm run release` succeeds
 - [ ] Product created on the store with the release zip attached
 - [ ] Test purchase made end to end: buy → issue key → activate in a clean browser
