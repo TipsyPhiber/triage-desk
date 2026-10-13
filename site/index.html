@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self'">
+<title>Triage Desk — Offline Incident Response Workspace</title>
+<meta name="description" content="Run every security incident through NIST SP 800-61 with lifecycle-aware playbooks, an automatic timeline, IOC extraction, and reports leadership can read. Runs offline from a single HTML file.">
+<style>
+  :root {
+    --bg: #020617; --panel: #0f172a; --line: #1e293b; --text: #e2e8f0; --muted: #94a3b8; --dim: #64748b;
+    --accent: #f59e0b; --pro: #8b5cf6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  a { color: inherit; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; }
+  .logo { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 18px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+  nav a { color: var(--muted); text-decoration: none; margin-left: 20px; font-size: 14px; }
+  nav a:hover { color: var(--text); }
+  .hero { padding: 56px 0 32px; text-align: center; }
+  .eyebrow { display: inline-block; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); border: 1px solid rgba(245,158,11,.4); background: rgba(245,158,11,.08); padding: 4px 10px; border-radius: 999px; }
+  h1 { font-size: clamp(32px, 6vw, 54px); line-height: 1.1; margin: 20px auto 16px; max-width: 820px; letter-spacing: -.02em; }
+  .lede { color: var(--muted); font-size: clamp(16px, 2.2vw, 19px); max-width: 680px; margin: 0 auto 28px; }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn { display: inline-block; padding: 12px 20px; border-radius: 8px; font-weight: 600; text-decoration: none; font-size: 15px; }
+  .btn-primary { background: var(--text); color: var(--bg); }
+  .btn-ghost { border: 1px solid #334155; color: var(--text); }
+  .btn-pro { background: var(--pro); color: #fff; }
+  .note { color: var(--dim); font-size: 13px; margin-top: 14px; }
+  .shot { margin: 40px auto 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,.5); }
+  .shot img { display: block; width: 100%; height: auto; }
+  section { padding: 64px 0; }
+  h2 { font-size: clamp(24px, 4vw, 32px); margin: 0 0 8px; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 0 0 32px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+  .card h3 { margin: 0 0 6px; font-size: 16px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14px; }
+  .trust { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--panel); }
+  .trust ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px 32px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .trust li { padding-left: 26px; position: relative; color: var(--muted); font-size: 15px; }
+  .trust li::before { content: "✓"; position: absolute; left: 0; color: #34d399; font-weight: 700; }
+  .trust strong { color: var(--text); }
+  .pricing { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .plan { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 24px; display: flex; flex-direction: column; }
+  .plan.featured { border-color: var(--pro); box-shadow: 0 0 0 1px var(--pro); }
+  .plan h3 { margin: 0; font-size: 18px; }
+  .price { font-size: 36px; font-weight: 700; margin: 8px 0 2px; }
+  .price small { font-size: 14px; color: var(--dim); font-weight: 400; }
+  .plan ul { padding-left: 18px; color: var(--muted); font-size: 14px; flex: 1; margin: 16px 0 20px; }
+  .plan li { margin: 4px 0; }
+  .plan .btn { text-align: center; }
+  .faq details { border-bottom: 1px solid var(--line); padding: 16px 0; }
+  .faq summary { cursor: pointer; font-weight: 600; }
+  .faq p { color: var(--muted); margin: 10px 0 0; }
+  footer { padding: 40px 0; color: var(--dim); font-size: 13px; text-align: center; }
+  @media (max-width: 560px) { nav { display: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"><span class="dot"></span>Triage Desk</div>
+    <nav><a href="#features">Features</a><a href="#pricing">Pricing</a><a href="#faq">FAQ</a></nav>
+  </header>
+
+  <div class="hero">
+    <span class="eyebrow">Incident response · NIST SP 800-61</span>
+    <h1>The incident response workspace that never leaves your machine.</h1>
+    <p class="lede">Run every security incident through structured playbooks, with an automatic evidence timeline, IOC extraction, and a report leadership can actually read. No accounts, no cloud, no telemetry — one HTML file.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="triage-desk.html" download>Download free</a>
+      <a class="btn btn-pro" href="#pricing">Get Pro</a>
+    </div>
+    <p class="note">Runs in any modern browser. Works air-gapped.</p>
+    <div class="shot"><img src="screenshot.png" alt="Triage Desk running a ransomware incident in the Identification phase, with checklist, severity, TLP marking, and elapsed timer" width="1400" height="900"></div>
+  </div>
+</div>
+
+<section class="trust">
+  <div class="wrap">
+    <ul>
+      <li><strong>Zero network access.</strong> A strict Content-Security-Policy blocks every outbound connection — verify it yourself in DevTools.</li>
+      <li><strong>Offline license keys.</strong> Cryptographically signed, verified locally. No license server, ever.</li>
+      <li><strong>Built for hostile input.</strong> Paste phishing emails and attacker logs; reports escape everything.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <h2>Everything a responder needs at 3 a.m.</h2>
+    <p class="sub">Opinionated where it helps, out of the way where it doesn't.</p>
+    <div class="grid">
+      <div class="card"><h3>Lifecycle-aware phases</h3><p>Preparation through Lessons Learned, with phases that lock and unlock as the incident is declared and resolved — so the team works the right phase.</p></div>
+      <div class="card"><h3>Timeline that writes itself</h3><p>Every checklist item, phase change, severity bump, and quick note is timestamped as T+ from declaration. Your post-incident review starts pre-written.</p></div>
+      <div class="card"><h3>IOC extraction</h3><p>Paste alerts, logs, or emails. A Rust/WebAssembly engine pulls IPs, domains, URLs, hashes, emails, and CVEs — refanging <code>hxxps</code> and <code>[.]</code> automatically.</p></div>
+      <div class="card"><h3>Scenario playbooks</h3><p>Ransomware, phishing, business email compromise, and cloud credential exposure — written by responders, or build your own and share them as JSON.</p></div>
+      <div class="card"><h3>Reports with TLP</h3><p>Export plain text, Markdown, or a print-ready report with your org's branding and TLP 2.0 marking. Print straight to PDF.</p></div>
+      <div class="card"><h3>Many incidents, one desk</h3><p>Keep concurrent and historical incidents side by side. Back up and restore the whole workspace as a single file.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- Before deploying: replace #buy-pro and #buy-team with your storefront checkout URLs,
+     and copy release/…/triage-desk.html into this folder so the Download links work. -->
+<section id="pricing">
+  <div class="wrap">
+    <h2>Pricing</h2>
+    <p class="sub">Buy once. Keep it forever. Updates included for a year.</p>
+    <div class="pricing">
+      <div class="plan">
+        <h3>Free</h3>
+        <div class="price">$0</div>
+        <ul>
+          <li>One incident at a time</li>
+          <li>General NIST playbook</li>
+          <li>Timeline &amp; IOC extractor</li>
+          <li>Plain-text reports</li>
+          <li>Backup &amp; restore</li>
+        </ul>
+        <a class="btn btn-ghost" href="triage-desk.html" download>Download</a>
+      </div>
+      <div class="plan featured">
+        <h3>Pro</h3>
+        <div class="price">$59 <small>one-time · 1 analyst</small></div>
+        <ul>
+          <li>Unlimited incidents</li>
+          <li>Ransomware, phishing, BEC &amp; cloud playbooks</li>
+          <li>Custom playbooks with import/export</li>
+          <li>Branded Markdown &amp; PDF reports</li>
+          <li>12 months of updates</li>
+        </ul>
+        <a class="btn btn-pro" href="#buy-pro">Buy Pro</a>
+      </div>
+      <div class="plan">
+        <h3>Team</h3>
+        <div class="price">$349 <small>one-time · up to 10</small></div>
+        <ul>
+          <li>Everything in Pro</li>
+          <li>Up to 10 analysts</li>
+          <li>Host internally on any static web server</li>
+          <li>Priority email support</li>
+          <li>12 months of updates</li>
+        </ul>
+        <a class="btn btn-ghost" href="#buy-team">Buy Team</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="faq" class="faq">
+  <div class="wrap">
+    <h2>FAQ</h2>
+    <details><summary>Where is my data stored?</summary><p>In your browser's local storage, on your machine only. Triage Desk has no server and makes no network requests. Export a backup file from Settings whenever you like.</p></details>
+    <details><summary>Can I run it on an air-gapped network?</summary><p>Yes. Copy <code>triage-desk.html</code> to the machine and open it. License keys are verified offline with an Ed25519 signature.</p></details>
+    <details><summary>What happens when my updates year ends?</summary><p>Nothing breaks. Your key keeps working forever on every version released during your update period. Renew if you want newer releases.</p></details>
+    <details><summary>Is it multi-user?</summary><p>Each analyst runs their own workspace. Share playbooks as JSON files and incidents via backup files or exported reports.</p></details>
+    <details><summary>Do you offer refunds?</summary><p>Yes — see the EULA included with the download for the refund window.</p></details>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">© Triage Desk. Triage Desk is a workflow aid and does not constitute legal or regulatory advice.</div>
+</footer>
+</body>
+</html>

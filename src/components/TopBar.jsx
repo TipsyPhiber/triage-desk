@@ -1,8 +1,46 @@
-import { SEVERITIES } from '../data.js';
+import { useEffect, useRef, useState } from 'react';
+import { SEVERITIES, TLP_LEVELS } from '../data.js';
 import { formatElapsed } from '../lib/time.js';
+import { REPORT_FORMATS } from '../lib/exportReport.js';
+import { ProBadge } from './Modal.jsx';
+
+function ExportMenu({ onExport, ent }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e) { if (!ref.current?.contains(e.target)) setOpen(false); }
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="border border-slate-700 text-slate-200 px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 transition"
+      >
+        Export Report ▾
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 w-64 z-30 rounded-lg border border-slate-700 bg-slate-900 shadow-xl py-1">
+          {Object.entries(REPORT_FORMATS).map(([id, f]) => (
+            <button
+              key={id}
+              onClick={() => { setOpen(false); onExport(id); }}
+              className="w-full text-left px-3 py-2 text-sm text-slate-200 hover:bg-slate-800 flex items-center gap-2"
+            >
+              {f.label}
+              {f.pro && !ent.pro && <ProBadge className="ml-auto" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function TopBar({
-  severity, setSeverity, sev,
+  severity, setSeverity, sev, tlp, setTlp, ent,
   incidentName, setIncidentName,
   running, startTime, endTime, elapsed,
   declareIncident, resolveIncident, resetIncident, exportReport,
@@ -32,6 +70,16 @@ export function TopBar({
             className="bg-transparent border-b border-slate-700 focus:border-slate-500 outline-none text-slate-100 placeholder-slate-600 text-sm w-72 py-1"
           />
         </div>
+
+        <select
+          value={tlp}
+          onChange={(e) => setTlp(e.target.value)}
+          title={TLP_LEVELS[tlp]}
+          aria-label="TLP marking"
+          className="bg-slate-800/60 border border-slate-700 rounded-lg text-xs font-semibold text-slate-200 px-2 py-1.5 outline-none"
+        >
+          {Object.keys(TLP_LEVELS).map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
 
         <div className="flex items-center gap-2 ml-auto">
           <span className="text-xs uppercase tracking-wider text-slate-500">Severity</span>
@@ -96,12 +144,7 @@ export function TopBar({
               {eventCount}
             </span>
           </button>
-          <button
-            onClick={exportReport}
-            className="border border-slate-700 text-slate-200 px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 transition"
-          >
-            Export Report
-          </button>
+          <ExportMenu onExport={exportReport} ent={ent} />
         </div>
       </div>
 
