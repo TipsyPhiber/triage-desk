@@ -88,7 +88,7 @@ export function Sidebar({
         atLimit={atLimit}
       />
 
-      <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
+      <nav className="flex-1 min-h-0 p-3 space-y-1 overflow-y-auto">
         {phases.map((p, idx) => {
           const arr = incident.checks[p.id] || [];
           const done = arr.filter(Boolean).length;

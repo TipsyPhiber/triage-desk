@@ -184,7 +184,7 @@ export default function App() {
   const elapsed = incident.startTime ? (incident.endTime ?? now) - incident.startTime : 0;
 
   return (
-    <div className="min-h-screen flex bg-slate-950 text-slate-200">
+    <div className="h-screen overflow-hidden flex bg-slate-950 text-slate-200">
       <Sidebar
         incident={incident}
         phases={phases}
@@ -201,7 +201,7 @@ export default function App() {
         onOpenSettings={() => setModal({ kind: 'settings' })}
       />
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {!saveOk && (
           <div className="px-6 py-2 bg-rose-500/15 border-b border-rose-500/40 text-sm text-rose-200">
             Browser storage is full or disabled — changes are <strong>not being saved</strong>. Export a backup from Settings → Data now.
