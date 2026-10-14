@@ -29,8 +29,8 @@ function watch(page, url) {
   return problems;
 }
 
-async function openIncidentMenu(page, name) {
-  await page.locator('aside button', { hasText: name }).first().click();
+async function clickNewIncident(page) {
+  await page.getByRole('button', { name: /New incident/ }).click();
 }
 
 for (const target of TARGETS) {
@@ -42,21 +42,20 @@ for (const target of TARGETS) {
 
       // Free tier
       await page.getByText('Quick start (General playbook)').click();
-      await page.getByPlaceholder(/Incident name/).fill('INC-1 Phishing');
+      await page.getByLabel('Incident name').fill('INC-1 Phishing');
       await page.getByRole('button', { name: 'Declare Incident' }).click();
       await expect(page.getByRole('heading', { name: 'Identification' })).toBeVisible();
       await page.getByText('Triage initial alert').click();
 
       // IOC extractor (WASM)
-      await page.getByRole('button', { name: 'Open' }).click();
+      await page.getByRole('button', { name: 'Open IOC extractor' }).click();
       await page.getByText('Try sample').click();
       await page.getByRole('button', { name: 'Extract IOCs' }).click();
       await page.getByRole('button', { name: 'Append to Notes' }).click();
       await expect(page.locator('textarea').last()).toHaveValue(/IOCs extracted[\s\S]*185\.220\.101\.45/);
 
       // Free limit → upgrade panel
-      await openIncidentMenu(page, 'INC-1 Phishing');
-      await page.getByText('+ New incident').click();
+      await clickNewIncident(page);
       await expect(page.getByText("You're on Triage Desk Free")).toBeVisible();
 
       // Bad key rejected, real key accepted
@@ -69,9 +68,8 @@ for (const target of TARGETS) {
       await page.keyboard.press('Escape');
 
       // Pro playbook
-      await openIncidentMenu(page, 'INC-1 Phishing');
-      await page.getByText('+ New incident').click();
-      await page.getByPlaceholder(/INC-2026-0142/).fill('INC-2 Ransomware');
+      await clickNewIncident(page);
+      await page.getByRole('dialog').getByPlaceholder(/INC-2026-0142/).fill('INC-2 Ransomware');
       await page.getByRole('button', { name: /^Ransomware/ }).click();
       await page.getByRole('button', { name: 'Create incident' }).click();
       await page.getByRole('button', { name: 'Declare Incident' }).click();
@@ -87,9 +85,8 @@ for (const target of TARGETS) {
       // Survives a reload: both incidents and the license
       await page.reload();
       await expect(page.locator('aside').getByText('PRO').first()).toBeVisible();
-      await openIncidentMenu(page, 'INC-2 Ransomware');
-      await expect(page.locator('aside li', { hasText: 'INC-1 Phishing' })).toBeVisible();
-      await page.keyboard.press('Escape');
+      await expect(page.locator('nav[aria-label="Incidents"]').getByText('INC-1 Phishing')).toBeVisible();
+      await expect(page.locator('nav[aria-label="Incidents"]').getByText('INC-2 Ransomware')).toBeVisible();
 
       // Custom playbook
       await page.getByRole('button', { name: 'Playbooks' }).click();
@@ -107,11 +104,11 @@ for (const target of TARGETS) {
       await page.evaluate(() => { window.__pwned = false; });
       await page.getByText('Quick start (General playbook)').click();
       const xss = '<img src=x onerror="window.__pwned=true">';
-      await page.getByPlaceholder(/Incident name/).fill(xss);
+      await page.getByLabel('Incident name').fill(xss);
       await page.locator('textarea').last().fill(`${xss}\n<script>window.__pwned=true</script>`);
       await page.getByPlaceholder(/One-line observation/).fill(xss);
       await page.getByRole('button', { name: 'Add', exact: true }).click();
-      await page.getByRole('button', { name: /^Timeline/ }).click();
+      await page.getByRole('button', { name: /^Timeline/ }).first().click();
       expect(await page.evaluate(() => window.__pwned)).toBe(false);
       expect(problems).toEqual([]);
     });

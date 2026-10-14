@@ -49,6 +49,7 @@ export const PHASES = [
 export const SEVERITIES = {
   Low: {
     label: 'Low',
+    hex: '#38bdf8',
     accent: 'bg-sky-500',
     accentText: 'text-sky-400',
     accentBorder: 'border-sky-500/40',
@@ -59,6 +60,7 @@ export const SEVERITIES = {
   },
   Medium: {
     label: 'Medium',
+    hex: '#f59e0b',
     accent: 'bg-amber-500',
     accentText: 'text-amber-400',
     accentBorder: 'border-amber-500/40',
@@ -69,6 +71,7 @@ export const SEVERITIES = {
   },
   High: {
     label: 'High',
+    hex: '#f97316',
     accent: 'bg-orange-500',
     accentText: 'text-orange-400',
     accentBorder: 'border-orange-500/40',
@@ -79,6 +82,7 @@ export const SEVERITIES = {
   },
   Critical: {
     label: 'Critical',
+    hex: '#f43f5e',
     accent: 'bg-rose-500',
     accentText: 'text-rose-400',
     accentBorder: 'border-rose-500/40',

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>INC-2026-0147 · Ransomware on FS-01 file server — Incident Report</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #111827; margin: 0; padding: 32px; background: #fff; }
+  main { max-width: 820px; margin: 0 auto; }
+  .tlp { display: inline-block; padding: 2px 10px; font-weight: 700; letter-spacing: .05em; background: #000; border-radius: 3px; }
+  .bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 12px; color: #4b5563; }
+  h1 { font-size: 26px; margin: 20px 0 4px; }
+  h2 { font-size: 17px; margin: 28px 0 8px; padding-bottom: 4px; border-bottom: 2px solid #e5e7eb; break-after: avoid; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+  th, td { text-align: left; vertical-align: top; padding: 5px 8px; border-bottom: 1px solid #e5e7eb; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #6b7280; }
+  .meta th { width: 140px; }
+  ul.tasks { list-style: none; padding: 0; margin: 0; }
+  ul.tasks li { padding: 3px 0 3px 24px; position: relative; }
+  ul.tasks li::before { content: "☐"; position: absolute; left: 0; color: #6b7280; }
+  ul.tasks li.done::before { content: "☑"; color: #059669; }
+  ul.tasks li { display: flex; gap: 12px; }
+  ul.tasks .t { flex: 1; }
+  ul.tasks .when { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: #6b7280; white-space: nowrap; padding-top: 2px; }
+  .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 20px 0 8px; }
+  .summary div { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; }
+  .summary b { display: block; font-size: 20px; letter-spacing: -.01em; }
+  .summary span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; }
+  .sev-Critical { color: #be123c; } .sev-High { color: #c2410c; } .sev-Medium { color: #b45309; } .sev-Low { color: #0369a1; }
+  pre { white-space: pre-wrap; word-break: break-word; background: #f3f4f6; padding: 10px 12px; border-radius: 6px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+  .sev { font-weight: 600; }
+  footer { margin-top: 40px; font-size: 11px; color: #6b7280; text-align: center; }
+  @media print {
+    body { padding: 0; }
+    tr, li, pre { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="bar"><span class="tlp" style="color:#ff2b2b">TLP:RED</span><span>Example Co. Security Operations</span></div>
+  <h1>INC-2026-0147 · Ransomware on FS-01 file server</h1>
+  <div class="bar"><span>For the eyes and ears of individual recipients only, no further disclosure.</span></div>
+  <div class="summary">
+    <div><span>Severity</span><b class="sev-Critical">Critical</b></div>
+    <div><span>Elapsed</span><b>00:52:06</b></div>
+    <div><span>Tasks complete</span><b>10 / 38</b></div>
+    <div><span>Unique indicators</span><b>6</b></div>
+  </div>
+  <table class="meta"><tbody>
+    <tr><th>Organization</th><td>Example Co. Security Operations</td></tr>
+    <tr><th>Severity</th><td class="sev">Critical</td></tr>
+    <tr><th>Playbook</th><td>Ransomware</td></tr>
+    <tr><th>Declared</th><td>2026-10-14T02:53:23.571Z</td></tr>
+    <tr><th>Resolved</th><td>Ongoing</td></tr>
+    <tr><th>Duration</th><td>00:52:06</td></tr>
+    <tr><th>Progress</th><td>10 / 38 tasks complete</td></tr>
+    <tr><th>Prepared by</th><td>J. Rivera, Incident Commander</td></tr>
+    <tr><th>Generated</th><td>2026-10-14T03:45:30.544Z</td></tr>
+  </tbody></table>
+  
+    <section>
+      <h2>Preparation</h2>
+      <ul class="tasks"><li class=""><span class="t">Confirm offline / immutable backups exist and were restore-tested this quarter</span></li><li class=""><span class="t">Document which systems are tier-0 (domain controllers, backup servers, hypervisors)</span></li><li class=""><span class="t">Pre-identify outside counsel, IR retainer firm, and cyber insurance contacts</span></li><li class=""><span class="t">Agree in advance who has authority to discuss or approve ransom payment</span></li><li class=""><span class="t">Keep an out-of-band communication channel that does not depend on corporate SSO</span></li><li class=""><span class="t">Verify EDR tamper protection and network isolation actions are enabled</span></li></ul>
+      
+    </section>
+    <section>
+      <h2>Identification</h2>
+      <ul class="tasks"><li class="done"><span class="t">Record first observed encryption time, ransom note filename, and file extension</span><span class="when">T+00:03:00</span></li><li class="done"><span class="t">Photograph or copy the ransom note without opening attached links</span><span class="when">T+00:06:00</span></li><li class="done"><span class="t">Identify ransomware family (ID Ransomware, note text, extension) and check for public decryptors</span><span class="when">T+00:09:00</span></li><li class="done"><span class="t">Determine patient zero and initial access vector (RDP, VPN, phishing, exploited edge device)</span><span class="when">T+00:12:00</span></li><li class="done"><span class="t">Check for data staging or exfiltration (large outbound transfers, rclone, MEGA, cloud sync tools)</span><span class="when">T+00:15:00</span></li><li class="done"><span class="t">Enumerate affected hosts, shares, and hypervisors; note if backups are impacted</span><span class="when">T+00:18:00</span></li><li class="done"><span class="t">Notify incident commander, legal, executive sponsor, and cyber insurer per policy</span><span class="when">T+00:21:00</span></li></ul>
+      <pre>[14:02] Detection: EDR alert &quot;mass file rename&quot; on FS-01 (Defender ATP)
+[14:05] Patient zero: WS-FIN-07 via RDP from 203.0.113.47
+[14:09] Exfil suspected: rclone.exe to files-sync.example (38 GB)
+[14:15] Backups: Veeam repo intact, last good restore point 02:00</pre>
+    </section>
+    <section>
+      <h2>Containment</h2>
+      <ul class="tasks"><li class="done"><span class="t">Isolate infected hosts via EDR or switch port — do not power off if memory capture is planned</span><span class="when">T+00:26:00</span></li><li class="done"><span class="t">Disconnect backup infrastructure from the network to protect it from encryption</span><span class="when">T+00:31:00</span></li><li class="done"><span class="t">Disable compromised accounts and reset passwords for privileged accounts used by the actor</span><span class="when">T+00:36:00</span></li><li class=""><span class="t">Block known C2 infrastructure and exfiltration destinations at the egress</span></li><li class=""><span class="t">Suspend scheduled tasks, GPOs, or PsExec/SCCM deployments used for propagation</span></li><li class=""><span class="t">Capture memory and disk images from representative infected hosts</span></li><li class=""><span class="t">Reset the krbtgt account twice (with replication delay) if domain compromise is suspected</span></li></ul>
+      <pre>[2026-10-14 03:24:23] Backup VLAN isolated; Veeam service account disabled
+[2026-10-14 03:33:23] Legal + cyber insurer notified (policy #CY-4471)</pre>
+    </section>
+    <section>
+      <h2>Eradication</h2>
+      <ul class="tasks"><li class=""><span class="t">Remove persistence: services, scheduled tasks, run keys, WMI subscriptions, new admin accounts</span></li><li class=""><span class="t">Remove remote access tooling installed by the actor (AnyDesk, ScreenConnect, Cobalt Strike beacons)</span></li><li class=""><span class="t">Patch or decommission the initial access vector</span></li><li class=""><span class="t">Rotate all service account, domain admin, and backup system credentials</span></li><li class=""><span class="t">Hunt for additional implants across the estate using collected IOCs</span></li><li class=""><span class="t">Confirm no remaining actor access before beginning restoration</span></li></ul>
+      
+    </section>
+    <section>
+      <h2>Recovery</h2>
+      <ul class="tasks"><li class=""><span class="t">Rebuild tier-0 systems first from known-clean media</span></li><li class=""><span class="t">Restore data from backups verified to pre-date the intrusion</span></li><li class=""><span class="t">Scan restored systems for IOCs before reconnecting to production</span></li><li class=""><span class="t">Bring business-critical services back in priority order agreed with leadership</span></li><li class=""><span class="t">Monitor for re-encryption attempts or returning C2 traffic for at least 30 days</span></li><li class=""><span class="t">Complete regulatory, law enforcement, and customer notifications as advised by counsel</span></li></ul>
+      
+    </section>
+    <section>
+      <h2>Lessons Learned</h2>
+      <ul class="tasks"><li class=""><span class="t">Document the full attack chain against MITRE ATT&amp;CK</span></li><li class=""><span class="t">Record recovery time per critical system versus stated RTO</span></li><li class=""><span class="t">Evaluate backup coverage and isolation gaps that the incident exposed</span></li><li class=""><span class="t">Review the ransom payment decision process and its timeliness</span></li><li class=""><span class="t">Assign owners for hardening actions (MFA gaps, exposed RDP, EDR coverage)</span></li><li class=""><span class="t">Update the ransomware playbook with what actually happened</span></li></ul>
+      
+    </section>
+  
+    <section>
+      <h2>IOC index (6 unique)</h2>
+      <table><thead><tr><th>Type</th><th>Indicator</th><th>Phases</th></tr></thead><tbody>
+      <tr><td>Domain</td><td><code>files-sync.example</code></td><td>Identify</td></tr><tr><td>Domain</td><td><code>update-cdn.example</code></td><td>Identify</td></tr><tr><td>Email</td><td><code>recovery@protonmail.example</code></td><td>Identify</td></tr><tr><td>IPv4</td><td><code>198.51.100.23</code></td><td>Identify</td></tr><tr><td>IPv4</td><td><code>203.0.113.47</code></td><td>Identify</td></tr><tr><td>SHA256</td><td><code>9f2c4b8e1d7a6035c2e4f1b9a8d7c6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9</code></td><td>Identify</td></tr>
+      </tbody></table>
+    </section>
+  
+    <section>
+      <h2>Timeline</h2>
+      <table><thead><tr><th>Time (UTC)</th><th>T+</th><th>Event</th></tr></thead><tbody>
+      <tr><td><code>2026-10-14T02:53:23.571Z</code></td><td><code>00:00:00</code></td><td>Incident declared — severity High</td></tr><tr><td><code>2026-10-14T02:55:23.571Z</code></td><td><code>00:02:00</code></td><td>Severity changed: High → Critical</td></tr><tr><td><code>2026-10-14T02:56:23.571Z</code></td><td><code>00:03:00</code></td><td>Checked [Identify]: Record first observed encryption time, ransom note filename, and file extension</td></tr><tr><td><code>2026-10-14T02:59:23.571Z</code></td><td><code>00:06:00</code></td><td>Checked [Identify]: Photograph or copy the ransom note without opening attached links</td></tr><tr><td><code>2026-10-14T03:02:23.571Z</code></td><td><code>00:09:00</code></td><td>Checked [Identify]: Identify ransomware family (ID Ransomware, note text, extension) and check for public decryptors</td></tr><tr><td><code>2026-10-14T03:05:23.571Z</code></td><td><code>00:12:00</code></td><td>Checked [Identify]: Determine patient zero and initial access vector (RDP, VPN, phishing, exploited edge device)</td></tr><tr><td><code>2026-10-14T03:08:23.571Z</code></td><td><code>00:15:00</code></td><td>Checked [Identify]: Check for data staging or exfiltration (large outbound transfers, rclone, MEGA, cloud sync tools)</td></tr><tr><td><code>2026-10-14T03:11:23.571Z</code></td><td><code>00:18:00</code></td><td>Checked [Identify]: Enumerate affected hosts, shares, and hypervisors; note if backups are impacted</td></tr><tr><td><code>2026-10-14T03:14:23.571Z</code></td><td><code>00:21:00</code></td><td>Checked [Identify]: Notify incident commander, legal, executive sponsor, and cyber insurer per policy</td></tr><tr><td><code>2026-10-14T02:57:23.571Z</code></td><td><code>00:04:00</code></td><td>Ransom note README_RESTORE.txt on \\FS-01\finance; extension .lockd</td></tr><tr><td><code>2026-10-14T03:05:23.571Z</code></td><td><code>00:12:00</code></td><td>Extracted 6 IOCs into Identification notes</td></tr><tr><td><code>2026-10-14T03:17:23.571Z</code></td><td><code>00:24:00</code></td><td>Switched to phase: Containment</td></tr><tr><td><code>2026-10-14T03:19:23.571Z</code></td><td><code>00:26:00</code></td><td>Checked [Contain]: Isolate infected hosts via EDR or switch port — do not power off if memory capture is planned</td></tr><tr><td><code>2026-10-14T03:24:23.571Z</code></td><td><code>00:31:00</code></td><td>Checked [Contain]: Disconnect backup infrastructure from the network to protect it from encryption</td></tr><tr><td><code>2026-10-14T03:29:23.571Z</code></td><td><code>00:36:00</code></td><td>Checked [Contain]: Disable compromised accounts and reset passwords for privileged accounts used by the actor</td></tr><tr><td><code>2026-10-14T03:24:23.571Z</code></td><td><code>00:31:00</code></td><td>Backup VLAN isolated; Veeam service account disabled</td></tr><tr><td><code>2026-10-14T03:33:23.571Z</code></td><td><code>00:40:00</code></td><td>Legal + cyber insurer notified (policy #CY-4471)</td></tr><tr><td><code>2026-10-14T03:45:25.579Z</code></td><td><code>00:52:02</code></td><td>Switched to phase: Identification</td></tr>
+      </tbody></table>
+    </section>
+  <footer><span class="tlp" style="color:#ff2b2b">TLP:RED</span> · Generated by Triage Desk</footer>
+</main>
+</body>
+</html>

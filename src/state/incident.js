@@ -42,6 +42,7 @@ export function createIncident({ playbook, name = '', severity = 'Medium', tlp =
     startTime: null,
     endTime: null,
     checks: emptyByPhase(tasks, (t) => t.map(() => false)),
+    checkedAt: emptyByPhase(tasks, (t) => t.map(() => null)),
     notes: emptyByPhase(tasks, () => ''),
     iocIndex: emptyByPhase(tasks, () => []),
     events: [],
@@ -148,7 +149,13 @@ export function toggleCheck(inc, phaseId, idx, now = Date.now()) {
     `${newVal ? 'Checked' : 'Unchecked'} [${phase?.short ?? ''}]: ${taskText}`,
     now,
   );
-  return { ...logged, checks: { ...inc.checks, [phaseId]: nextArr } };
+  const times = [...(inc.checkedAt?.[phaseId] ?? arr.map(() => null))];
+  times[idx] = newVal ? now : null;
+  return {
+    ...logged,
+    checks: { ...inc.checks, [phaseId]: nextArr },
+    checkedAt: { ...inc.checkedAt, [phaseId]: times },
+  };
 }
 
 export function setNote(inc, phaseId, value) {
@@ -192,6 +199,15 @@ function sanitizeChecks(raw, tasks) {
     const n = tasks[p.id].length;
     // If the task list doesn't line up, drop just that phase's checklist.
     out[p.id] = Array.isArray(arr) && arr.length === n ? arr.map(Boolean) : Array(n).fill(false);
+  }
+  return out;
+}
+
+function sanitizeCheckedAt(raw, checks) {
+  const out = {};
+  for (const p of PHASES) {
+    const arr = raw?.[p.id];
+    out[p.id] = checks[p.id].map((done, i) => (done && Array.isArray(arr) && isFiniteNumber(arr[i]) ? arr[i] : null));
   }
   return out;
 }
@@ -245,6 +261,7 @@ export function sanitizeIncident(raw) {
   if (typeof raw.id !== 'string' || !raw.id || raw.id.length > 80) return null;
   const tasks = sanitizeTasks(raw.tasks);
   const startTime = isFiniteNumber(raw.startTime) ? raw.startTime : null;
+  const checks = sanitizeChecks(raw.checks, tasks);
   const endTime = startTime !== null && isFiniteNumber(raw.endTime) ? raw.endTime : null;
   return {
     id: raw.id,
@@ -258,7 +275,8 @@ export function sanitizeIncident(raw) {
     activePhase: PHASE_IDS.has(raw.activePhase) ? raw.activePhase : PHASES[0].id,
     startTime,
     endTime,
-    checks: sanitizeChecks(raw.checks, tasks),
+    checks,
+    checkedAt: sanitizeCheckedAt(raw.checkedAt, checks),
     notes: sanitizeNotes(raw.notes),
     iocIndex: sanitizeIocIndex(raw.iocIndex),
     events: sanitizeEvents(raw.events),

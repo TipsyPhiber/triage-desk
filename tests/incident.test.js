@@ -26,6 +26,8 @@ describe('incident lifecycle', () => {
     inc = I.addQuickNote(inc, 'identification', '  user confirmed click  ', T0 + 4);
     expect(inc.events.map((e) => e.type)).toEqual(['declare', 'check', 'severity', 'note']);
     expect(inc.events.map((e) => e.id)).toEqual([1, 2, 3, 4]);
+    expect(inc.checkedAt.identification[2]).toBe(T0 + 2);
+    expect(I.toggleCheck(inc, 'identification', 2, T0 + 9).checkedAt.identification[2]).toBeNull();
     expect(inc.notes.identification).toMatch(/\] user confirmed click$/);
 
     inc = I.resolveIncident(inc, T0 + 10);

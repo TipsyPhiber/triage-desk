@@ -17,8 +17,8 @@ const secret = ed.utils.randomSecretKey();
 const publicKeyHex = bytesToHex(ed.getPublicKey(secret));
 const token = signLicense({
   lid: 'L-E2E',
-  name: 'E2E Test Org',
-  email: 'e2e@example.test',
+  name: 'Example Co.',
+  email: 'soc@example.com',
   seats: 1,
   issued: new Date().toISOString().slice(0, 10),
 }, secret);

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { PHASES } from '../data.js';
 import { duplicatePlaybook, parsePlaybookFile, sanitizePlaybook, serializePlaybook } from '../state/playbooks.js';
 import { downloadFile, reportFilename } from '../lib/exportReport.js';
+import { BookOpen as HeaderIcon } from 'lucide-react';
 import { Modal, ProBadge, btn, inputCls } from './Modal.jsx';
 
 function toDraft(pb) {
@@ -78,6 +79,7 @@ export function PlaybooksModal({ playbooks, ent, onSave, onDelete, onClose, onUp
     <Modal
       title="Playbooks"
       subtitle="New incidents copy their playbook's tasks, so edits here never change incidents already in progress."
+      icon={HeaderIcon}
       onClose={onClose}
       wide
     >
@@ -89,17 +91,17 @@ export function PlaybooksModal({ playbooks, ent, onSave, onDelete, onClose, onUp
                 <button
                   onClick={() => select(pb.id)}
                   className={`w-full text-left px-3 py-2 rounded-md text-sm transition flex items-center gap-2 ${
-                    pb.id === selected?.id ? 'bg-slate-800 text-slate-100' : 'text-slate-300 hover:bg-slate-800/60'
+                    pb.id === selected?.id ? 'bg-raised text-ink' : 'text-ink-2 hover:bg-hover'
                   }`}
                 >
                   <span className="truncate">{pb.name}</span>
                   {pb.builtIn && pb.tier === 'pro' && !ent.pro && <ProBadge className="ml-auto" />}
-                  {!pb.builtIn && <span className="ml-auto text-[10px] text-slate-500">custom</span>}
+                  {!pb.builtIn && <span className="ml-auto text-[10px] text-ink-3">custom</span>}
                 </button>
               </li>
             ))}
           </ul>
-          <div className="mt-4 pt-4 border-t border-slate-800 space-y-2">
+          <div className="mt-4 pt-4 border-t border-line space-y-2">
             <button className={`${btn.secondary} w-full flex items-center justify-center gap-2`} onClick={() => (editable ? fileRef.current?.click() : onUpgrade())}>
               Import playbook… {!editable && <ProBadge />}
             </button>
@@ -128,10 +130,10 @@ export function PlaybooksModal({ playbooks, ent, onSave, onDelete, onClose, onUp
                   rows={2}
                   className={inputCls}
                 />
-                <p className="text-xs text-slate-500">One task per line.</p>
+                <p className="text-xs text-ink-3">One task per line.</p>
                 {PHASES.map((p) => (
                   <label key={p.id} className="block">
-                    <span className="text-[11px] uppercase tracking-wider text-slate-500">{p.name}</span>
+                    <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-3">{p.name}</span>
                     <textarea
                       value={draft.tasks[p.id]}
                       onChange={(e) => setDraft({ ...draft, tasks: { ...draft.tasks, [p.id]: e.target.value } })}
@@ -148,7 +150,7 @@ export function PlaybooksModal({ playbooks, ent, onSave, onDelete, onClose, onUp
             ) : (
               <div>
                 <div className="flex items-start gap-3 mb-1">
-                  <h3 className="text-lg font-semibold text-slate-100 flex-1">{selected.name}</h3>
+                  <h3 className="text-lg font-semibold text-ink flex-1">{selected.name}</h3>
                   <div className="flex gap-2 shrink-0">
                     <button className={btn.secondary} onClick={exportSelected}>Export</button>
                     <button className={`${btn.secondary} flex items-center gap-2`} onClick={duplicate}>
@@ -162,17 +164,17 @@ export function PlaybooksModal({ playbooks, ent, onSave, onDelete, onClose, onUp
                     )}
                   </div>
                 </div>
-                <p className="text-sm text-slate-400 mb-4">{selected.description}</p>
+                <p className="text-sm text-ink-2 mb-4">{selected.description}</p>
                 {selected.builtIn && (
-                  <p className="text-xs text-slate-500 mb-4">Built-in playbooks are read-only. Duplicate one to tailor it to your environment.</p>
+                  <p className="text-xs text-ink-3 mb-4">Built-in playbooks are read-only. Duplicate one to tailor it to your environment.</p>
                 )}
                 {PHASES.map((p) => (
                   <div key={p.id} className="mb-4">
-                    <div className="text-[11px] uppercase tracking-wider text-slate-500 mb-1">{p.name}</div>
+                    <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-3 mb-1">{p.name}</div>
                     {(selected.tasks[p.id] || []).length === 0 ? (
-                      <p className="text-xs text-slate-600 italic">No tasks.</p>
+                      <p className="text-xs text-ink-4 italic">No tasks.</p>
                     ) : (
-                      <ul className="text-sm text-slate-300 space-y-0.5 list-disc pl-5">
+                      <ul className="text-sm text-ink-2 space-y-0.5 list-disc pl-5">
                         {selected.tasks[p.id].map((t, i) => <li key={i}>{t}</li>)}
                       </ul>
                     )}

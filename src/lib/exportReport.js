@@ -35,7 +35,11 @@ export function reportModel(inc, settings = {}, now = Date.now()) {
     totals: incidentTotals(inc),
     phases: phases.map((p) => ({
       name: p.name,
-      tasks: p.tasks.map((text, i) => ({ text, done: !!inc.checks[p.id]?.[i] })),
+      tasks: p.tasks.map((text, i) => {
+        const done = !!inc.checks[p.id]?.[i];
+        const at = done ? inc.checkedAt?.[p.id]?.[i] : null;
+        return { text, done, rel: at && startTime && at >= startTime ? formatElapsed(at - startTime) : null };
+      }),
       note: (inc.notes[p.id] || '').trim(),
     })),
     iocCount: iocByKey.size,
@@ -78,7 +82,7 @@ export function buildTextReport(inc, settings, now = Date.now()) {
     lines.push('----------------------------------------');
     lines.push(`PHASE: ${p.name.toUpperCase()}`);
     lines.push('----------------------------------------');
-    for (const t of p.tasks) lines.push(`  ${t.done ? '[x]' : '[ ]'} ${t.text}`);
+    for (const t of p.tasks) lines.push(`  ${t.done ? '[x]' : '[ ]'} ${t.text}${t.rel ? `  (T+${t.rel})` : ''}`);
     if (p.note) {
       lines.push('');
       lines.push('  Notes:');
@@ -160,7 +164,7 @@ export function buildMarkdownReport(inc, settings, now = Date.now()) {
   for (const p of m.phases) {
     out.push(`## ${mdEscape(p.name)}`);
     out.push('');
-    for (const t of p.tasks) out.push(`- [${t.done ? 'x' : ' '}] ${mdEscape(t.text)}`);
+    for (const t of p.tasks) out.push(`- [${t.done ? 'x' : ' '}] ${mdEscape(t.text)}${t.rel ? ` *(T+${t.rel})*` : ''}`);
     if (p.note) {
       out.push('');
       out.push('**Notes**');
@@ -234,6 +238,14 @@ const HTML_STYLE = `
   ul.tasks li { padding: 3px 0 3px 24px; position: relative; }
   ul.tasks li::before { content: "☐"; position: absolute; left: 0; color: #6b7280; }
   ul.tasks li.done::before { content: "☑"; color: #059669; }
+  ul.tasks li { display: flex; gap: 12px; }
+  ul.tasks .t { flex: 1; }
+  ul.tasks .when { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: #6b7280; white-space: nowrap; padding-top: 2px; }
+  .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 20px 0 8px; }
+  .summary div { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; }
+  .summary b { display: block; font-size: 20px; letter-spacing: -.01em; }
+  .summary span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; }
+  .sev-Critical { color: #be123c; } .sev-High { color: #c2410c; } .sev-Medium { color: #b45309; } .sev-Low { color: #0369a1; }
   pre { white-space: pre-wrap; word-break: break-word; background: #f3f4f6; padding: 10px 12px; border-radius: 6px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
   code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
   .sev { font-weight: 600; }
@@ -254,7 +266,7 @@ export function buildHtmlReport(inc, settings, now = Date.now()) {
   const phases = m.phases.map((p) => `
     <section>
       <h2>${e(p.name)}</h2>
-      <ul class="tasks">${p.tasks.map((t) => `<li class="${t.done ? 'done' : ''}">${e(t.text)}</li>`).join('')}</ul>
+      <ul class="tasks">${p.tasks.map((t) => `<li class="${t.done ? 'done' : ''}"><span class="t">${e(t.text)}</span>${t.rel ? `<span class="when">T+${e(t.rel)}</span>` : ''}</li>`).join('')}</ul>
       ${p.note ? `<pre>${e(p.note)}</pre>` : ''}
     </section>`).join('');
 
@@ -290,6 +302,12 @@ export function buildHtmlReport(inc, settings, now = Date.now()) {
   <div class="bar">${tlpBadge}<span>${e(m.orgName || 'Incident Report')}</span></div>
   <h1>${e(m.title)}</h1>
   <div class="bar"><span>${e(m.tlpDescription)}</span></div>
+  <div class="summary">
+    <div><span>Severity</span><b class="sev-${e(m.severity)}">${e(m.severity)}</b></div>
+    <div><span>${m.resolved === 'Ongoing' ? 'Elapsed' : 'Duration'}</span><b>${e(m.duration)}</b></div>
+    <div><span>Tasks complete</span><b>${m.totals.done} / ${m.totals.total}</b></div>
+    <div><span>Unique indicators</span><b>${m.iocCount}</b></div>
+  </div>
   <table class="meta"><tbody>
     ${m.orgName ? row('Organization', m.orgName) : ''}
     <tr><th>Severity</th><td class="sev">${e(m.severity)}</td></tr>
