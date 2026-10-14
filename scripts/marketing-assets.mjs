@@ -31,65 +31,84 @@ mkdirSync(OUT, { recursive: true });
 
 const browser = await chromium.launch();
 
-async function page({ seed = true, video = false, width = 1600, height = 1000 } = {}) {
+async function page({ seed = true, video = false, width = 1600, height = 1000, theme = 'light' } = {}) {
   const ctx = await browser.newContext({
     viewport: { width, height },
     deviceScaleFactor: video ? 1 : 2,
     acceptDownloads: true,
     ...(video ? { recordVideo: { dir: join(OUT, 'video-tmp'), size: { width, height } } } : {}),
   });
-  if (seed) {
-    const ws = JSON.stringify(demoWorkspace(Date.now(), LICENSE));
-    await ctx.addInitScript((data) => {
-      if (!sessionStorage.getItem('seeded')) {
-        localStorage.setItem('triage-desk-workspace-v2', data);
-        sessionStorage.setItem('seeded', '1');
-      }
-    }, ws);
-  }
+  const ws = seed
+    ? JSON.stringify(demoWorkspace(Date.now(), LICENSE))
+    : JSON.stringify({ version: 2, incidents: [], activeIncidentId: null, customPlaybooks: [], settings: { orgName: 'Example Co. Security Operations', preparedBy: '', defaultTlp: 'TLP:AMBER' }, license: LICENSE });
+  await ctx.addInitScript(([data, th]) => {
+    if (!sessionStorage.getItem('seeded')) {
+      localStorage.setItem('triage-desk-workspace-v2', data);
+      localStorage.setItem('triage-desk-theme', th);
+      sessionStorage.setItem('seeded', '1');
+    }
+  }, [ws, theme]);
   const pg = await ctx.newPage();
   pg.on('dialog', (d) => d.accept());
   await pg.goto(APP);
   return { ctx, pg };
 }
 
-const shot = (pg, name) => pg.screenshot({ path: join(OUT, `${name}.jpg`), type: 'jpeg', quality: 90 });
+const shot = (pg, name, opts = {}) => pg.screenshot({ path: join(OUT, `${name}.jpg`), type: 'jpeg', quality: 90, ...opts });
+const crop = async (pg, locator, name, maxH) => {
+  const box = await locator.boundingBox();
+  await shot(pg, name, { clip: { x: box.x, y: box.y, width: box.width, height: maxH ? Math.min(box.height, maxH) : box.height } });
+};
 
+// Start screen and guided search.
+{
+  const { ctx, pg } = await page({ seed: false });
+  await pg.getByText("What’s happening?").waitFor();
+  await pg.waitForTimeout(400);
+  await shot(pg, 'app-welcome');
+  await pg.getByLabel("Describe what's happening").pressSequentially('user entered password on a phishing page', { delay: 10 });
+  await pg.waitForTimeout(300);
+  await shot(pg, 'app-welcome-search');
+  await pg.getByRole('button', { name: 'Find playbook' }).click();
+  await pg.waitForTimeout(400);
+  await shot(pg, 'app-finder');
+  await crop(pg, pg.getByRole('dialog'), 'crop-finder');
+  await pg.keyboard.press('Escape');
+  await pg.getByRole('button', { name: /Import a Splunk alert/ }).click();
+  await pg.getByRole('button', { name: 'Try sample' }).click();
+  await pg.waitForTimeout(300);
+  await crop(pg, pg.getByRole('dialog'), 'crop-import');
+  await ctx.close();
+}
+
+// A live incident.
 {
   const { ctx, pg } = await page();
   await pg.getByText('Backup VLAN isolated').first().waitFor().catch(() => {});
   await pg.waitForTimeout(600);
   await shot(pg, 'app-incident');
-
-  await pg.getByRole('button', { name: /^IOCs/ }).click();
-  await pg.waitForTimeout(300);
-  await shot(pg, 'app-iocs');
-  {
-    // Focused crop for the landing page: top of the IOC panel.
-    const box = await pg.locator('aside[aria-label="Incident intel"]').boundingBox();
-    await pg.screenshot({ path: join(OUT, 'crop-iocs.jpg'), type: 'jpeg', quality: 90, clip: { x: box.x, y: box.y, width: box.width, height: 560 } });
-  }
-  await pg.getByRole('button', { name: /^Timeline/ }).last().click();
+  await crop(pg, pg.locator('main'), 'crop-checklist', 640);
 
   await pg.locator('nav[aria-label="Phases"]').getByRole('button', { name: /Identification/ }).click();
   await pg.waitForTimeout(300);
   await shot(pg, 'app-identification');
-  {
-    // Checklist with completion times, cropped to the phase content.
-    const box = await pg.locator('main').boundingBox();
-    await pg.screenshot({ path: join(OUT, 'crop-checklist.jpg'), type: 'jpeg', quality: 90, clip: { x: box.x, y: box.y, width: box.width, height: Math.min(box.height, 640) } });
-  }
+  const searches = pg.locator('main section').filter({ hasText: 'Splunk searches' }).first();
+  await searches.scrollIntoViewIfNeeded();
+  await pg.waitForTimeout(200);
+  await crop(pg, searches, 'crop-splunk-searches', 620);
 
-  await pg.getByRole('button', { name: /New incident/ }).click();
+  await pg.getByRole('button', { name: /^Splunk/ }).click();
   await pg.waitForTimeout(300);
-  await shot(pg, 'app-new-incident');
-  await pg.getByRole('dialog').screenshot({ path: join(OUT, 'crop-new-incident.jpg'), type: 'jpeg', quality: 90 });
-  await pg.keyboard.press('Escape');
+  await crop(pg, pg.locator('aside[aria-label="Incident intel"]'), 'crop-splunk-hunt', 760);
+  await pg.getByRole('button', { name: /^IOCs/ }).click();
+  await pg.waitForTimeout(300);
+  await crop(pg, pg.locator('aside[aria-label="Incident intel"]'), 'crop-iocs', 560);
+  await pg.getByRole('button', { name: /^Timeline/ }).last().click();
 
-  await pg.getByRole('button', { name: 'Playbooks' }).click();
-  await pg.getByRole('button', { name: 'Ransomware', exact: true }).click();
+  await pg.keyboard.press('Control+k');
+  await pg.getByRole('textbox', { name: 'Command' }).pressSequentially('okta admin', { delay: 10 });
   await pg.waitForTimeout(300);
-  await shot(pg, 'app-playbooks');
+  await shot(pg, 'app-palette');
   await pg.keyboard.press('Escape');
 
   await pg.getByRole('button', { name: /Export Report/ }).click();
@@ -105,64 +124,57 @@ const shot = (pg, name) => pg.screenshot({ path: join(OUT, `${name}.jpg`), type:
   await ctx.close();
 }
 
+// Dark mode.
 {
-  const { ctx, pg } = await page({ seed: false });
-  await pg.getByText('Start an incident').waitFor();
-  await pg.waitForTimeout(300);
-  await shot(pg, 'app-welcome');
+  const { ctx, pg } = await page({ theme: 'dark' });
+  await pg.getByText('Backup VLAN isolated').first().waitFor().catch(() => {});
+  await pg.waitForTimeout(500);
+  await shot(pg, 'app-dark');
   await ctx.close();
 }
 
-// Demo video: a responder working a phishing incident from scratch.
+// Demo video: from "what's happening?" to a worked phishing incident.
 {
   const { ctx, pg } = await page({ seed: false, video: true, width: 1600, height: 1000 });
   const pause = (ms) => pg.waitForTimeout(ms);
-  await pg.getByText('Start an incident').waitFor();
+  await pg.getByText("What’s happening?").waitFor();
   await pause(900);
-  await pg.evaluate((key) => {
-    const ws = { version: 2, incidents: [], activeIncidentId: null, customPlaybooks: [], settings: { orgName: 'Example Co. Security Operations', preparedBy: '', defaultTlp: 'TLP:AMBER' }, license: key };
-    localStorage.setItem('triage-desk-workspace-v2', JSON.stringify(ws));
-  }, LICENSE);
-  await pg.reload();
-  await pg.getByText('Start an incident').click();
-  await pause(700);
+  await pg.getByLabel("Describe what's happening").pressSequentially('user entered password on a phishing page', { delay: 45 });
+  await pause(900);
+  await pg.getByRole('list', { name: 'Suggested playbooks' }).getByRole('button').first().click();
+  await pause(1000);
   await pg.getByRole('dialog').getByPlaceholder(/INC-2026-0142/).pressSequentially('INC-2026-0148 · Payroll phishing', { delay: 35 });
-  await pause(300);
-  await pg.getByRole('button', { name: /^Phishing/ }).click();
-  await pause(600);
+  await pause(500);
   await pg.getByRole('button', { name: 'Create incident' }).click();
   await pause(700);
-  await pg.getByRole('radio', { name: 'High' }).click();
-  await pause(400);
   await pg.getByRole('button', { name: 'Declare Incident' }).click();
   await pause(1200);
-  for (const t of ['Collect the original message', 'Extract sender, reply-to', 'Detonate URLs']) {
-    await pg.getByText(t).click();
-    await pause(550);
-  }
+  const boxes = pg.locator('main').getByRole('checkbox');
+  for (let i = 0; i < 3; i++) { await boxes.nth(i).click(); await pause(550); }
   await pg.getByRole('button', { name: 'Open IOC extractor' }).click();
   await pause(400);
   await pg.getByText('Try sample').click();
   await pause(700);
   await pg.getByRole('button', { name: 'Extract IOCs' }).click();
-  await pause(1400);
+  await pause(1200);
   await pg.getByRole('button', { name: 'Append to Notes' }).click();
   await pause(500);
+  const search = pg.locator('main').getByRole('button', { name: /^Copy search:/ }).first();
+  await search.scrollIntoViewIfNeeded();
+  await pause(700);
+  await search.click();
+  await pause(1000);
   await pg.locator('#quick-note').pressSequentially('3 users clicked; 1 submitted credentials', { delay: 30 });
   await pg.keyboard.press('Enter');
   await pause(800);
-  await pg.getByRole('button', { name: /^IOCs/ }).click();
-  await pause(1500);
+  await pg.getByRole('button', { name: /^Splunk/ }).click();
+  await pause(1800);
   await pg.getByRole('button', { name: /^Timeline/ }).last().click();
-  await pause(600);
-  await pg.keyboard.press('3');
-  await pause(500);
-  await pg.getByText('Purge the message from all mailboxes').click();
-  await pause(450);
-  await pg.getByText('Reset passwords and revoke sessions').click();
+  await pause(800);
+  await pg.keyboard.press('Control+k');
+  await pause(300);
+  await pg.getByRole('textbox', { name: 'Command' }).pressSequentially('export', { delay: 60 });
   await pause(900);
-  await pg.getByRole('button', { name: /Export Report/ }).click();
-  await pause(1300);
   await pg.keyboard.press('Escape');
   await pause(500);
   const video = pg.video();

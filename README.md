@@ -33,8 +33,9 @@ Backup/restore is deliberately free: customers' incident data is never held host
 ## Features
 
 - **Multi-incident workspace.** Run several incidents side by side and switch between them from the sidebar.
-- **Playbook library.** Five built-in playbooks. Duplicate any of them to tailor it, or write your own, one task per line. Each incident snapshots its playbook when it's created, so editing a playbook never disturbs an incident in flight.
+- **Playbook library.** 525 scenario playbooks across 23 categories, each with ATT&CK ids and Splunk searches, plus a plain-language finder and a Ctrl/⌘+K command palette. Duplicate any of them to tailor it, or write your own, one task per line. Each incident snapshots its playbook when it's created, so editing a playbook never disturbs an incident in flight.
 - **Lifecycle gating.** Preparation and Lessons Learned lock while an incident is active, and response phases lock after it's resolved (PICERL / NIST SP 800-61).
+- **Splunk.** Per-phase SPL with fill-in values, IOC hunting searches, alert/notable import, IOC lookup and HEC exports. The Connected edition runs searches and sends the timeline to HEC.
 - **Timeline.** Every check, phase change, severity change, quick note, and IOC extraction is timestamped while the incident clock runs.
 - **IOC extractor.** Paste logs or phishing emails to pull IPs, domains, URLs, MD5/SHA1/SHA256 hashes, emails, and CVEs. Results feed a per-incident IOC index that shows which phase each indicator surfaced in.
 - **Reports.** Text, Markdown, or a standalone HTML report you can print to PDF. All three carry TLP marking, severity, timings, checklist state, notes, IOC index, and timeline.

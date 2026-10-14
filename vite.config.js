@@ -96,6 +96,8 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir,
       emptyOutDir: true,
+      // The playbook library is bundled on purpose (offline, single file).
+      chunkSizeWarningLimit: 4096,
       ...(singleFile ? { assetsInlineLimit: Number.MAX_SAFE_INTEGER } : {}),
     },
     test: {

@@ -2,7 +2,15 @@
 // one category, bundled at build time. Content rules live in
 // validateLibrary.js (enforced by tests/library.test.js).
 
-const files = import.meta.glob('./library/*.json', { eager: true, import: 'default' });
+// import.meta.glob is resolved by Vite (app and tests). Plain Node scripts
+// that only need the built-ins (demo workspace, marketing assets) get an
+// empty library instead of a crash.
+let files = {};
+try {
+  files = import.meta.glob('./library/*.json', { eager: true, import: 'default' });
+} catch {
+  files = {};
+}
 
 export const LIBRARY_CATEGORIES = [];
 export const LIBRARY_PLAYBOOKS = [];

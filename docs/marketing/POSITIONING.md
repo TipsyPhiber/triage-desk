@@ -4,7 +4,7 @@ Use this as the source of truth for every page, post, and email. When copy drift
 
 ## One-liner
 
-**The offline incident response workspace.** Playbooks, an automatic timeline, IOC extraction, and TLP-marked reports, in one HTML file that never touches the network.
+**Incident response on rails.** 525 hand-written scenario playbooks with Splunk searches built in, an automatic timeline, IOC extraction, and TLP-marked reports, in one HTML file that never touches the network. (The Connected edition talks only to the customer's own Splunk.)
 
 Short tagline: **Run the incident. Not the spreadsheet.**
 
@@ -30,17 +30,19 @@ Not a fit: teams already running a SOAR or hosted IR platform with integrations 
 
 1. **Your incident data never leaves the machine.** No account, no telemetry, no server, enforced by a strict Content-Security-Policy anyone can verify in DevTools. Works air-gapped.
 2. **The timeline writes itself.** Every task, phase change, severity change, and note is stamped T+ from declaration. This answers "when did we know?" exactly.
-3. **A playbook for every phase.** NIST SP 800-61 lifecycle with scenario playbooks (ransomware, phishing, BEC, cloud credentials) and your own.
-4. **IOC extraction built in.** Paste logs or emails and get deduplicated, refanged indicators with a one-click blocklist.
-5. **A report leadership can read.** TLP-marked, branded, printable to PDF, ready at resolution.
-6. **Zero rollout.** One file. No install, no admin rights, no procurement-heavy SaaS review.
+3. **A playbook for every scenario.** 525 hand-written playbooks across 23 categories (ransomware to Kubernetes to OT), each mapped to ATT&CK, with Splunk searches per phase. Describe what's happening in plain words and get the closest plan.
+4. **Works with Splunk.** Paste an alert to start an incident; copy ready-made SPL; export lookups and HEC timelines. Connected runs searches and sends the timeline back.
+5. **IOC extraction built in.** Paste logs or emails and get deduplicated, refanged indicators with a one-click blocklist.
+6. **A report leadership can read.** TLP-marked, branded, printable to PDF, ready at resolution.
+7. **Zero rollout.** One file. No install, no admin rights, no procurement-heavy SaaS review.
 
 ## Proof points (all true today; keep it that way)
 
-- Single HTML file, ~600 KB, runs from disk in Chrome, Edge, Firefox, and Safari.
+- Single HTML file, about 2 MB including the whole playbook library, runs from disk in Chrome, Edge, Firefox, and Safari.
 - CSP: `default-src 'none'`, `connect-src data:`. No network requests (covered by automated browser tests).
 - Tested on every release on Windows and Linux in Chromium, Firefox, WebKit, and Edge.
 - Ed25519-signed offline license keys, with no license server.
+- 525 playbooks, 10,000+ tasks, 1,250+ Splunk searches; a quality gate in CI rejects filler and near-duplicates.
 - Rust/WebAssembly IOC extractor: IPv4, domains, URLs, MD5/SHA1/SHA256, emails, CVEs, defanged input.
 - FIRST TLP 2.0 markings on every report.
 - Free backup/restore of the whole workspace as JSON. No lock-in.
