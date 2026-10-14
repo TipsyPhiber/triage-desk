@@ -1,5 +1,7 @@
 # Selling Triage Desk: launch runbook
 
+> Marketing kit: [`marketing/POSITIONING.md`](marketing/POSITIONING.md) (who it's for, what to claim), [`marketing/LAUNCH-PLAN.md`](marketing/LAUNCH-PLAN.md) (six-week plan), and [`marketing/COPY.md`](marketing/COPY.md) (launch posts, store listing, emails).
+
 This is the seller-side guide: everything between "the code works" and "money arrives."
 
 ## 0. Before anything else
