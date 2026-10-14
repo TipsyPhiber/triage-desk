@@ -8,7 +8,7 @@ const LICENSE = readFileSync(join(ROOT, 'e2e/.tmp/license.txt'), 'utf8').trim();
 const CONNECTED_LICENSE = readFileSync(join(ROOT, 'e2e/.tmp/license-connected.txt'), 'utf8').trim();
 const PORT = 4180;
 const CONNECTED_PORT = 4181;
-const SPLUNK = 'http://localhost:4190';
+const SPLUNK = 'http://localhost:4210';
 
 const TARGETS = [
   { name: 'single file', url: pathToFileURL(join(ROOT, 'dist-e2e-single/triage-desk.html')).href },
@@ -215,7 +215,8 @@ test.describe('connected edition', () => {
     await page.getByPlaceholder('https://splunk.example.com:8088').fill(SPLUNK);
     await page.getByPlaceholder('00000000-0000-…').fill('hec-token');
     await page.getByRole('button', { name: 'Test connection' }).click();
-    await expect(page.getByText(/Connected to mock-splunk/)).toBeVisible();
+    // Assert on the status line so a failure prints the app's actual error.
+    await expect(page.getByRole('dialog').getByRole('status')).toContainText('Connected to mock-splunk');
     await page.keyboard.press('Escape');
 
     // Pull a notable into a new incident.

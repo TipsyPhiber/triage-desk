@@ -5,7 +5,7 @@
 
 import { createServer } from 'node:http';
 
-const port = Number(process.argv[2] || 4190);
+const port = Number(process.argv[2] || 4210);
 const TOKEN = 'test-token';
 const HEC_TOKEN = 'hec-token';
 let received = [];

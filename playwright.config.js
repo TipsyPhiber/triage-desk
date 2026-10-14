@@ -9,7 +9,9 @@ import { defineConfig, devices } from '@playwright/test';
 
 const PORT = 4180;
 const CONNECTED_PORT = 4181;
-const SPLUNK_PORT = 4190;
+// Not 4190: that port (ManageSieve) is on the Fetch spec's blocked-port list,
+// which Firefox and WebKit enforce.
+const SPLUNK_PORT = 4210;
 
 const projects = [
   { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
