@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { askConfirm } from './ConfirmDialog.jsx';
 import { TLP_LEVELS } from '../data.js';
 import { PURCHASE_URL, SUPPORT_EMAIL } from '../config.js';
 import { BUILD_DATE, checkLicense } from '../license/entitlements.js';
@@ -121,7 +122,7 @@ function LicensePanel({ token, status, onLicense }) {
         <div className="flex gap-2 mt-2">
           <button className={btn.primary} onClick={activate} disabled={!input.trim()}>Activate</button>
           {token && (
-            <button className={btn.secondary} onClick={() => { if (confirm('Remove the license key from this browser?')) onLicense(null); }}>
+            <button className={btn.secondary} onClick={async () => { if (await askConfirm({ title: 'Remove the license key?', body: 'Pro features will be locked in this browser until you activate a key again.', confirmLabel: 'Remove key', danger: true })) onLicense(null); }}>
               Remove key
             </button>
           )}
@@ -151,7 +152,12 @@ function DataPanel({ workspace, onRestore }) {
     if (!file) return;
     try {
       const ws = parseBackup(await file.text());
-      if (!confirm(`Restore ${ws.incidents.length} incident(s) and ${ws.customPlaybooks.length} custom playbook(s)? This replaces everything currently in this browser.`)) return;
+      if (!(await askConfirm({
+        title: `Restore ${ws.incidents.length} incident(s) and ${ws.customPlaybooks.length} custom playbook(s)?`,
+        body: 'This replaces everything currently stored in this browser.',
+        confirmLabel: 'Restore backup',
+        danger: true,
+      }))) return;
       onRestore(ws);
       setMsg({ ok: true, text: 'Backup restored.' });
     } catch (err) {

@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { askConfirm } from './ConfirmDialog.jsx';
 import { PHASES } from '../data.js';
 import { duplicatePlaybook, parsePlaybookFile, sanitizePlaybook, serializePlaybook } from '../state/playbooks.js';
 import { downloadFile, reportFilename } from '../lib/exportReport.js';
@@ -25,8 +26,8 @@ export function PlaybooksModal({ playbooks, ent, onSave, onDelete, onClose, onUp
   const selected = playbooks.find((p) => p.id === selectedId) ?? playbooks[0];
   const editable = ent.customPlaybooks;
 
-  function select(id) {
-    if (draft && !confirm('Discard unsaved playbook changes?')) return;
+  async function select(id) {
+    if (draft && !(await askConfirm({ title: 'Discard unsaved changes?', body: 'Your edits to this playbook have not been saved.', confirmLabel: 'Discard', danger: true }))) return;
     setDraft(null);
     setError(null);
     setSelectedId(id);
@@ -48,8 +49,8 @@ export function PlaybooksModal({ playbooks, ent, onSave, onDelete, onClose, onUp
     setError(null);
   }
 
-  function remove() {
-    if (!confirm(`Delete playbook "${selected.name}"? Existing incidents that used it keep their own copy of its tasks.`)) return;
+  async function remove() {
+    if (!(await askConfirm({ title: `Delete “${selected.name}”?`, body: 'Incidents that already use this playbook keep their own copy of its tasks.', confirmLabel: 'Delete playbook', danger: true }))) return;
     onDelete(selected.id);
     setDraft(null);
     setSelectedId(playbooks[0]?.id);

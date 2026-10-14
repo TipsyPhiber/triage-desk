@@ -104,7 +104,7 @@ The "perpetual license plus a year of updates" model suits offline security tool
 
 ## 7. Landing page
 
-`site/index.html` is a standalone marketing page with no build step. Before deploying, replace the `#buy-pro` and `#buy-team` links with your checkout URLs and copy `triage-desk.html` from the release into `site/` (the Download buttons point at it). Then deploy the `site/` folder to GitHub Pages, Netlify, or Cloudflare Pages. Consider offering a free download of `triage-desk.html` directly from it: the free tier is the best demo you have.
+`site/index.html` is a standalone marketing page with no build step. Before deploying, replace the `#buy-pro` and `#buy-team` links with your checkout URLs and copy `triage-desk.html` from the release into `site/` (the Download buttons point at it). Optionally run `npm run build:demo` and copy `dist-demo/triage-desk-demo.html` into `site/` as a "Try the live demo" page. Then deploy the `site/` folder to GitHub Pages, Netlify, or Cloudflare Pages. Consider offering a free download of `triage-desk.html` directly from it: the free tier is the best demo you have.
 
 ## 8. Honest limits to know about
 

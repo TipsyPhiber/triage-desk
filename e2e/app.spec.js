@@ -98,6 +98,21 @@ for (const target of TARGETS) {
       expect(problems).toEqual([]);
     });
 
+    test('in-app confirmation: cancel keeps the incident open, confirm resolves it', async ({ page }) => {
+      const problems = watch(page, target.url);
+      await page.goto(target.url);
+      await page.getByText('Quick start (General playbook)').click();
+      await page.getByRole('button', { name: 'Declare Incident' }).click();
+      await page.getByRole('button', { name: 'Mark Resolved' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: 'Cancel' }).click();
+      await expect(page.getByRole('button', { name: 'Mark Resolved' })).toBeVisible();
+      await page.getByRole('button', { name: 'Mark Resolved' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: 'Mark resolved' }).click();
+      await expect(page.getByRole('heading', { name: 'Lessons Learned' })).toBeVisible();
+      await expect(page.getByText('Time to resolve')).toBeVisible();
+      expect(problems).toEqual([]);
+    });
+
     test('hostile input never executes', async ({ page }) => {
       const problems = watch(page, target.url);
       await page.goto(target.url);

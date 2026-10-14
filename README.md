@@ -60,6 +60,7 @@ npm test
 | `npm run license:keygen` | Create your license signing keypair (one time) |
 | `npm run license:issue -- --name … --email …` | Mint a license key |
 | `npm run license:verify -- TD1.…` | Check a license key |
+| `npm run build:demo` | Live demo (`dist-demo/triage-desk-demo.html`): Pro unlocked with a throwaway key and example incidents pre-loaded. For your website only, never for customers |
 | `npm run marketing:assets` | Regenerate the landing page screenshots and demo video in `site/assets/` from the real app |
 | `npm run release` | Test, build both variants, and package `release/triage-desk-v<version>.zip` |
 

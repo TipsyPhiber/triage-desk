@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { askConfirm, ConfirmHost } from './components/ConfirmDialog.jsx';
 import { CheckCircle2, TriangleAlert } from 'lucide-react';
 import { PHASES, SEVERITIES } from './data.js';
 import { GENERAL_PLAYBOOK_ID } from './playbooks/builtins.js';
@@ -136,10 +137,15 @@ export default function App() {
     createIncident({ playbook: findPlaybook(GENERAL_PLAYBOOK_ID, []), name: '', severity: 'Medium' });
   }
 
-  function deleteIncident(id) {
+  async function deleteIncident(id) {
     const inc = ws.incidents.find((i) => i.id === id);
     if (!inc) return;
-    if (!confirm(`Delete "${inc.name || 'Untitled incident'}" permanently? Export a report or backup first if you need a record.`)) return;
+    if (!(await askConfirm({
+      title: `Delete “${inc.name || 'Untitled incident'}”?`,
+      body: 'This permanently removes the incident, its notes, and its timeline. Export a report or backup first if you need a record.',
+      confirmLabel: 'Delete incident',
+      danger: true,
+    }))) return;
     setWs((w) => {
       const incidents = w.incidents.filter((i) => i.id !== id);
       const activeIncidentId = w.activeIncidentId === id ? (incidents[incidents.length - 1]?.id ?? null) : w.activeIncidentId;
@@ -192,6 +198,7 @@ export default function App() {
         />
       )}
       {modal?.kind === 'shortcuts' && <ShortcutsModal onClose={() => setModal(null)} />}
+      <ConfirmHost />
       {toast && (
         <div key={toast.id} role="status" className="anim-in fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-2.5 pl-3 pr-4 py-2.5 rounded-xl bg-raised border border-line-2 text-[13px] text-ink shadow-[0_20px_40px_-12px_rgba(0,0,0,.7)]">
           {toast.tone === 'warn' ? <TriangleAlert size={15} className="text-signal" /> : <CheckCircle2 size={15} className="text-ok" />}
@@ -261,13 +268,22 @@ export default function App() {
             updateIncident((i) => I.declareIncident(i, t));
             notify('Incident declared — clock started, moved to Identification', 'warn');
           }}
-          onResolve={() => {
-            if (!confirm('Mark this incident resolved? The timer will stop and the incident will move into Lessons Learned.')) return;
+          onResolve={async () => {
+            if (!(await askConfirm({
+              title: 'Mark this incident resolved?',
+              body: 'The clock stops and the incident moves into Lessons Learned. Response phases stay editable for corrections.',
+              confirmLabel: 'Mark resolved',
+            }))) return;
             updateIncident((i) => I.resolveIncident(i));
             notify('Incident resolved — moved to Lessons Learned', 'ok');
           }}
-          onReset={() => {
-            if (!confirm('Reset this incident? This clears the timer, checklist, notes, IOC index, and timeline. The name and playbook are kept.')) return;
+          onReset={async () => {
+            if (!(await askConfirm({
+              title: 'Reset this incident?',
+              body: 'This clears the clock, checklist, notes, IOC index, and timeline. The name and playbook are kept.',
+              confirmLabel: 'Reset incident',
+              danger: true,
+            }))) return;
             updateIncident((i) => I.resetIncident(i));
           }}
           onDelete={() => deleteIncident(incident.id)}
