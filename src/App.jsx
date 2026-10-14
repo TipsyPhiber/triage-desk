@@ -1,296 +1,337 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { askConfirm, ConfirmHost } from './components/ConfirmDialog.jsx';
+import { CheckCircle2, TriangleAlert } from 'lucide-react';
 import { PHASES, SEVERITIES } from './data.js';
+import { GENERAL_PLAYBOOK_ID } from './playbooks/builtins.js';
 import {
-  buildInitialChecks,
-  buildInitialNotes,
-  buildInitialIocIndex,
-  hydrate,
-  loadPersisted,
-  savePersisted,
-  clearPersisted,
-  STORAGE_KEY,
-} from './state/persistence.js';
-import { nextEventId, primeEventId } from './state/eventId.js';
-import { mergeIocs } from './state/iocIndex.js';
-import { buildReport, downloadReport } from './lib/exportReport.js';
-import { incidentLifecycle, phaseActivity, phaseAdvisory, phaseLocked } from './lib/phaseActivity.js';
+  STORAGE_KEY, hydrateWorkspace, loadWorkspace, saveWorkspace,
+} from './state/workspace.js';
+import * as I from './state/incident.js';
+import { allPlaybooks, findPlaybook } from './state/playbooks.js';
+import { buildReport, downloadFile, reportFilename, REPORT_FORMATS } from './lib/exportReport.js';
+import { phaseActivity, phaseAdvisory, phaseLocked } from './lib/phaseActivity.js';
+import { checkLicense, entitlementsFor } from './license/entitlements.js';
 import { Sidebar } from './components/Sidebar.jsx';
 import { TopBar } from './components/TopBar.jsx';
+import { PhaseStepper } from './components/PhaseStepper.jsx';
 import { PhaseView } from './components/PhaseView.jsx';
-import { TimelineDrawer } from './components/TimelineDrawer.jsx';
+import { IntelPanel } from './components/IntelPanel.jsx';
+import { NewIncidentModal } from './components/NewIncidentModal.jsx';
+import { PlaybooksModal } from './components/PlaybooksModal.jsx';
+import { SettingsModal } from './components/SettingsModal.jsx';
+import { ShortcutsModal } from './components/ShortcutsModal.jsx';
+import { Welcome } from './components/Welcome.jsx';
 
-const HYDRATED = hydrate(loadPersisted());
-primeEventId(HYDRATED.events);
+function isTyping(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+}
 
 export default function App() {
-  const [activePhase, setActivePhase] = useState(HYDRATED.activePhase);
-  const [severity, setSeverity] = useState(HYDRATED.severity);
-  const [incidentName, setIncidentName] = useState(HYDRATED.incidentName);
-  const [startTime, setStartTime] = useState(HYDRATED.startTime);
-  const [endTime, setEndTime] = useState(HYDRATED.endTime);
+  const [ws, setWs] = useState(loadWorkspace);
+  const [saveOk, setSaveOk] = useState(true);
   const [now, setNow] = useState(Date.now());
-  const [checks, setChecks] = useState(HYDRATED.checks);
-  const [notes, setNotes] = useState(HYDRATED.notes);
-  const [events, setEvents] = useState(HYDRATED.events);
-  const [iocIndex, setIocIndex] = useState(HYDRATED.iocIndex);
-  const [timelineOpen, setTimelineOpen] = useState(false);
-  const [toast, setToast] = useState(null);
+  const [intelOpen, setIntelOpen] = useState(() => typeof window === 'undefined' || window.innerWidth >= 1536);
+  const [intelTab, setIntelTab] = useState('timeline');
+  const [modal, setModal] = useState(null); // { kind: 'new' | 'playbooks' | 'settings' | 'shortcuts', tab? }
+  const [toast, setToast] = useState(null); // { text, tone }
 
-  useEffect(() => {
-    if (!toast) return;
-    const id = setTimeout(() => setToast(null), 1800);
-    return () => clearTimeout(id);
-  }, [toast]);
+  const licenseStatus = useMemo(() => checkLicense(ws.license), [ws.license]);
+  const ent = entitlementsFor(licenseStatus);
+  const playbooks = useMemo(() => allPlaybooks(ws.customPlaybooks), [ws.customPlaybooks]);
+  const incident = ws.incidents.find((i) => i.id === ws.activeIncidentId) ?? null;
+  const atLimit = ws.incidents.length >= ent.incidentLimit;
+  const notify = useCallback((text, tone = 'info') => setToast({ text, tone, id: Date.now() }), []);
 
-  useEffect(() => {
-    savePersisted({
-      activePhase, severity, incidentName, startTime, endTime,
-      checks, notes, events, iocIndex,
-    });
-  }, [activePhase, severity, incidentName, startTime, endTime, checks, notes, events, iocIndex]);
+  useEffect(() => { setSaveOk(saveWorkspace(ws)); }, [ws]);
 
-  // Cross-tab sync: when another tab writes the incident, rehydrate this one.
-  // The `storage` event only fires in tabs other than the writer, so this
-  // doesn't loop back through our own save effect.
+  // Cross-tab sync: the `storage` event only fires in tabs other than the
+  // writer, so rehydrating here doesn't loop back through our own save.
   useEffect(() => {
     function onStorage(e) {
       if (e.key !== STORAGE_KEY || e.newValue == null) return;
-      let parsed;
-      try { parsed = JSON.parse(e.newValue); } catch { return; }
-      const h = hydrate(parsed);
-      primeEventId(h.events);
-      setActivePhase(h.activePhase);
-      setSeverity(h.severity);
-      setIncidentName(h.incidentName);
-      setStartTime(h.startTime);
-      setEndTime(h.endTime);
-      setChecks(h.checks);
-      setNotes(h.notes);
-      setEvents(h.events);
-      setIocIndex(h.iocIndex);
+      try { setWs(hydrateWorkspace(JSON.parse(e.newValue))); } catch {}
     }
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, []);
 
-  const running = startTime !== null && endTime === null;
-  const runningRef = useRef(running);
-  useEffect(() => { runningRef.current = running; }, [running]);
-
-  function logEvent(type, message) {
-    setEvents((prev) => [
-      ...prev,
-      { id: nextEventId(), ts: Date.now(), type, message },
-    ]);
-  }
-
   useEffect(() => {
-    if (!running) return;
+    if (!toast) return;
+    const id = setTimeout(() => setToast(null), 2400);
+    return () => clearTimeout(id);
+  }, [toast]);
+
+  // Tick while any incident is running: the rail shows live durations too.
+  const anyRunning = ws.incidents.some(I.isRunning);
+  useEffect(() => {
+    if (!anyRunning) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [running]);
+  }, [anyRunning]);
 
-  const elapsed = startTime ? (endTime ?? now) - startTime : 0;
-  const sev = SEVERITIES[severity];
-  const phase = PHASES.find((p) => p.id === activePhase);
-  const lifecycle = incidentLifecycle(startTime, endTime);
-  const phaseStatus = phaseActivity(phase.stage, lifecycle);
-  const advisory = phaseAdvisory(phase.stage, lifecycle);
+  const updateIncident = useCallback((fn) => {
+    setWs((w) => {
+      let changed = false;
+      const incidents = w.incidents.map((i) => {
+        if (i.id !== w.activeIncidentId) return i;
+        const next = fn(i);
+        if (next !== i) changed = true;
+        return next;
+      });
+      return changed ? { ...w, incidents } : w;
+    });
+  }, []);
 
-  // If a lifecycle change leaves us on a now-locked phase (e.g. persisted
-  // state put us on Preparation but startTime is set), slide to the first
+  // If a lifecycle change leaves us on a now-locked phase, slide to the first
   // in-phase phase rather than rendering a locked view.
+  const lifecycle = incident ? I.lifecycleOf(incident) : 'idle';
+  const activeStage = incident ? PHASES.find((p) => p.id === incident.activePhase)?.stage : null;
   useEffect(() => {
-    if (!phaseLocked(phase.stage, lifecycle)) return;
+    if (!activeStage || !phaseLocked(activeStage, lifecycle)) return;
     const fallback = PHASES.find((p) => phaseActivity(p.stage, lifecycle) === 'in-phase');
-    if (fallback) setActivePhase(fallback.id);
-  }, [phase.stage, lifecycle]);
+    if (fallback) updateIncident((i) => ({ ...i, activePhase: fallback.id }));
+  }, [activeStage, lifecycle, updateIncident]);
 
-  const totals = useMemo(() => {
-    let done = 0;
-    let total = 0;
-    for (const p of PHASES) {
-      const arr = checks[p.id] || [];
-      total += arr.length;
-      done += arr.filter(Boolean).length;
+  const openUpgrade = useCallback(() => setModal({ kind: 'settings', tab: 'license' }), []);
+
+  const requestNewIncident = useCallback(() => {
+    if (atLimit) {
+      notify('Free edition holds one incident at a time — upgrade to Pro for unlimited.', 'warn');
+      openUpgrade();
+      return;
     }
-    return { done, total };
-  }, [checks]);
+    setModal({ kind: 'new' });
+  }, [atLimit, notify, openUpgrade]);
 
-  function declareIncident() {
-    const t = Date.now();
-    setStartTime(t);
-    setEndTime(null);
-    setNow(t);
-    // Declaration is, by definition, entry into Identification (PICERL /
-    // NIST SP 800-61). Jump there regardless of where the operator was.
-    const entry = PHASES.find((p) => p.stage === 'response');
-    if (entry) {
-      setActivePhase(entry.id);
-      if (entry.id !== activePhase) setToast(`→ ${entry.name}`);
-    }
-    setEvents([{
-      id: nextEventId(),
-      ts: t,
-      type: 'declare',
-      message: `Incident declared — severity ${severity}`,
-    }]);
-  }
-
-  function resolveIncident() {
-    if (!startTime || endTime) return;
-    if (!confirm('Mark this incident resolved? The timer will stop and the incident will move into Lessons Learned.')) return;
-    setEndTime(Date.now());
-    logEvent('resolve', 'Incident marked resolved');
-  }
-
-  function resetIncident() {
-    if (!confirm('Reset the entire incident? This clears the timer, checklist, notes, IOC index, timeline, and saved state.')) return;
-    setStartTime(null);
-    setEndTime(null);
-    setChecks(buildInitialChecks());
-    setNotes(buildInitialNotes());
-    setEvents([]);
-    setIocIndex(buildInitialIocIndex());
-    setIncidentName('');
-    setActivePhase(PHASES[0].id);
-    clearPersisted();
-  }
-
-  function changeSeverity(s) {
-    if (s === severity) return;
-    if (runningRef.current) logEvent('severity', `Severity changed: ${severity} → ${s}`);
-    setSeverity(s);
-  }
-
-  function changePhase(id) {
-    if (id === activePhase) return;
-    const target = PHASES.find((p) => p.id === id);
-    if (!target) return;
-    if (phaseLocked(target.stage, lifecycle)) return;
-    if (runningRef.current) logEvent('phase', `Switched to phase: ${target.name}`);
-    setActivePhase(id);
-  }
-
-  function toggleCheck(phaseId, idx) {
-    setChecks((prev) => {
-      const next = { ...prev, [phaseId]: [...prev[phaseId]] };
-      const newVal = !next[phaseId][idx];
-      next[phaseId][idx] = newVal;
-      if (runningRef.current) {
-        const p = PHASES.find((x) => x.id === phaseId);
-        const taskText = p?.tasks[idx] ?? '';
-        logEvent(
-          newVal ? 'check' : 'uncheck',
-          `${newVal ? 'Checked' : 'Unchecked'} [${p?.short ?? ''}]: ${taskText}`,
-        );
+  // Global keyboard shortcuts (ignored while typing or with a dialog open).
+  useEffect(() => {
+    function onKey(e) {
+      if (e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target)) return;
+      if (modal) return;
+      if (e.key === '?') { e.preventDefault(); setModal({ kind: 'shortcuts' }); return; }
+      if (e.key === 'c' || e.key === 'C') { e.preventDefault(); requestNewIncident(); return; }
+      if (!incident) return;
+      if (e.key === 't' || e.key === 'T') { e.preventDefault(); setIntelOpen((v) => !v); return; }
+      if (e.key === 'n' || e.key === 'N') {
+        const el = document.getElementById('quick-note');
+        if (el) { e.preventDefault(); el.focus(); }
+        return;
       }
-      return next;
+      if (e.key === 'Escape') { setIntelOpen((v) => (window.innerWidth < 1280 ? false : v)); return; }
+      const n = Number(e.key);
+      if (n >= 1 && n <= PHASES.length) updateIncident((i) => I.setActivePhase(i, PHASES[n - 1].id));
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [modal, incident, requestNewIncident, updateIncident]);
+
+  function createIncident({ playbook, name, severity }) {
+    const inc = I.createIncident({ playbook, name, severity, tlp: ws.settings.defaultTlp });
+    setWs((w) => ({ ...w, incidents: [...w.incidents, inc], activeIncidentId: inc.id }));
+    setModal(null);
+  }
+
+  function quickStart() {
+    createIncident({ playbook: findPlaybook(GENERAL_PLAYBOOK_ID, []), name: '', severity: 'Medium' });
+  }
+
+  async function deleteIncident(id) {
+    const inc = ws.incidents.find((i) => i.id === id);
+    if (!inc) return;
+    if (!(await askConfirm({
+      title: `Delete “${inc.name || 'Untitled incident'}”?`,
+      body: 'This permanently removes the incident, its notes, and its timeline. Export a report or backup first if you need a record.',
+      confirmLabel: 'Delete incident',
+      danger: true,
+    }))) return;
+    setWs((w) => {
+      const incidents = w.incidents.filter((i) => i.id !== id);
+      const activeIncidentId = w.activeIncidentId === id ? (incidents[incidents.length - 1]?.id ?? null) : w.activeIncidentId;
+      return { ...w, incidents, activeIncidentId };
     });
   }
 
-  function setNote(phaseId, value) {
-    setNotes((prev) => ({ ...prev, [phaseId]: value }));
+  function exportReport(format) {
+    const f = REPORT_FORMATS[format];
+    if (f.pro && !ent.richReports) { openUpgrade(); return; }
+    const text = buildReport(format, incident, ws.settings);
+    downloadFile(text, reportFilename(incident.name, f.ext), f.mime);
+    notify(`Exported ${f.label.split(' (')[0].toLowerCase()} report`, 'ok');
   }
 
-  function appendToNote(phaseId, text) {
-    setNotes((prev) => {
-      const existing = prev[phaseId] || '';
-      const sep = existing && !existing.endsWith('\n') ? '\n' : '';
-      return { ...prev, [phaseId]: existing + sep + text };
+  function savePlaybook(pb) {
+    setWs((w) => {
+      const exists = w.customPlaybooks.some((p) => p.id === pb.id);
+      const customPlaybooks = exists
+        ? w.customPlaybooks.map((p) => (p.id === pb.id ? pb : p))
+        : [...w.customPlaybooks, pb];
+      return { ...w, customPlaybooks };
     });
   }
 
-  function addQuickNote(phaseId, text) {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    appendToNote(phaseId, `[${stamp}] ${trimmed}`);
-    if (runningRef.current) logEvent('note', trimmed);
+  const modals = (
+    <>
+      {modal?.kind === 'new' && (
+        <NewIncidentModal playbooks={playbooks} ent={ent} onCreate={createIncident} onClose={() => setModal(null)} onUpgrade={openUpgrade} />
+      )}
+      {modal?.kind === 'playbooks' && (
+        <PlaybooksModal
+          playbooks={playbooks}
+          ent={ent}
+          onSave={savePlaybook}
+          onDelete={(id) => setWs((w) => ({ ...w, customPlaybooks: w.customPlaybooks.filter((p) => p.id !== id) }))}
+          onClose={() => setModal(null)}
+          onUpgrade={openUpgrade}
+        />
+      )}
+      {modal?.kind === 'settings' && (
+        <SettingsModal
+          initialTab={modal.tab}
+          workspace={ws}
+          licenseStatus={licenseStatus}
+          onSettings={(settings) => setWs((w) => ({ ...w, settings }))}
+          onLicense={(license) => setWs((w) => ({ ...w, license }))}
+          onRestore={(restored) => setWs(restored)}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {modal?.kind === 'shortcuts' && <ShortcutsModal onClose={() => setModal(null)} />}
+      <ConfirmHost />
+      {toast && (
+        <div key={toast.id} role="status" className="anim-in fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-2.5 pl-3 pr-4 py-2.5 rounded-xl bg-raised border border-line-2 text-[13px] text-ink shadow-[0_20px_40px_-12px_rgba(0,0,0,.7)]">
+          {toast.tone === 'warn' ? <TriangleAlert size={15} className="text-signal" /> : <CheckCircle2 size={15} className="text-ok" />}
+          {toast.text}
+        </div>
+      )}
+    </>
+  );
+
+  if (!incident) {
+    return (
+      <>
+        <Welcome
+          ent={ent}
+          onQuickStart={quickStart}
+          onNew={requestNewIncident}
+          onOpenSettings={() => setModal({ kind: 'settings', tab: 'data' })}
+        />
+        {modals}
+      </>
+    );
   }
 
-  function recordIocs(phaseId, results) {
-    setIocIndex((prev) => {
-      const merged = mergeIocs(prev[phaseId] || [], results);
-      if (merged === prev[phaseId]) return prev;
-      return { ...prev, [phaseId]: merged };
-    });
-  }
-
-  function exportReport() {
-    const text = buildReport({
-      incidentName, severity, startTime, endTime,
-      totals, checks, notes, events, iocIndex,
-    });
-    downloadReport(text, incidentName);
-  }
+  const phases = I.incidentPhases(incident);
+  const phaseIndex = Math.max(0, phases.findIndex((p) => p.id === incident.activePhase));
+  const phase = phases[phaseIndex];
+  const sev = SEVERITIES[incident.severity];
+  const elapsed = incident.startTime ? (incident.endTime ?? now) - incident.startTime : 0;
 
   return (
-    <div className="min-h-screen flex bg-slate-950 text-slate-200">
+    <div className="h-screen overflow-hidden flex bg-canvas text-ink">
       <Sidebar
-        activePhase={activePhase}
-        onSelect={changePhase}
-        checks={checks}
-        sev={sev}
-        running={running}
-        lifecycle={lifecycle}
+        incidents={ws.incidents}
+        activeId={incident.id}
+        now={now}
+        onSwitch={(id) => setWs((w) => ({ ...w, activeIncidentId: id }))}
+        onNew={requestNewIncident}
+        onDelete={deleteIncident}
+        atLimit={atLimit}
+        ent={ent}
+        license={licenseStatus.license}
+        onOpenPlaybooks={() => setModal({ kind: 'playbooks' })}
+        onOpenSettings={() => setModal({ kind: 'settings' })}
+        onOpenShortcuts={() => setModal({ kind: 'shortcuts' })}
       />
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+        {!saveOk && (
+          <div className="px-6 py-2 bg-rose-500/15 border-b border-rose-500/40 text-sm text-rose-200 flex items-center gap-2">
+            <TriangleAlert size={15} />
+            Browser storage is full or disabled — changes are <strong>not being saved</strong>. Export a backup from Settings → Data now.
+          </div>
+        )}
         <TopBar
-          severity={severity}
-          setSeverity={changeSeverity}
+          incident={incident}
           sev={sev}
-          incidentName={incidentName}
-          setIncidentName={setIncidentName}
-          running={running}
-          startTime={startTime}
-          endTime={endTime}
+          lifecycle={lifecycle}
           elapsed={elapsed}
-          declareIncident={declareIncident}
-          resolveIncident={resolveIncident}
-          resetIncident={resetIncident}
-          exportReport={exportReport}
-          totals={totals}
-          eventCount={events.length}
-          onToggleTimeline={() => setTimelineOpen((v) => !v)}
+          ent={ent}
+          totals={I.incidentTotals(incident)}
+          onRename={(n) => updateIncident((i) => I.renameIncident(i, n))}
+          onSeverity={(s) => updateIncident((i) => I.setSeverity(i, s))}
+          onTlp={(t) => updateIncident((i) => I.setTlp(i, t))}
+          onDeclare={() => {
+            const t = Date.now();
+            setNow(t);
+            updateIncident((i) => I.declareIncident(i, t));
+            notify('Incident declared — clock started, moved to Identification', 'warn');
+          }}
+          onResolve={async () => {
+            if (!(await askConfirm({
+              title: 'Mark this incident resolved?',
+              body: 'The clock stops and the incident moves into Lessons Learned. Response phases stay editable for corrections.',
+              confirmLabel: 'Mark resolved',
+            }))) return;
+            updateIncident((i) => I.resolveIncident(i));
+            notify('Incident resolved — moved to Lessons Learned', 'ok');
+          }}
+          onReset={async () => {
+            if (!(await askConfirm({
+              title: 'Reset this incident?',
+              body: 'This clears the clock, checklist, notes, IOC index, and timeline. The name and playbook are kept.',
+              confirmLabel: 'Reset incident',
+              danger: true,
+            }))) return;
+            updateIncident((i) => I.resetIncident(i));
+          }}
+          onDelete={() => deleteIncident(incident.id)}
+          onExport={exportReport}
+          intelOpen={intelOpen}
+          onToggleIntel={() => setIntelOpen((v) => !v)}
+          eventCount={incident.events.length}
+        />
+        <PhaseStepper
+          phases={phases}
+          incident={incident}
+          lifecycle={lifecycle}
+          sev={sev}
+          onSelect={(id) => updateIncident((i) => I.setActivePhase(i, id))}
         />
 
-        <main className="flex-1 overflow-y-auto p-8">
+        <main className="flex-1 min-h-0 overflow-y-auto">
           <PhaseView
+            key={`${incident.id}:${phase.id}`}
             phase={phase}
-            checks={checks[phase.id]}
-            note={notes[phase.id]}
-            onToggle={(i) => toggleCheck(phase.id, i)}
-            onNoteChange={(v) => setNote(phase.id, v)}
-            onAppendNote={(text) => appendToNote(phase.id, text)}
-            onQuickNote={(text) => addQuickNote(phase.id, text)}
-            onIocsExtracted={(results) => {
-              recordIocs(phase.id, results);
-              if (runningRef.current) {
-                logEvent('ioc', `Extracted ${results.length} IOC${results.length === 1 ? '' : 's'} into ${phase.name} notes`);
-              }
-            }}
+            index={phaseIndex}
+            count={phases.length}
+            checks={incident.checks[phase.id]}
+            checkedAt={incident.checkedAt?.[phase.id]}
+            startTime={incident.startTime}
+            note={incident.notes[phase.id]}
+            onToggle={(idx) => updateIncident((i) => I.toggleCheck(i, phase.id, idx))}
+            onNoteChange={(v) => updateIncident((i) => I.setNote(i, phase.id, v))}
+            onAppendNote={(text) => updateIncident((i) => I.appendNote(i, phase.id, text))}
+            onQuickNote={(text) => updateIncident((i) => I.addQuickNote(i, phase.id, text))}
+            onIocsExtracted={(results) => updateIncident((i) => I.recordIocs(i, phase.id, results))}
             sev={sev}
-            phaseStatus={phaseStatus}
-            advisory={advisory}
-            running={running}
+            phaseStatus={phaseActivity(phase.stage, lifecycle)}
+            advisory={phaseAdvisory(phase.stage, lifecycle)}
+            running={lifecycle === 'active'}
           />
         </main>
       </div>
 
-      <TimelineDrawer
-        open={timelineOpen}
-        onClose={() => setTimelineOpen(false)}
-        events={events}
-        startTime={startTime}
+      <IntelPanel
+        open={intelOpen}
+        onClose={() => setIntelOpen(false)}
+        tab={intelTab}
+        onTab={setIntelTab}
+        incident={incident}
+        onCopied={(t) => notify(t, 'ok')}
       />
-
-      {toast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-100 shadow-lg">
-          {toast}
-        </div>
-      )}
+      {modals}
     </div>
   );
 }

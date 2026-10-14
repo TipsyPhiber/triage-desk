@@ -1,8 +1,11 @@
 import { useState } from 'react';
+import { Check, CornerDownLeft, Info, NotebookPen } from 'lucide-react';
+import { formatClock, formatElapsed } from '../lib/time.js';
 import { IocExtractor } from './IocExtractor.jsx';
+import { Kbd, labelCls } from './Modal.jsx';
 
 export function PhaseView({
-  phase, checks, note,
+  phase, index, count, checks, checkedAt, note, startTime,
   onToggle, onNoteChange, onAppendNote, onQuickNote, onIocsExtracted,
   sev, phaseStatus, advisory, running,
 }) {
@@ -19,56 +22,65 @@ export function PhaseView({
   }
 
   return (
-    <div className="max-w-3xl mx-auto">
-      <div className="mb-6">
-        <div className="flex items-baseline gap-3 mb-2">
-          <h2 className="text-2xl font-semibold text-slate-100">{phase.name}</h2>
-          <span className={`text-sm ${sev.accentText}`}>{done} / {total} complete</span>
+    <div className="max-w-[860px] mx-auto px-8 py-8">
+      <div className="mb-7">
+        <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-ink-3">
+          Phase {index + 1} of {count}
         </div>
-        <p className="text-sm text-slate-400">{phase.description}</p>
-
-        <div className="mt-4 h-1.5 w-full bg-slate-800 rounded overflow-hidden">
-          <div
-            className={`h-full ${sev.accent} transition-all`}
-            style={{ width: `${pct}%` }}
-          />
+        <div className="mt-1.5 flex items-end gap-4">
+          <h2 className="text-[26px] font-semibold tracking-tight text-ink leading-tight">{phase.name}</h2>
+          <span className="mb-1 text-sm tabular" style={{ color: sev.hex }}>{done} of {total} done</span>
+        </div>
+        <p className="mt-1.5 text-[14px] text-ink-2">{phase.description}</p>
+        <div className="mt-4 h-1 w-full bg-line rounded-full overflow-hidden">
+          <div className="h-full rounded-full transition-all duration-300" style={{ width: `${pct}%`, background: pct === 100 ? 'var(--color-ok)' : sev.hex }} />
         </div>
       </div>
 
       {outOfPhase && advisory && (
-        <div className="mb-6 px-4 py-3 rounded-lg border border-slate-700 bg-slate-900/60 text-sm text-slate-300">
-          <div className="text-[11px] uppercase tracking-wider text-slate-500 mb-1">Lifecycle advisory</div>
-          {advisory}
+        <div className="mb-6 flex gap-3 px-4 py-3 rounded-xl border border-line-2 bg-surface text-[13px] text-ink-2">
+          <Info size={16} className="text-ink-3 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-medium text-ink mb-0.5">Lifecycle advisory</div>
+            {advisory}
+          </div>
         </div>
       )}
 
       <section className="mb-8">
-        <h3 className="text-xs uppercase tracking-wider text-slate-500 mb-3">Checklist</h3>
-        <ul className="space-y-1.5">
+        <h3 className={`${labelCls} mb-2.5`}>Checklist</h3>
+        <ul className="rounded-xl border border-line bg-surface divide-y divide-line overflow-hidden">
           {phase.tasks.map((task, i) => {
             const isChecked = !!checks?.[i];
+            const at = checkedAt?.[i];
             return (
               <li key={i}>
-                <label
-                  className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition ${
-                    isChecked
-                      ? `${sev.accentSoft} ${sev.accentBorder}`
-                      : 'border-slate-800 hover:border-slate-700 bg-slate-900/40'
-                  }`}
+                <button
+                  role="checkbox"
+                  aria-checked={isChecked}
+                  onClick={() => onToggle(i)}
+                  className={`group w-full text-left flex items-start gap-3.5 px-4 py-3 transition ${isChecked ? 'bg-surface-2/60' : 'hover:bg-surface-2'}`}
                 >
-                  <input
-                    type="checkbox"
-                    checked={isChecked}
-                    onChange={() => onToggle(i)}
-                    className={`mt-0.5 w-4 h-4 rounded border-slate-600 bg-slate-800 ${sev.accentText} focus:ring-0 focus:ring-offset-0 accent-current`}
-                  />
-                  <span className={`text-sm leading-relaxed ${isChecked ? 'text-slate-400 line-through' : 'text-slate-200'}`}>
+                  <span
+                    className={`mt-[1px] w-[18px] h-[18px] rounded-[5px] border flex items-center justify-center shrink-0 transition ${isChecked ? 'border-transparent' : 'border-line-2 group-hover:border-ink-3'}`}
+                    style={isChecked ? { background: sev.hex } : undefined}
+                  >
+                    {isChecked && <Check size={13} strokeWidth={3} className="text-canvas" />}
+                  </span>
+                  <span className={`flex-1 text-[14px] leading-relaxed ${isChecked ? 'text-ink-3 line-through decoration-ink-4' : 'text-ink'}`}>
                     {task}
                   </span>
-                </label>
+                  {isChecked && at && (
+                    <span className="shrink-0 text-right font-mono text-[11px] leading-tight text-ink-3 tabular mt-0.5">
+                      {startTime && at >= startTime && <span className="block text-ink-2">T+{formatElapsed(at - startTime)}</span>}
+                      <span className="block">{formatClock(at)}</span>
+                    </span>
+                  )}
+                </button>
               </li>
             );
           })}
+          {total === 0 && <li className="px-4 py-6 text-sm text-ink-3 text-center">This playbook has no tasks for this phase.</li>}
         </ul>
       </section>
 
@@ -77,39 +89,45 @@ export function PhaseView({
       )}
 
       <section className="mb-6">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-xs uppercase tracking-wider text-slate-500">Quick note</h3>
-          <span className="text-xs text-slate-500">
-            Timestamped · {running ? 'logs to timeline' : 'appends to notes'}
+        <div className="flex items-center justify-between mb-2.5">
+          <h3 className={labelCls}>Quick note</h3>
+          <span className="text-xs text-ink-3 flex items-center gap-1.5">
+            Timestamped · {running ? 'logged to timeline' : 'added to notes'} · <Kbd>N</Kbd>
           </span>
         </div>
         <div className="flex gap-2">
-          <input
-            type="text"
-            value={quick}
-            onChange={(e) => setQuick(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') submitQuick(); }}
-            placeholder="One-line observation (e.g. user confirmed the email landed in spam)"
-            className="flex-1 bg-slate-900/60 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 outline-none focus:border-slate-600"
-          />
+          <div className="relative flex-1">
+            <NotebookPen size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-4" />
+            <input
+              id="quick-note"
+              type="text"
+              value={quick}
+              onChange={(e) => setQuick(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitQuick(); }}
+              placeholder="One-line observation (e.g. user confirmed the email landed in spam)"
+              className="w-full bg-surface border border-line-2 rounded-lg pl-9 pr-3 py-2.5 text-sm text-ink placeholder-ink-4 outline-none focus:border-ink-3 transition"
+            />
+          </div>
           <button
             onClick={submitQuick}
             disabled={!quick.trim()}
-            className={`${sev.accent} text-slate-950 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110 transition`}
+            className="inline-flex items-center gap-2 px-4 rounded-lg text-sm font-semibold text-canvas disabled:opacity-30 disabled:cursor-not-allowed hover:brightness-110 transition"
+            style={{ background: sev.hex }}
           >
-            Add
+            Add <CornerDownLeft size={14} />
           </button>
         </div>
       </section>
 
       <section>
-        <h3 className="text-xs uppercase tracking-wider text-slate-500 mb-3">Notes</h3>
+        <h3 className={`${labelCls} mb-2.5`}>Notes</h3>
         <textarea
           value={note}
           onChange={(e) => onNoteChange(e.target.value)}
-          placeholder={`Capture observations, IOCs, decisions, or timestamps for the ${phase.name.toLowerCase()} phase...`}
-          rows={8}
-          className="w-full bg-slate-900/60 border border-slate-800 rounded-lg p-3 text-sm text-slate-200 placeholder-slate-600 outline-none focus:border-slate-600 resize-y font-mono"
+          aria-label={`${phase.name} notes`}
+          placeholder={`Observations, decisions, and evidence for ${phase.name.toLowerCase()}…`}
+          rows={9}
+          className="w-full bg-surface border border-line-2 rounded-xl p-4 text-[13px] leading-relaxed text-ink placeholder-ink-4 outline-none focus:border-ink-3 resize-y font-mono transition"
         />
       </section>
     </div>

@@ -1,9 +1,80 @@
 @import "tailwindcss";
 
+/* Fonts are bundled (latin subset only) so the app looks the same offline
+   and on air-gapped machines. */
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2-variations");
+}
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  src: url("@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2") format("woff2-variations");
+}
+
+/* Design tokens. Surfaces step up in lightness; ink steps down in
+   emphasis; `signal` is the brand accent. Severity colors stay in data.js
+   because they theme the active incident. */
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --color-canvas: #08090b;
+  --color-surface: #0e1013;
+  --color-surface-2: #13161a;
+  --color-raised: #191d22;
+  --color-hover: #1f242a;
+  --color-line: #1f2329;
+  --color-line-2: #2a2f36;
+  --color-ink: #eceef1;
+  --color-ink-2: #a8afb9;
+  --color-ink-3: #6e7681;
+  --color-ink-4: #4a515a;
+  --color-signal: #ffb224;
+  --color-signal-ink: #1a1200;
+  --color-ok: #3dd68c;
+  --color-pro: #a78bfa;
+}
+
 html, body, #root {
   height: 100%;
 }
 
 body {
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-sans);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-feature-settings: "cv11", "ss01", "ss03";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* Quiet, thin scrollbars that match the surfaces. */
+* { scrollbar-width: thin; scrollbar-color: var(--color-line-2) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--color-line-2); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+:focus-visible { outline: 2px solid var(--color-signal); outline-offset: 2px; border-radius: 6px; }
+
+::selection { background: color-mix(in oklab, var(--color-signal) 35%, transparent); }
+
+@keyframes td-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 55%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in oklab, currentColor 0%, transparent); }
+}
+.live-dot { animation: td-pulse 1.8s ease-in-out infinite; }
+
+@keyframes td-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.anim-in { animation: td-in .18s ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .live-dot, .anim-in { animation: none; }
 }

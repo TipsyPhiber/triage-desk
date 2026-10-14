@@ -1,3 +1,6 @@
+// The six-phase NIST SP 800-61 / PICERL lifecycle. Phase identity and stage
+// are fixed — lifecycle gating depends on them — while the task lists live in
+// playbooks (see playbooks/builtins.js) so teams can tailor them.
 export const PHASES = [
   {
     id: 'preparation',
@@ -5,15 +8,6 @@ export const PHASES = [
     short: 'Prep',
     stage: 'pre-incident',
     description: 'Ensure people, tooling, and process are ready before an incident occurs.',
-    tasks: [
-      'Review and update the incident response plan',
-      'Verify on-call rotation and escalation paths',
-      'Confirm access to logging and monitoring (SIEM, EDR, cloud audit)',
-      'Test communication channels (Slack war room, PagerDuty, conference bridge)',
-      'Validate backup integrity and recovery procedures',
-      'Ensure runbooks and contact lists are accessible offline',
-      'Review current threat intelligence and known TTPs',
-    ],
   },
   {
     id: 'identification',
@@ -21,15 +15,6 @@ export const PHASES = [
     short: 'Identify',
     stage: 'response',
     description: 'Determine whether an event is a real incident, and document its scope.',
-    tasks: [
-      'Triage initial alert and rule out false positive',
-      'Record time of detection and detection source',
-      'Determine scope: affected hosts, users, accounts, data',
-      'Classify incident type (malware, intrusion, data breach, DoS, insider)',
-      'Assign incident commander and notify stakeholders',
-      'Open incident ticket and start chain-of-custody log',
-      'Capture initial indicators of compromise (IPs, hashes, domains, accounts)',
-    ],
   },
   {
     id: 'containment',
@@ -37,15 +22,6 @@ export const PHASES = [
     short: 'Contain',
     stage: 'response',
     description: 'Limit the blast radius — short-term and long-term containment.',
-    tasks: [
-      'Isolate affected hosts from the network (quarantine VLAN or EDR)',
-      'Disable compromised user and service accounts',
-      'Block malicious IPs, domains, and hashes at perimeter and EDR',
-      'Preserve volatile evidence (memory, netstat, running processes)',
-      'Snapshot affected systems before making changes',
-      'Rotate exposed credentials, API keys, and tokens',
-      'Notify legal and compliance if PII or regulated data is involved',
-    ],
   },
   {
     id: 'eradication',
@@ -53,14 +29,6 @@ export const PHASES = [
     short: 'Eradicate',
     stage: 'response',
     description: 'Remove the threat and close the door behind it.',
-    tasks: [
-      'Identify and remove malware and persistence mechanisms',
-      'Patch exploited vulnerabilities across the environment',
-      'Remove unauthorized accounts, keys, and scheduled tasks',
-      'Validate the threat actor no longer has access',
-      'Sweep environment for additional IOCs and lateral movement',
-      'Update detection rules and EDR policies with new IOCs',
-    ],
   },
   {
     id: 'recovery',
@@ -68,14 +36,6 @@ export const PHASES = [
     short: 'Recover',
     stage: 'response',
     description: 'Bring systems back to production safely and watch for recurrence.',
-    tasks: [
-      'Restore systems from known-clean backups or rebuild from gold image',
-      'Reset credentials for all affected accounts and force re-auth',
-      'Return systems to production in monitored mode',
-      'Verify normal operations with system owners',
-      'Communicate restoration status to stakeholders and customers',
-      'Maintain heightened monitoring on affected systems for 30 days',
-    ],
   },
   {
     id: 'lessons',
@@ -83,21 +43,13 @@ export const PHASES = [
     short: 'Lessons',
     stage: 'post-incident',
     description: 'Close the loop. Make the next incident shorter than this one.',
-    tasks: [
-      'Schedule post-incident review within two weeks of resolution',
-      'Document full timeline of events with timestamps',
-      'Identify root cause and contributing factors',
-      'Capture what worked, what failed, and what surprised the team',
-      'Create action items with named owners and deadlines',
-      'Update runbooks, detection rules, and the IR plan',
-      'Share sanitized findings with the broader engineering org',
-    ],
   },
 ];
 
 export const SEVERITIES = {
   Low: {
     label: 'Low',
+    hex: '#38bdf8',
     accent: 'bg-sky-500',
     accentText: 'text-sky-400',
     accentBorder: 'border-sky-500/40',
@@ -108,6 +60,7 @@ export const SEVERITIES = {
   },
   Medium: {
     label: 'Medium',
+    hex: '#f59e0b',
     accent: 'bg-amber-500',
     accentText: 'text-amber-400',
     accentBorder: 'border-amber-500/40',
@@ -118,6 +71,7 @@ export const SEVERITIES = {
   },
   High: {
     label: 'High',
+    hex: '#f97316',
     accent: 'bg-orange-500',
     accentText: 'text-orange-400',
     accentBorder: 'border-orange-500/40',
@@ -128,6 +82,7 @@ export const SEVERITIES = {
   },
   Critical: {
     label: 'Critical',
+    hex: '#f43f5e',
     accent: 'bg-rose-500',
     accentText: 'text-rose-400',
     accentBorder: 'border-rose-500/40',
@@ -137,3 +92,15 @@ export const SEVERITIES = {
     description: 'Active breach, outage, or regulatory exposure',
   },
 };
+
+
+// FIRST Traffic Light Protocol 2.0 markings, applied to exported reports.
+export const TLP_LEVELS = {
+  'TLP:CLEAR': 'Disclosure is not limited.',
+  'TLP:GREEN': 'Limited disclosure, restricted to the community.',
+  'TLP:AMBER': 'Limited disclosure, restricted to participants\' organization and its clients.',
+  'TLP:AMBER+STRICT': 'Limited disclosure, restricted to participants\' organization only.',
+  'TLP:RED': 'For the eyes and ears of individual recipients only, no further disclosure.',
+};
+
+export const PHASE_IDS = PHASES.map((p) => p.id);

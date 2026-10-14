@@ -1,0 +1,6 @@
+# Normalize text to LF so Windows checkouts build byte-identical output
+# (the single-file build's CSP hashes depend on exact script bytes).
+* text=auto eol=lf
+*.wasm binary
+*.png binary
+*.zip binary
