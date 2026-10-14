@@ -15,10 +15,10 @@ const FORMAT_ICONS = { txt: FileText, md: FileType2, html: FileCode2 };
 
 const TLP_STYLES = {
   'TLP:CLEAR': 'text-ink ring-ink-3/40',
-  'TLP:GREEN': 'text-[#33ff00] ring-[#33ff00]/30',
-  'TLP:AMBER': 'text-[#ffc000] ring-[#ffc000]/30',
-  'TLP:AMBER+STRICT': 'text-[#ffc000] ring-[#ffc000]/30',
-  'TLP:RED': 'text-[#ff2b2b] ring-[#ff2b2b]/30',
+  'TLP:GREEN': 'text-[#15803d] ring-[#15803d]/30 dark:text-[#33ff00] dark:ring-[#33ff00]/30',
+  'TLP:AMBER': 'text-[#b45309] ring-[#b45309]/30 dark:text-[#ffc000] dark:ring-[#ffc000]/30',
+  'TLP:AMBER+STRICT': 'text-[#b45309] ring-[#b45309]/30 dark:text-[#ffc000] dark:ring-[#ffc000]/30',
+  'TLP:RED': 'text-[#dc2626] ring-[#dc2626]/30 dark:text-[#ff2b2b] dark:ring-[#ff2b2b]/30',
 };
 
 function useDismiss(open, setOpen) {
@@ -43,7 +43,7 @@ function Menu({ trigger, children, align = 'right', width = 'w-64' }) {
       {open && (
         <div
           role="menu"
-          className={`anim-in absolute ${align === 'right' ? 'right-0' : 'left-0'} mt-1.5 ${width} z-30 rounded-xl border border-line-2 bg-surface-2 shadow-[0_20px_50px_-15px_rgba(0,0,0,.8)] p-1`}
+          className={`anim-in absolute ${align === 'right' ? 'right-0' : 'left-0'} mt-1.5 ${width} z-30 rounded-xl border border-line-2 bg-surface-2 shadow-pop p-1`}
           onClick={() => setOpen(false)}
         >
           {children}
@@ -58,7 +58,7 @@ function MenuItem({ icon: Icon, children, onClick, danger, right }) {
     <button
       role="menuitem"
       onClick={onClick}
-      className={`w-full text-left px-2.5 py-2 rounded-lg text-[13px] flex items-center gap-2.5 transition ${danger ? 'text-rose-300 hover:bg-rose-500/10' : 'text-ink-2 hover:text-ink hover:bg-hover'}`}
+      className={`w-full text-left px-2.5 py-2 rounded-lg text-[13px] flex items-center gap-2.5 transition ${danger ? 'text-danger hover:bg-danger/10' : 'text-ink-2 hover:text-ink hover:bg-hover'}`}
     >
       {Icon && <Icon size={15} className={danger ? '' : 'text-ink-3'} />}
       {children}

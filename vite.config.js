@@ -16,7 +16,7 @@ const BUILD_DATE = process.env.BUILD_DATE || new Date().toISOString().slice(0, 1
 // never needs the network, so the policy forbids every outbound connection;
 // that's both a defense against XSS via pasted attacker content and a
 // verifiable "nothing leaves the machine" claim for customers.
-function cspPlugin({ singleFile, outDir }) {
+function cspPlugin({ singleFile, connected, outDir, fileName }) {
   return {
     name: 'triage-desk-csp',
     apply: 'build',
@@ -39,8 +39,10 @@ function cspPlugin({ singleFile, outDir }) {
         singleFile ? "style-src 'unsafe-inline'" : "style-src 'self'",
         "img-src 'self' data:",
         "font-src 'self' data:",
-        // WASM is fetched from same origin (hosted) or a data: URL (single file).
-        singleFile ? 'connect-src data:' : "connect-src 'self'",
+        // WASM is fetched from same origin (hosted) or a data: URL (single
+        // file). The Connected edition may also reach the analyst's Splunk
+        // REST API and HTTP Event Collector, which can live on any host.
+        `connect-src ${singleFile ? 'data:' : "'self'"}${connected ? ' https: http://localhost:* http://127.0.0.1:*' : ''}`,
         "object-src 'none'",
         "base-uri 'none'",
         "form-action 'none'",
@@ -50,7 +52,7 @@ function cspPlugin({ singleFile, outDir }) {
         `<meta charset="UTF-8" />\n    <meta http-equiv="Content-Security-Policy" content="${policy}" />`,
       );
       writeFileSync(file, html);
-      if (singleFile) renameSync(file, join(outDir, 'triage-desk.html'));
+      if (singleFile) renameSync(file, join(outDir, fileName));
     },
   };
 }
@@ -60,27 +62,35 @@ function cspPlugin({ singleFile, outDir }) {
 // Pro without touching the real signing key. Only these modes read it, and
 // they write to their own output folders so they can't be mistaken for a
 // release build.
-const E2E_MODES = new Set(['e2e', 'e2e-single']);
+//
+// Connected-edition modes ('connected', 'connected-single', 'e2e-connected')
+// relax connect-src so the app can talk to a customer's Splunk.
+const E2E_MODES = new Set(['e2e', 'e2e-single', 'e2e-connected']);
+const MODES = new Set(['production', 'development', 'test', 'single', 'connected', 'connected-single', ...E2E_MODES]);
 
 export default defineConfig(({ mode }) => {
-  const singleFile = mode === 'single' || mode === 'e2e-single';
+  if (!MODES.has(mode)) throw new Error(`unknown build mode "${mode}"`);
+  const singleFile = mode.endsWith('single');
+  const connected = mode.includes('connected');
   const e2e = E2E_MODES.has(mode);
   const e2eKey = e2e ? (process.env.TRIAGE_DESK_E2E_PUBLIC_KEY || '') : '';
   if (e2e && !/^[0-9a-f]{64}$/.test(e2eKey)) {
     throw new Error(`mode "${mode}" requires TRIAGE_DESK_E2E_PUBLIC_KEY (64 hex chars)`);
   }
-  const outDir = resolve(e2e ? `dist-${mode}` : (singleFile ? 'dist-single' : 'dist'));
+  const outDir = resolve(e2e || connected ? `dist-${mode}` : (singleFile ? 'dist-single' : 'dist'));
+  const fileName = connected ? 'triage-desk-connected.html' : 'triage-desk.html';
   return {
     plugins: [
       react(),
       tailwindcss(),
       ...(singleFile ? [viteSingleFile({ removeViteModuleLoader: true })] : []),
-      cspPlugin({ singleFile, outDir }),
+      cspPlugin({ singleFile, connected, outDir, fileName }),
     ],
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
       __BUILD_DATE__: JSON.stringify(BUILD_DATE),
       __E2E_PUBLIC_KEY__: JSON.stringify(e2eKey),
+      __EDITION__: JSON.stringify(connected ? 'connected' : 'offline'),
     },
     base: './',
     build: {

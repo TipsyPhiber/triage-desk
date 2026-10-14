@@ -1,7 +1,9 @@
 // Left rail: every incident in the workspace, grouped by lifecycle, plus
 // navigation to playbooks and settings.
 
-import { BookOpen, Keyboard, Plus, Settings, Trash2 } from 'lucide-react';
+import { BookOpen, Keyboard, Plus, Search, Settings, Trash2 } from 'lucide-react';
+import { ThemeToggle } from './ThemeToggle.jsx';
+import { SplunkMark } from './SplunkSearches.jsx';
 import { SEVERITIES } from '../data.js';
 import { incidentTotals, lifecycleOf } from '../state/incident.js';
 import { formatDuration } from '../lib/time.js';
@@ -28,7 +30,7 @@ function IncidentItem({ inc, active, now, onSelect, onDelete }) {
       <button
         onClick={onSelect}
         aria-current={active ? 'true' : undefined}
-        className={`w-full text-left pl-3.5 pr-8 py-2.5 rounded-lg transition relative ${active ? 'bg-raised ring-1 ring-line-2' : 'hover:bg-surface-2'}`}
+        className={`w-full text-left pl-3.5 pr-8 py-2.5 rounded-lg transition relative ${active ? 'bg-raised ring-1 ring-line-2' : 'hover:bg-hover'}`}
       >
         <span className="absolute left-0 top-2.5 bottom-2.5 w-[3px] rounded-full" style={{ background: sev.hex, opacity: lifecycle === 'resolved' ? 0.35 : 1 }} />
         <div className={`text-[13px] font-medium truncate ${active ? 'text-ink' : 'text-ink-2'}`}>
@@ -47,7 +49,7 @@ function IncidentItem({ inc, active, now, onSelect, onDelete }) {
         onClick={onDelete}
         title="Delete incident"
         aria-label={`Delete ${inc.name || 'incident'}`}
-        className="absolute right-1.5 top-2 p-1.5 rounded-md text-ink-4 hover:text-rose-300 hover:bg-hover opacity-0 group-hover:opacity-100 focus:opacity-100 transition"
+        className="absolute right-1.5 top-2 p-1.5 rounded-md text-ink-4 hover:text-danger hover:bg-hover opacity-0 group-hover:opacity-100 focus:opacity-100 transition"
       >
         <Trash2 size={13} />
       </button>
@@ -56,7 +58,7 @@ function IncidentItem({ inc, active, now, onSelect, onDelete }) {
 }
 
 export function Sidebar({
-  incidents, activeId, now, onSwitch, onNew, onDelete, atLimit,
+  incidents, activeId, now, onSwitch, onNew, onImport, onPalette, onDelete, atLimit,
   ent, license, onOpenPlaybooks, onOpenSettings, onOpenShortcuts,
 }) {
   const grouped = Object.fromEntries(GROUPS.map((g) => [g.id, []]));
@@ -71,7 +73,15 @@ export function Sidebar({
         {ent.pro && <ProBadge className="ml-auto" />}
       </div>
 
-      <div className="p-3">
+      <div className="p-3 space-y-1.5">
+        <button
+          onClick={onPalette}
+          className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg bg-canvas border border-line text-[13px] text-ink-3 hover:text-ink-2 hover:border-line-2 transition"
+        >
+          <Search size={14} />
+          Search…
+          <span className="ml-auto flex items-center gap-0.5"><Kbd>Ctrl</Kbd><Kbd>K</Kbd></span>
+        </button>
         <button
           onClick={onNew}
           className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-line-2 bg-raised text-sm text-ink hover:bg-hover hover:border-ink-4 transition"
@@ -109,21 +119,27 @@ export function Sidebar({
       </nav>
 
       <div className="p-2 border-t border-line">
+        <button onClick={onImport} className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-[13px] text-ink-2 hover:text-ink hover:bg-hover transition">
+          <SplunkMark size={15} />
+          Import Splunk alert
+          <span className="ml-auto"><Kbd>I</Kbd></span>
+        </button>
         {[
           { label: 'Playbooks', icon: BookOpen, onClick: onOpenPlaybooks },
           { label: 'Settings & license', icon: Settings, onClick: onOpenSettings },
           { label: 'Keyboard shortcuts', icon: Keyboard, onClick: onOpenShortcuts, kbd: '?' },
         ].map(({ label, icon: Icon, onClick, kbd }) => (
-          <button key={label} onClick={onClick} className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-[13px] text-ink-2 hover:text-ink hover:bg-surface-2 transition">
+          <button key={label} onClick={onClick} className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-[13px] text-ink-2 hover:text-ink hover:bg-hover transition">
             <Icon size={15} className="text-ink-3" />
             {label}
             {kbd && <span className="ml-auto"><Kbd>{kbd}</Kbd></span>}
           </button>
         ))}
       </div>
-      <div className="px-4 py-3 border-t border-line text-[11px] text-ink-4 flex items-center gap-2">
-        <span className="w-1.5 h-1.5 rounded-full bg-ok" />
-        <span className="truncate">{ent.pro ? `Pro · ${license?.name ?? ''}` : 'Free edition'} · Offline · v{__APP_VERSION__}</span>
+      <div className="px-3 py-2.5 border-t border-line text-[11px] text-ink-4 flex items-center gap-2">
+        <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />
+        <span className="truncate">{ent.connected ? 'Connected' : ent.pro ? 'Pro' : 'Free'}{license?.name ? ` · ${license.name}` : ''} · v{__APP_VERSION__}</span>
+        <ThemeToggle className="ml-auto shrink-0" />
       </div>
     </aside>
   );

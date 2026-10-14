@@ -5,11 +5,12 @@
 import { PHASES, SEVERITIES, TLP_LEVELS } from '../data.js';
 import { incidentLifecycle, phaseLocked } from '../lib/phaseActivity.js';
 import { mergeIocs } from './iocIndex.js';
-import { phasesFor, sanitizeTasks } from './playbooks.js';
+import { phasesFor, sanitizeSearches, sanitizeTasks } from './playbooks.js';
 
 export const EVENT_TYPES = new Set([
-  'declare', 'resolve', 'severity', 'phase', 'check', 'uncheck', 'ioc', 'note',
+  'declare', 'resolve', 'severity', 'phase', 'check', 'uncheck', 'ioc', 'note', 'splunk',
 ]);
+const ATTACK_RE = /^T\d{4}(\.\d{3})?$/;
 export const DEFAULT_TLP = 'TLP:AMBER';
 const PHASE_IDS = new Set(PHASES.map((p) => p.id));
 
@@ -27,6 +28,10 @@ function emptyByPhase(tasks, make) {
   return out;
 }
 
+function sanitizeAttack(raw) {
+  return Array.isArray(raw) ? [...new Set(raw.filter((t) => typeof t === 'string' && ATTACK_RE.test(t)))].slice(0, 20) : [];
+}
+
 export function createIncident({ playbook, name = '', severity = 'Medium', tlp = DEFAULT_TLP, now = Date.now(), id } = {}) {
   const tasks = sanitizeTasks(playbook?.tasks);
   return {
@@ -35,6 +40,8 @@ export function createIncident({ playbook, name = '', severity = 'Medium', tlp =
     playbookId: playbook?.id ?? null,
     playbookName: playbook?.name ?? 'Custom',
     tasks,
+    searches: sanitizeSearches(playbook?.splunk),
+    attack: sanitizeAttack(playbook?.attack),
     name,
     severity: SEVERITIES[severity] ? severity : 'Medium',
     tlp: TLP_LEVELS[tlp] ? tlp : DEFAULT_TLP,
@@ -106,7 +113,7 @@ export function resolveIncident(inc, now = Date.now()) {
 // Clear progress but keep identity, name, and playbook.
 export function resetIncident(inc, now = Date.now()) {
   const fresh = createIncident({
-    playbook: { id: inc.playbookId, name: inc.playbookName, tasks: inc.tasks },
+    playbook: { id: inc.playbookId, name: inc.playbookName, tasks: inc.tasks, splunk: inc.searches, attack: inc.attack },
     name: inc.name, severity: inc.severity, tlp: inc.tlp, now, id: inc.id,
   });
   return { ...fresh, createdAt: inc.createdAt };
@@ -185,6 +192,11 @@ export function recordIocs(inc, phaseId, results, now = Date.now()) {
   const phase = PHASES.find((p) => p.id === phaseId);
   const n = results?.length ?? 0;
   return logIfRunning(next, 'ioc', `Extracted ${n} IOC${n === 1 ? '' : 's'} into ${phase?.name ?? phaseId} notes`, now);
+}
+
+// Record Splunk activity (a search run, events sent) on the timeline.
+export function logSplunk(inc, message, now = Date.now()) {
+  return logIfRunning(inc, 'splunk', message, now);
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +281,8 @@ export function sanitizeIncident(raw) {
     playbookId: typeof raw.playbookId === 'string' ? raw.playbookId : null,
     playbookName: typeof raw.playbookName === 'string' ? raw.playbookName : 'Custom',
     tasks,
+    searches: sanitizeSearches(raw.searches),
+    attack: sanitizeAttack(raw.attack),
     name: typeof raw.name === 'string' ? raw.name : '',
     severity: SEVERITIES[raw.severity] ? raw.severity : 'Medium',
     tlp: TLP_LEVELS[raw.tlp] ? raw.tlp : DEFAULT_TLP,

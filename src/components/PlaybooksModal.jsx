@@ -3,13 +3,16 @@ import { askConfirm } from './ConfirmDialog.jsx';
 import { PHASES } from '../data.js';
 import { duplicatePlaybook, parsePlaybookFile, sanitizePlaybook, serializePlaybook } from '../state/playbooks.js';
 import { downloadFile, reportFilename } from '../lib/exportReport.js';
-import { BookOpen as HeaderIcon } from 'lucide-react';
+import { BookOpen as HeaderIcon, Search } from 'lucide-react';
+import { LIBRARY_CATEGORIES } from '../playbooks/library.js';
+import { searchPlaybooks } from '../lib/playbookSearch.js';
+import { SplunkSearches } from './SplunkSearches.jsx';
 import { Modal, ProBadge, btn, inputCls } from './Modal.jsx';
 
 function toDraft(pb) {
   const tasks = {};
   for (const p of PHASES) tasks[p.id] = (pb.tasks[p.id] || []).join('\n');
-  return { id: pb.id, name: pb.name, description: pb.description, tasks };
+  return { id: pb.id, name: pb.name, description: pb.description, tasks, splunk: pb.splunk, attack: pb.attack };
 }
 
 function fromDraft(d) {
@@ -22,7 +25,10 @@ export function PlaybooksModal({ playbooks, ent, onSave, onDelete, onClose, onUp
   const [selectedId, setSelectedId] = useState(playbooks[0]?.id);
   const [draft, setDraft] = useState(null);
   const [error, setError] = useState(null);
+  const [q, setQ] = useState('');
+  const [cat, setCat] = useState('');
   const fileRef = useRef(null);
+  const shown = searchPlaybooks(playbooks, q, { category: cat || null });
   const selected = playbooks.find((p) => p.id === selectedId) ?? playbooks[0];
   const editable = ent.customPlaybooks;
 
@@ -82,12 +88,22 @@ export function PlaybooksModal({ playbooks, ent, onSave, onDelete, onClose, onUp
       subtitle="New incidents copy their playbook's tasks, so edits here never change incidents already in progress."
       icon={HeaderIcon}
       onClose={onClose}
-      wide
+      wide="xl"
     >
-      <div className="grid sm:grid-cols-[220px_1fr] gap-5">
+      <div className="grid sm:grid-cols-[280px_1fr] gap-6">
         <div>
-          <ul className="space-y-1">
-            {playbooks.map((pb) => (
+          <div className="relative mb-2">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-4" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter playbooks" placeholder={`Search ${playbooks.length} playbooks`} className={`${inputCls} pl-8 py-1.5`} />
+          </div>
+          <select value={cat} onChange={(e) => setCat(e.target.value)} aria-label="Category" className={`${inputCls} py-1.5 mb-2`}>
+            <option value="">All categories</option>
+            <option value="essentials">Essentials</option>
+            {LIBRARY_CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.count})</option>)}
+            {playbooks.some((p) => !p.builtIn) && <option value="custom">Your playbooks</option>}
+          </select>
+          <ul className="space-y-0.5 max-h-[52vh] overflow-y-auto pr-1">
+            {shown.map((pb) => (
               <li key={pb.id}>
                 <button
                   onClick={() => select(pb.id)}
@@ -113,7 +129,7 @@ export function PlaybooksModal({ playbooks, ent, onSave, onDelete, onClose, onUp
         {selected && (
           <div className="min-w-0">
             {error && (
-              <div className="mb-3 text-sm text-rose-400 border border-rose-500/30 bg-rose-500/10 rounded px-3 py-2">{error}</div>
+              <div className="mb-3 text-sm text-danger border border-danger/30 bg-danger/10 rounded px-3 py-2">{error}</div>
             )}
 
             {draft ? (
@@ -169,6 +185,11 @@ export function PlaybooksModal({ playbooks, ent, onSave, onDelete, onClose, onUp
                 {selected.builtIn && (
                   <p className="text-xs text-ink-3 mb-4">Built-in playbooks are read-only. Duplicate one to tailor it to your environment.</p>
                 )}
+                {selected.attack?.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mb-4">
+                    {selected.attack.map((t) => <span key={t} className="text-[11px] font-mono px-1.5 py-0.5 rounded-md bg-raised border border-line text-ink-2">{t}</span>)}
+                  </div>
+                )}
                 {PHASES.map((p) => (
                   <div key={p.id} className="mb-4">
                     <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-3 mb-1">{p.name}</div>
@@ -181,6 +202,7 @@ export function PlaybooksModal({ playbooks, ent, onSave, onDelete, onClose, onUp
                     )}
                   </div>
                 ))}
+                <SplunkSearches searches={selected.splunk} />
               </div>
             )}
           </div>

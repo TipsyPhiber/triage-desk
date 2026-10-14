@@ -13,6 +13,16 @@ export const BUILTIN_PLAYBOOKS = [
     description: 'Vendor-neutral NIST SP 800-61 checklist for any security incident.',
     tier: 'free',
     builtIn: true,
+    category: 'essentials',
+    categoryName: 'Essentials',
+    tags: ['general', 'any-incident'],
+    severity: 'Medium',
+    attack: [],
+    splunk: [
+      { title: "Notable events in the last 24 hours", phase: 'identification', spl: "index=notable earliest=-24h | stats count values(rule_name) as rules by urgency | sort - count" },
+      { title: "Activity for a suspect host", phase: 'identification', spl: "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.dest=\"<host>\" by Processes.user Processes.process_name Processes.parent_process_name | sort - count" },
+      { title: "Authentication activity for a suspect user", phase: 'containment', spl: "| tstats summariesonly=false count from datamodel=Authentication where Authentication.user=\"<suspect_user>\" by Authentication.src Authentication.dest Authentication.action | sort - count" },
+    ],
     tasks: {
       preparation: [
         'Review and update the incident response plan',
@@ -74,6 +84,16 @@ export const BUILTIN_PLAYBOOKS = [
     description: 'Encryption or extortion event — prioritizes isolation, backup protection, and decision points on payment and disclosure.',
     tier: 'pro',
     builtIn: true,
+    category: 'essentials',
+    categoryName: 'Essentials',
+    tags: ['ransomware', 'extortion', 'encryption'],
+    severity: 'Critical',
+    attack: ['T1486', 'T1490', 'T1021.002'],
+    splunk: [
+      { title: "Shadow copy and backup deletion commands", phase: 'identification', spl: "| tstats summariesonly=false count min(_time) as first from datamodel=Endpoint.Processes where (Processes.process=\"*vssadmin*delete*\" OR Processes.process=\"*wbadmin*delete*\" OR Processes.process=\"*shadowcopy*delete*\") by Processes.dest Processes.user Processes.process | convert ctime(first)" },
+      { title: "Mass file renames on a host", phase: 'identification', spl: "| tstats summariesonly=false count dc(Filesystem.file_name) as files from datamodel=Endpoint.Filesystem where Filesystem.action=modified by Filesystem.dest Filesystem.file_extension _time span=5m | where files > 500" },
+      { title: "SMB fan-out from patient zero", phase: 'containment', spl: "| tstats summariesonly=false dc(All_Traffic.dest) as targets from datamodel=Network_Traffic where All_Traffic.dest_port=445 All_Traffic.src=\"<host>\" by _time span=10m" },
+    ],
     tasks: {
       preparation: [
         'Confirm offline / immutable backups exist and were restore-tested this quarter',
@@ -133,6 +153,16 @@ export const BUILTIN_PLAYBOOKS = [
     description: 'Reported or detected phishing — scoping recipients, clicks, and credential exposure.',
     tier: 'pro',
     builtIn: true,
+    category: 'essentials',
+    categoryName: 'Essentials',
+    tags: ['phishing', 'email', 'credential-theft'],
+    severity: 'High',
+    attack: ['T1566.001', 'T1566.002'],
+    splunk: [
+      { title: "Who received the message", phase: 'identification', spl: "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=\"<sender>\" OR All_Email.subject=\"<subject>\" by All_Email.recipient All_Email.action" },
+      { title: "Who clicked the phishing domain", phase: 'identification', spl: "| tstats summariesonly=false count from datamodel=Web where Web.url=\"*<phish_domain>*\" by Web.src Web.user Web.http_method | sort - count" },
+      { title: "Sign-ins after the click", phase: 'containment', spl: "| tstats summariesonly=false count from datamodel=Authentication where Authentication.user=\"<suspect_user>\" earliest=-48h by Authentication.src Authentication.app Authentication.action" },
+    ],
     tasks: {
       preparation: [
         'Confirm a one-click phishing report button is deployed to all mail clients',
@@ -182,6 +212,15 @@ export const BUILTIN_PLAYBOOKS = [
     description: 'Mailbox takeover or impersonation targeting payments — fast financial recovery is the priority.',
     tier: 'pro',
     builtIn: true,
+    category: 'essentials',
+    categoryName: 'Essentials',
+    tags: ['bec', 'payment-fraud', 'mailbox'],
+    severity: 'High',
+    attack: ['T1114.003', 'T1534'],
+    splunk: [
+      { title: "New inbox rules (Microsoft 365)", phase: 'identification', spl: "index=* sourcetype=\"o365:management:activity\" Operation IN (\"New-InboxRule\",\"Set-InboxRule\",\"UpdateInboxRules\") | table _time UserId ClientIP Parameters{}.Name Parameters{}.Value" },
+      { title: "Mailbox sign-ins by IP", phase: 'identification', spl: "index=* sourcetype=\"o365:management:activity\" Operation=UserLoggedIn UserId=\"<suspect_user>\" | stats count earliest(_time) as first latest(_time) as last by ClientIP | convert ctime(first) ctime(last)" },
+    ],
     tasks: {
       preparation: [
         'Document out-of-band verification for payment and bank-detail changes',
@@ -229,6 +268,15 @@ export const BUILTIN_PLAYBOOKS = [
     description: 'Leaked access keys, tokens, or secrets in AWS, Azure, or GCP — revoke fast, then scope API activity.',
     tier: 'pro',
     builtIn: true,
+    category: 'essentials',
+    categoryName: 'Essentials',
+    tags: ['cloud', 'credentials', 'aws', 'azure', 'gcp'],
+    severity: 'High',
+    attack: ['T1078.004', 'T1552.001'],
+    splunk: [
+      { title: "Everything the leaked AWS key did", phase: 'identification', spl: "index=* sourcetype=aws:cloudtrail userIdentity.accessKeyId=\"<access_key_id>\" | stats count values(eventName) as actions by sourceIPAddress awsRegion | sort - count" },
+      { title: "New keys, users, and policy attachments", phase: 'eradication', spl: "index=* sourcetype=aws:cloudtrail eventName IN (CreateAccessKey, CreateUser, AttachUserPolicy, PutUserPolicy, CreateLoginProfile) | table _time userIdentity.arn eventName requestParameters.userName sourceIPAddress" },
+    ],
     tasks: {
       preparation: [
         'Confirm CloudTrail / Azure Activity Log / GCP Audit Logs are enabled in every account and region',

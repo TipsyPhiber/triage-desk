@@ -6,16 +6,24 @@ import { verifyLicense } from './license.js';
 // have their own incident data held hostage.
 export const FREE_INCIDENT_LIMIT = 1;
 
-/* global __BUILD_DATE__, __E2E_PUBLIC_KEY__ */
+/* global __BUILD_DATE__, __E2E_PUBLIC_KEY__, __EDITION__ */
 export const BUILD_DATE = typeof __BUILD_DATE__ === 'string' ? __BUILD_DATE__ : null;
 
 // Non-empty only in end-to-end test builds (see vite.config.js).
 const E2E_PUBLIC_KEY = typeof __E2E_PUBLIC_KEY__ === 'string' ? __E2E_PUBLIC_KEY__ : '';
 
+// 'offline' (no network at all) or 'connected' (may reach a Splunk
+// instance the analyst configures). Fixed at build time; see vite.config.js.
+export const EDITION = typeof __EDITION__ === 'string' ? __EDITION__ : 'offline';
+
 export function entitlementsFor(licenseStatus) {
   const pro = licenseStatus?.status === 'valid';
+  const plan = pro ? licenseStatus.license?.plan : null;
   return {
     pro,
+    plan,
+    // Live Splunk needs both the Connected build and a Connected license.
+    connected: EDITION === 'connected' && plan === 'connected',
     incidentLimit: pro ? Infinity : FREE_INCIDENT_LIMIT,
     proPlaybooks: pro,
     customPlaybooks: pro,

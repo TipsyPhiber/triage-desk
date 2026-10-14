@@ -80,6 +80,8 @@ function issue(args) {
   if (!args.email || args.email === true) die('--email is required');
   const seats = args.seats ? Number(args.seats) : 1;
   if (!Number.isInteger(seats) || seats < 1) die('--seats must be a positive integer');
+  const plan = args.plan ? String(args.plan) : 'pro';
+  if (!['pro', 'connected'].includes(plan)) die('--plan must be "pro" or "connected"');
   for (const k of ['updates-until', 'expires']) {
     if (args[k] && !DATE_RE.test(args[k])) die(`--${k} must be YYYY-MM-DD`);
   }
@@ -93,6 +95,7 @@ function issue(args) {
     lid,
     name: String(args.name),
     email: String(args.email),
+    plan,
     seats,
     issued: new Date().toISOString().slice(0, 10),
     updatesUntil: args['updates-until'] || null,
@@ -101,7 +104,7 @@ function issue(args) {
   if (args.json) {
     console.log(JSON.stringify({ lid, token }));
   } else {
-    console.error(`Issued ${lid} to ${args.name} <${args.email}> (${seats} seat${seats === 1 ? '' : 's'})`);
+    console.error(`Issued ${lid} to ${args.name} <${args.email}> (${plan}, ${seats} seat${seats === 1 ? '' : 's'})`);
     console.log(token);
   }
 }

@@ -1,0 +1,1035 @@
+{
+  "category": {
+    "id": "ddos",
+    "name": "DDoS & availability",
+    "description": "Denial-of-service and availability incidents: volumetric and protocol floods, layer 7 abuse, reflection, extortion, and floods used as cover for intrusion."
+  },
+  "playbooks": [
+    {
+      "id": "lib-ddos-volumetric-udp-flood",
+      "name": "Volumetric UDP flood saturating internet uplinks",
+      "summary": "Use when edge links or firewall interfaces hit line rate with UDP traffic from many sources, causing packet loss and outages for internet-facing services.",
+      "tags": [
+        "ddos",
+        "volumetric",
+        "udp",
+        "network"
+      ],
+      "attack": [
+        "T1498.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Keep a signed scrubbing-service contract with a tested BGP or GRE diversion runbook",
+          "Record committed and burst bandwidth for each ISP circuit in the network inventory",
+          "Enable NetFlow or sFlow export from edge routers to a collector outside the attacked path",
+          "Pre-agree remote-triggered blackhole (RTBH) communities with each upstream provider",
+          "Store ISP NOC phone numbers and account IDs offline in the IR binder"
+        ],
+        "identification": [
+          "Confirm interface utilisation and drops on edge routers against the circuit baseline",
+          "Break flow data down by destination IP, UDP destination port, and packet size",
+          "Check whether source ports point to a reflection protocol such as 123, 1900, 11211, or 389",
+          "Identify which public prefixes and services are targeted versus collateral damage",
+          "Estimate peak Gbps and packets per second for the ISP and scrubbing provider"
+        ],
+        "containment": [
+          "Open a ticket with the upstream ISP and request UDP rate limits or ACLs at their edge",
+          "Swing the targeted prefix to the scrubbing provider by BGP announcement",
+          "Request RTBH of a single non-critical targeted /32 if it is sacrificing the whole circuit",
+          "Apply edge ACLs dropping unsolicited UDP to hosts that never serve UDP"
+        ],
+        "eradication": [
+          "Verify with the scrubbing provider that attack traffic is being dropped upstream",
+          "Remove any temporary broad ACLs that are also blocking legitimate UDP services",
+          "Confirm no internal host was used as part of the flood by checking outbound flows"
+        ],
+        "recovery": [
+          "Withdraw the scrubbing diversion only after traffic stays at baseline for an agreed window",
+          "Lift RTBH announcements and confirm reachability of the blackholed address",
+          "Monitor uplink utilisation and service health checks for 24 hours after withdrawal"
+        ],
+        "lessons": [
+          "Measure time from first saturation alert to scrubbing diversion",
+          "Decide whether always-on scrubbing is justified given attack frequency and size",
+          "Add an alert for UDP packets-per-second per destination above the baseline percentile",
+          "Review whether circuit capacity or provider diversity was the limiting factor"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Top UDP destinations by bytes in 5-minute buckets",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(All_Traffic.bytes) as bytes count from datamodel=Network_Traffic where All_Traffic.transport=udp by _time span=5m All_Traffic.dest All_Traffic.dest_port | sort - bytes | head 50"
+        },
+        {
+          "title": "Reflection source ports hitting our prefixes",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count sum(All_Traffic.bytes) as bytes dc(All_Traffic.src) as sources from datamodel=Network_Traffic where All_Traffic.transport=udp All_Traffic.src_port IN (19,53,123,161,389,1900,11211) by All_Traffic.src_port All_Traffic.dest | sort - bytes"
+        },
+        {
+          "title": "UDP volume to target after scrubbing diversion",
+          "phase": "recovery",
+          "spl": "index=netflow dest_ip=<target_ip> protocol=17 | timechart span=1m sum(bytes) as bytes dc(src_ip) as sources"
+        }
+      ]
+    },
+    {
+      "id": "lib-ddos-syn-flood",
+      "name": "SYN flood exhausting firewall or load balancer state tables",
+      "summary": "Use when firewalls, load balancers, or servers report half-open connection exhaustion and new TCP sessions fail while bandwidth is not saturated.",
+      "tags": [
+        "ddos",
+        "syn-flood",
+        "tcp",
+        "load-balancer"
+      ],
+      "attack": [
+        "T1499.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable SYN cookies or SYN proxy on load balancers and firewalls in front of public VIPs",
+          "Baseline session table usage and new connections per second per VIP",
+          "Document session table limits and per-source connection thresholds for each edge device",
+          "Forward firewall session-table and threat logs to the SIEM with device health metrics"
+        ],
+        "identification": [
+          "Check firewall session table utilisation and half-open session counts per zone",
+          "Compare SYN to SYN-ACK and ACK ratios for the targeted VIP from flow or packet data",
+          "Capture a short pcap on the edge to see TTLs, window sizes, and spoofed source patterns",
+          "Determine whether sources are spoofed random addresses or a real botnet completing handshakes",
+          "List services behind the targeted VIP and the user impact of failed connections"
+        ],
+        "containment": [
+          "Turn on SYN proxy or SYN cookie mode for the targeted VIP on the load balancer",
+          "Lower embryonic connection timeouts on the firewall for the affected policy",
+          "Apply per-source SYN rate limits where sources are non-spoofed and repeat",
+          "Ask the ISP or scrubbing provider to filter TCP SYN to the target prefix"
+        ],
+        "eradication": [
+          "Confirm the session table has drained and half-open counts are back to baseline",
+          "Remove temporary per-source blocks that catch shared NAT or carrier-grade NAT ranges",
+          "Patch or tune devices that crashed or failed open under state exhaustion"
+        ],
+        "recovery": [
+          "Restore normal TCP timeouts after the attack subsides and watch for re-occurrence",
+          "Verify health checks and synthetic transactions succeed through each affected VIP",
+          "Review load balancer pool members for connection backlog or stuck workers"
+        ],
+        "lessons": [
+          "Add alerting on half-open session ratio per VIP rather than bandwidth only",
+          "Record whether SYN protection was already enabled and why it did not trigger",
+          "Evaluate moving stateful inspection behind a stateless scrubbing layer for public VIPs"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Firewall session counts to targeted VIP by source /24",
+          "phase": "identification",
+          "spl": "index=* sourcetype=pan:traffic dest_ip=<target_vip> | eval src_net=replace(src_ip,\"\\.\\d+$\",\".0/24\") | stats count dc(src_ip) as hosts by src_net session_end_reason | sort - count | head 50"
+        },
+        {
+          "title": "Incomplete TCP sessions over time",
+          "phase": "identification",
+          "spl": "index=* sourcetype=pan:traffic dest_ip=<target_vip> transport=tcp (app=incomplete OR session_end_reason=aged-out) | timechart span=1m count by dest_port"
+        },
+        {
+          "title": "New connections per second after SYN proxy enabled",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest=<target_vip> All_Traffic.transport=tcp by _time span=1m All_Traffic.action"
+        }
+      ]
+    },
+    {
+      "id": "lib-ddos-http2-rapid-reset",
+      "name": "HTTP/2 rapid reset style layer 7 flood",
+      "summary": "Use when web front ends or reverse proxies show extreme HTTP/2 stream creation and cancellation rates, CPU exhaustion, and timeouts with modest bandwidth.",
+      "tags": [
+        "ddos",
+        "layer7",
+        "http2",
+        "web"
+      ],
+      "attack": [
+        "T1499.002",
+        "T1499.003"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Track reverse proxy and web server versions against HTTP/2 rapid reset vendor advisories",
+          "Log HTTP/2 stream resets and per-connection stream counts at the proxy or CDN",
+          "Configure max concurrent streams and per-connection request limits on proxies",
+          "Confirm the CDN or WAF provider offers emergency L7 mitigation and how to invoke it"
+        ],
+        "identification": [
+          "Check proxy metrics for RST_STREAM frames per connection and streams opened per second",
+          "Compare request rate at the edge with requests that reach origin applications",
+          "Identify client IPs or ASNs holding few connections but very high stream counts",
+          "Confirm the proxy build is patched for CVE-2023-44487 or note that it is vulnerable",
+          "Check whether the CDN already absorbed part of the flood or it is hitting origin directly"
+        ],
+        "containment": [
+          "Enable the CDN or WAF emergency L7 DDoS mode for the affected hostnames",
+          "Lower max concurrent streams and close connections that exceed a reset threshold",
+          "Temporarily disable HTTP/2 on exposed listeners and fall back to HTTP/1.1 if unpatched",
+          "Block or challenge source ASNs dominating stream creation"
+        ],
+        "eradication": [
+          "Upgrade reverse proxies and load balancers to versions with rapid reset mitigations",
+          "Remove emergency ASN blocks once traffic from those networks normalises",
+          "Verify no backend pools were left drained or scaled to zero during the incident"
+        ],
+        "recovery": [
+          "Re-enable HTTP/2 on patched listeners and watch reset ratios for regression",
+          "Validate latency and error rates on key pages through synthetic monitoring",
+          "Scale origin capacity back to normal after autoscaling surges"
+        ],
+        "lessons": [
+          "Add a detection for RST_STREAM ratio per client connection above baseline",
+          "Track patch lag for protocol-level DoS advisories on edge components",
+          "Document which mitigations the CDN applied automatically versus on request"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Edge requests per client and status in 1-minute buckets",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.dest=<target_host> by _time span=1m Web.src Web.status | sort - count | head 100"
+        },
+        {
+          "title": "Client IPs with high request rate and cancelled requests",
+          "phase": "identification",
+          "spl": "index=web sourcetype=nginx:plus:access OR sourcetype=haproxy:http host=<proxy_host> | stats count as reqs sum(eval(status=499)) as cancelled by clientip | eval cancel_ratio=round(cancelled/reqs,2) | where reqs>1000 | sort - cancel_ratio"
+        },
+        {
+          "title": "Origin 5xx rate after mitigation",
+          "phase": "recovery",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.dest=<target_host> Web.status>=500 by _time span=5m Web.status"
+        }
+      ]
+    },
+    {
+      "id": "lib-ddos-login-flood",
+      "name": "Application-layer flood against the login endpoint",
+      "summary": "Use when the sign-in page or authentication API receives a sustained flood of requests that degrades login for real users, whether or not credentials are being tested.",
+      "tags": [
+        "ddos",
+        "layer7",
+        "authentication",
+        "web",
+        "bots"
+      ],
+      "attack": [
+        "T1499.003",
+        "T1110.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Put the login endpoint behind a WAF with bot management and per-IP rate limits",
+          "Ensure the identity provider and app log failed and successful logins with client IP",
+          "Prepare a CAPTCHA or proof-of-work challenge that can be enabled on login quickly",
+          "Know the identity backend capacity limits such as LDAP binds or password hash cost"
+        ],
+        "identification": [
+          "Graph POST requests to the login path against the normal hourly baseline",
+          "Check whether submitted usernames are real accounts, indicating credential stuffing too",
+          "Identify user agents, JA3 or JA4 fingerprints, and ASNs common to the flood",
+          "Check directory or IdP CPU and authentication latency for backend exhaustion",
+          "Look for any successful logins from flood sources that need account follow-up"
+        ],
+        "containment": [
+          "Enable the login CAPTCHA or managed challenge for unauthenticated sessions",
+          "Apply WAF rate limits on the login path per IP and per fingerprint",
+          "Block flood ASNs or fingerprints that have no legitimate user population",
+          "Shed load by serving a static maintenance response for login only if the IdP is failing"
+        ],
+        "eradication": [
+          "Force password resets for accounts with successful logins from flood sources",
+          "Lock out or step-up MFA for usernames targeted heavily during the flood",
+          "Remove broad geo blocks that locked out legitimate users"
+        ],
+        "recovery": [
+          "Relax the challenge to risk-based mode once request rates return to baseline",
+          "Confirm login success rate and latency for real users through RUM or synthetic checks",
+          "Check account lockout queues and clear lockouts caused by the attack"
+        ],
+        "lessons": [
+          "Add an alert on login request rate and failure ratio per fingerprint",
+          "Review whether account lockout policy amplified the denial of service",
+          "Assess moving password verification behind a cheaper pre-auth throttle"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Login path POSTs per source over time",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.http_method=POST Web.url=\"*/login*\" by _time span=5m Web.src | sort - count"
+        },
+        {
+          "title": "Failed authentications by source with distinct users",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count dc(Authentication.user) as users from datamodel=Authentication where Authentication.action=failure Authentication.app=<login_app> by Authentication.src | where count>100 | sort - count"
+        },
+        {
+          "title": "Successful logins from flood sources",
+          "phase": "eradication",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.action=success Authentication.src IN (<flood_ips>) by Authentication.user Authentication.src"
+        }
+      ]
+    },
+    {
+      "id": "lib-ddos-dns-amplification-inbound",
+      "name": "DNS amplification attack targeting our network",
+      "summary": "Use when large inbound DNS responses from many open resolvers flood your prefixes even though you sent no matching queries.",
+      "tags": [
+        "ddos",
+        "dns",
+        "amplification",
+        "volumetric"
+      ],
+      "attack": [
+        "T1498.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Confirm which hosts legitimately receive inbound UDP 53 responses, typically only resolvers",
+          "Enable flow export with packet size so large DNS responses are visible",
+          "Agree with the ISP how to apply an ACL for UDP source port 53 to a target prefix"
+        ],
+        "identification": [
+          "Confirm the flood is UDP source port 53 with large or fragmented packets",
+          "Check whether any internal resolver sent queries matching the response volume",
+          "Sample packets to identify the queried name and record type such as ANY or TXT",
+          "Count distinct reflector IPs and their ASNs for the ISP report",
+          "Identify which destination addresses are targeted and why, such as a public game or VPN IP"
+        ],
+        "containment": [
+          "Ask the upstream to drop UDP source port 53 to targets that are not DNS resolvers",
+          "Drop IP fragments to the target prefix at the edge if they are attack traffic",
+          "Divert the prefix to the scrubbing provider if the circuit remains saturated"
+        ],
+        "eradication": [
+          "Verify the upstream ACL is effective by checking edge counters and flow volume",
+          "Ensure internal resolvers still reach forwarders after source-port filtering",
+          "Close any exposed service on the target IP that made it attractive, such as an unused game port"
+        ],
+        "recovery": [
+          "Remove the upstream ACL after the agreed quiet period and watch for resumption",
+          "Test name resolution from internal resolvers and public services end to end",
+          "Report the reflector list to the ISP abuse team or a national CERT"
+        ],
+        "lessons": [
+          "Add a detection for inbound UDP 53 bytes to non-resolver destinations",
+          "Consider moving exposed services behind a provider that absorbs amplification",
+          "Record amplification factor and reflector count for trend reporting"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Inbound DNS responses to non-resolver hosts",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(All_Traffic.bytes) as bytes dc(All_Traffic.src) as reflectors from datamodel=Network_Traffic where All_Traffic.transport=udp All_Traffic.src_port=53 NOT All_Traffic.dest IN (<resolver_ips>) by All_Traffic.dest | sort - bytes"
+        },
+        {
+          "title": "Queried names and types in unsolicited responses",
+          "phase": "identification",
+          "spl": "index=* sourcetype=stream:dns dest_ip=<target_ip> message_type=RESPONSE | stats count sum(bytes_in) as bytes by query record_type | sort - count | head 20"
+        },
+        {
+          "title": "Reflector ASN summary for ISP report",
+          "phase": "recovery",
+          "spl": "index=netflow dest_ip=<target_ip> src_port=53 protocol=17 | stats sum(bytes) as bytes by src_ip | iplocation src_ip | stats sum(bytes) as bytes dc(src_ip) as reflectors by Country | sort - bytes"
+        }
+      ]
+    },
+    {
+      "id": "lib-ddos-dns-servers-abused-as-reflectors",
+      "name": "Our DNS servers abused as reflectors in an amplification attack",
+      "summary": "Use when your authoritative or recursive DNS servers send large response volumes to a victim after receiving spoofed queries, or an abuse report says so.",
+      "tags": [
+        "ddos",
+        "dns",
+        "reflection",
+        "abuse-report"
+      ],
+      "attack": [
+        "T1498.002"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Restrict recursion on resolvers to internal client ranges with ACLs",
+          "Enable response rate limiting (RRL) on authoritative DNS servers",
+          "Monitor outbound DNS response bytes per destination from each name server",
+          "Route ISP and CERT abuse mailbox reports to the SOC queue"
+        ],
+        "identification": [
+          "Read the abuse report and extract the victim IP, timestamps, and our server IPs cited",
+          "Check name server query logs for the repeated query name and type, such as ANY or DNSKEY",
+          "Confirm whether the server answers recursive queries from the internet",
+          "Measure outbound response volume per victim IP from flow data",
+          "Determine whether the source addresses are spoofed by checking for TCP follow-up or replies"
+        ],
+        "containment": [
+          "Disable open recursion on any resolver answering external clients",
+          "Enable or tighten RRL limits on authoritative servers for the abused query",
+          "Block or minimise ANY responses using the server's minimal-any style option",
+          "Apply an egress rate limit for UDP 53 responses toward the victim prefix"
+        ],
+        "eradication": [
+          "Fix the configuration management template that left recursion enabled",
+          "Audit every DNS server, including forgotten appliances, for open recursion",
+          "Remove large unneeded TXT records that maximise amplification"
+        ],
+        "recovery": [
+          "Re-test from an external vantage point that recursion is refused",
+          "Confirm legitimate authoritative answers are still served under RRL",
+          "Reply to the abuse reporter with the fix and timeline"
+        ],
+        "lessons": [
+          "Add a scheduled external scan for open resolvers on our address space",
+          "Alert on outbound DNS bytes to a single destination above baseline",
+          "Record time from abuse report receipt to remediation"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Outbound DNS response volume per destination from our servers",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(All_Traffic.bytes) as bytes count from datamodel=Network_Traffic where All_Traffic.src IN (<dns_server_ips>) All_Traffic.src_port=53 by All_Traffic.dest | sort - bytes | head 20"
+        },
+        {
+          "title": "Repeated query names from victim address",
+          "phase": "identification",
+          "spl": "index=* sourcetype=stream:dns src_ip=<victim_ip> | stats count avg(bytes_out) as avg_resp by query record_type dest_ip | sort - count"
+        },
+        {
+          "title": "External recursive queries answered",
+          "phase": "eradication",
+          "spl": "index=dns sourcetype=isc:bind:query NOT src IN (<internal_ranges>) | stats count by host query_type | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-ddos-ransom-ddos-extortion",
+      "name": "Ransom DDoS extortion note received",
+      "summary": "Use when someone demands payment to avoid or stop a DDoS attack, often with a short demonstration flood, and you need to assess credibility and harden quickly.",
+      "tags": [
+        "ddos",
+        "extortion",
+        "rddos",
+        "threat-intel"
+      ],
+      "attack": [
+        "T1498",
+        "T1499"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Have a policy position on extortion payment agreed with legal and executives",
+          "Keep law enforcement and DDoS provider emergency contacts current",
+          "Maintain an inventory of public IPs, DNS names, and which are protected by scrubbing"
+        ],
+        "identification": [
+          "Preserve the extortion email with full headers and any payment wallet address",
+          "Check for a demonstration attack in the window the note claims and measure its size",
+          "Compare the note wording and wallet against threat intel on known RDDoS groups",
+          "Identify which services are named or implied and whether they are behind DDoS protection",
+          "Brief legal and executives on the demand, deadline, and credibility assessment"
+        ],
+        "containment": [
+          "Enable always-on scrubbing or CDN protection for named services before the deadline",
+          "Move unprotected origin IPs behind the provider or renumber them",
+          "Staff a bridge with network, the ISP, and the DDoS provider for the deadline window",
+          "Instruct staff not to reply to or engage with the extortion address"
+        ],
+        "eradication": [
+          "Report the demand and wallet to law enforcement with preserved evidence",
+          "Close exposed management interfaces on targeted IPs that increase attack surface",
+          "Share indicators with the sector ISAC"
+        ],
+        "recovery": [
+          "Keep heightened protection for at least two weeks past the deadline",
+          "Review service performance under always-on scrubbing for latency regressions",
+          "Communicate status to customer support in case of service degradation"
+        ],
+        "lessons": [
+          "Record whether the threat was carried out and at what scale",
+          "Review how many public assets lacked DDoS protection when the note arrived",
+          "Update the extortion response runbook with decision timings"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Find the extortion email and other recipients",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=<extortion_sender> OR All_Email.subject=\"*DDoS*\" by All_Email.recipient All_Email.subject All_Email.src_user"
+        },
+        {
+          "title": "Traffic spike during claimed demonstration window",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(All_Traffic.bytes) as bytes from datamodel=Network_Traffic where All_Traffic.dest IN (<public_prefixes>) by _time span=1m All_Traffic.dest All_Traffic.transport | where bytes>0 | sort - bytes"
+        },
+        {
+          "title": "Traffic to targets around the deadline",
+          "phase": "recovery",
+          "spl": "index=netflow dest_ip IN (<target_ips>) earliest=<deadline_minus_2h> latest=<deadline_plus_6h> | timechart span=1m sum(bytes) as bytes by dest_ip"
+        }
+      ]
+    },
+    {
+      "id": "lib-ddos-api-exhaustion-bots",
+      "name": "API exhaustion by bots scraping or hammering endpoints",
+      "summary": "Use when automated clients drive public or partner API endpoints into rate limits, quota exhaustion, or high cost, degrading service for legitimate integrations.",
+      "tags": [
+        "ddos",
+        "api",
+        "bots",
+        "scraping",
+        "layer7"
+      ],
+      "attack": [
+        "T1499.003"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Enforce per-API-key and per-IP rate limits at the API gateway",
+          "Log API key, client ID, endpoint, and response time for every gateway request",
+          "Keep a contact list for partner integrations keyed by API client ID"
+        ],
+        "identification": [
+          "Rank API keys and client IPs by request count and backend latency contribution",
+          "Check whether the heavy client uses a valid key, a stolen partner key, or no key",
+          "Identify the endpoints hit and whether they are expensive, such as listing or export calls",
+          "Look for pagination walking or sequential ID enumeration indicating scraping",
+          "Quantify impact on error rates and cloud spend for affected backend services"
+        ],
+        "containment": [
+          "Throttle or suspend the abusive API key at the gateway",
+          "Add a tighter rate limit on the targeted expensive endpoint for all callers",
+          "Block or challenge the bot IP ranges at the WAF where no key is used",
+          "Contact the owning partner if a legitimate key is misbehaving"
+        ],
+        "eradication": [
+          "Rotate any partner key confirmed as leaked and issue a replacement",
+          "Require authentication on endpoints that were unintentionally anonymous",
+          "Cap page size and result count on listing endpoints"
+        ],
+        "recovery": [
+          "Restore normal quotas for legitimate clients and confirm their traffic resumes",
+          "Scale down any backend capacity added during the event",
+          "Verify backend queues and caches have drained"
+        ],
+        "lessons": [
+          "Add per-key anomaly alerting on request rate and distinct resource IDs",
+          "Review whether rate limits were set per endpoint cost or flat",
+          "Track cost incurred from the abuse for budget and contract discussions"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Top API clients by request volume and latency",
+          "phase": "identification",
+          "spl": "index=api sourcetype=<api_gateway_sourcetype> | stats count avg(response_time) as avg_ms sum(response_time) as total_ms by api_key client_ip | sort - total_ms | head 25"
+        },
+        {
+          "title": "Sequential ID enumeration on resource endpoints",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count dc(Web.url) as distinct_urls from datamodel=Web where Web.url=\"*/api/*\" by Web.src Web.http_user_agent | where distinct_urls>500 | sort - distinct_urls"
+        },
+        {
+          "title": "429 and 5xx rates by endpoint after throttling",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.url=\"*/api/*\" (Web.status=429 OR Web.status>=500) by _time span=5m Web.status"
+        }
+      ]
+    },
+    {
+      "id": "lib-ddos-smokescreen-intrusion",
+      "name": "DDoS used as a smokescreen for an intrusion",
+      "summary": "Use when a DDoS coincides with suspicious authentication, data movement, or fraud, and you must keep investigating the quiet side while the flood draws attention.",
+      "tags": [
+        "ddos",
+        "smokescreen",
+        "intrusion",
+        "fraud"
+      ],
+      "attack": [
+        "T1498",
+        "T1078",
+        "T1041"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Define in the DDoS runbook that a separate analyst monitors identity and data alerts",
+          "Ensure SIEM ingestion has capacity headroom so a flood does not drop security logs",
+          "Keep fraud and payments teams on the DDoS notification list"
+        ],
+        "identification": [
+          "Assign one analyst to the flood and one to hunt for concurrent intrusion activity",
+          "Check SIEM ingestion lag and dropped events during the flood window",
+          "Review privileged logins, MFA changes, and new admin accounts during the attack window",
+          "Look for unusual outbound data volume masked by the overall traffic spike",
+          "Ask fraud and payments teams for unusual transactions or wire changes in the window"
+        ],
+        "containment": [
+          "Disable accounts and revoke sessions showing suspicious activity during the flood",
+          "Block outbound destinations receiving unexplained data transfers",
+          "Freeze high-risk payment changes until reviewed",
+          "Keep DDoS mitigation running without letting staff disable security controls to recover speed"
+        ],
+        "eradication": [
+          "Run full compromise assessment on hosts tied to the suspicious activity",
+          "Reset credentials and API keys used by the intrusion",
+          "Re-enable any IDS or WAF rule sets that were put in bypass for performance"
+        ],
+        "recovery": [
+          "Backfill SIEM data that was delayed or dropped and re-run correlation searches",
+          "Verify no security tools were left in fail-open or bypass after the flood",
+          "Confirm with fraud and payments that frozen transactions were reviewed and released or reversed"
+        ],
+        "lessons": [
+          "Record which security controls were bypassed for availability and who approved it",
+          "Add a correlation rule pairing DDoS alerts with privileged or financial events",
+          "Size SIEM and log pipelines for attack-volume traffic"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Privileged and admin changes during the flood window",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Change where earliest=<flood_start> latest=<flood_end> (All_Changes.object_category=user OR All_Changes.object_category=group) by All_Changes.user All_Changes.action All_Changes.object"
+        },
+        {
+          "title": "Large outbound transfers during the flood",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(All_Traffic.bytes_out) as out from datamodel=Network_Traffic where earliest=<flood_start> latest=<flood_end> All_Traffic.direction=outbound by All_Traffic.src All_Traffic.dest | where out>100000000 | sort - out"
+        },
+        {
+          "title": "Ingestion lag by sourcetype during the attack",
+          "phase": "recovery",
+          "spl": "index=* earliest=<flood_start> latest=<flood_end> | eval lag=_indextime-_time | stats avg(lag) as avg_lag max(lag) as max_lag count by sourcetype | sort - max_lag"
+        }
+      ]
+    },
+    {
+      "id": "lib-ddos-cdn-origin-exposure",
+      "name": "Attack bypassing CDN or WAF by hitting exposed origin",
+      "summary": "Use when floods or exploits arrive directly at origin servers instead of through the CDN or WAF because the origin IP is discoverable and accepts direct traffic.",
+      "tags": [
+        "ddos",
+        "cdn",
+        "waf",
+        "origin",
+        "exposure"
+      ],
+      "attack": [
+        "T1498",
+        "T1590.005"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Restrict origin ingress to the CDN provider's published IP ranges",
+          "Keep origin IPs out of public DNS records, mail headers, and certificate SAN history",
+          "Use authenticated origin pulls or a shared secret header from the CDN"
+        ],
+        "identification": [
+          "Compare origin access logs for client IPs that are not CDN ranges",
+          "Check whether direct hits carry the CDN secret header or mTLS client cert",
+          "Search passive DNS and certificate transparency for leaked origin IP history",
+          "Look for MX, SPF, or subdomain records that resolve to the origin network",
+          "Confirm whether the flood volume reaching origin exceeds what the CDN reports"
+        ],
+        "containment": [
+          "Apply origin firewall rules allowing only CDN ranges on 80 and 443",
+          "Enable authenticated origin pulls and reject requests without the CDN credential",
+          "Ask the hosting provider to null-route the origin IP if it is overwhelmed"
+        ],
+        "eradication": [
+          "Move the origin to a new IP that has never appeared in public DNS",
+          "Remove DNS records and mail paths that disclose the origin network",
+          "Rotate the origin shared secret header"
+        ],
+        "recovery": [
+          "Point the CDN at the new origin and validate cache and health checks",
+          "Verify direct requests to the new origin time out from an external host",
+          "Decommission the old exposed origin IP after traffic has fully moved"
+        ],
+        "lessons": [
+          "Add a detection for non-CDN source IPs in origin access logs",
+          "Scan certificate transparency for new certificates naming origin hostnames",
+          "Review why origin lockdown was missing from the deployment checklist"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Origin requests from non-CDN source ranges",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.dest=<origin_host> by Web.src | lookup cdn_ip_ranges cidr AS Web.src OUTPUT provider | where isnull(provider) | sort - count"
+        },
+        {
+          "title": "Origin traffic volume direct vs via CDN",
+          "phase": "identification",
+          "spl": "index=web host=<origin_host> | eval via_cdn=if(isnotnull(cdn_secret_header),\"cdn\",\"direct\") | timechart span=5m count by via_cdn"
+        },
+        {
+          "title": "Direct connections to new origin after lockdown",
+          "phase": "recovery",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest=<new_origin_ip> All_Traffic.action=allowed by All_Traffic.src | lookup cdn_ip_ranges cidr AS All_Traffic.src OUTPUT provider | where isnull(provider)"
+        }
+      ]
+    },
+    {
+      "id": "lib-ddos-carrier-outage-vs-attack",
+      "name": "Carrier-level outage or attack: determining which",
+      "summary": "Use when connectivity or reachability fails broadly and you must quickly tell an ISP, BGP, or cloud provider outage apart from a DDoS before choosing a response.",
+      "tags": [
+        "ddos",
+        "outage",
+        "bgp",
+        "isp",
+        "triage"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Subscribe to ISP and cloud provider status pages and maintenance notifications",
+          "Set up external synthetic monitoring from several networks and regions",
+          "Configure BGP monitoring for our prefixes to alert on withdrawals and hijacks",
+          "Keep out-of-band access to edge routers that does not depend on the primary circuit"
+        ],
+        "identification": [
+          "Check edge router BGP session state and received route counts with each upstream",
+          "Compare interface traffic: near zero suggests outage, line rate suggests attack",
+          "Check public BGP looking glasses and route collectors for our prefix visibility",
+          "Review provider status pages and outage community lists for the affected region",
+          "Test reachability from external probes on multiple carriers to isolate the failing path"
+        ],
+        "containment": [
+          "Shift traffic to the secondary ISP by de-preferencing the failing upstream",
+          "Escalate to the carrier NOC with traceroutes and BGP evidence",
+          "Invoke the DDoS runbook only if flow data shows attack traffic at saturation"
+        ],
+        "eradication": [
+          "Confirm the carrier root cause statement and ticket closure",
+          "Correct any route filter, RPKI, or configuration error on our side that contributed",
+          "Report a BGP hijack to the offending ASN and upstreams if prefixes were announced elsewhere"
+        ],
+        "recovery": [
+          "Restore normal BGP preferences once the primary path is stable",
+          "Verify all public services from external probes on each carrier",
+          "Check that VPN tunnels and SaaS connectors re-established after failover"
+        ],
+        "lessons": [
+          "Measure time spent deciding outage versus attack and what data settled it",
+          "Review whether failover to the secondary ISP was automatic or manual",
+          "Publish ROAs for our prefixes if RPKI was missing"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Edge BGP session state changes",
+          "phase": "identification",
+          "spl": "index=network sourcetype=cisco:ios OR sourcetype=juniper:junos (BGP-5-ADJCHANGE OR bgp_neighbor_state OR \"BGP_IO_ERROR\") | rex \"neighbor (?<peer>\\d+\\.\\d+\\.\\d+\\.\\d+)\" | table _time host peer _raw"
+        },
+        {
+          "title": "Inbound traffic volume per uplink",
+          "phase": "identification",
+          "spl": "index=netflow | stats sum(bytes) as bytes by _time input_interface exporter_ip | timechart span=1m sum(bytes) by input_interface"
+        },
+        {
+          "title": "Synthetic check failures by probe location",
+          "phase": "recovery",
+          "spl": "index=synthetics status!=success | timechart span=5m count by probe_location"
+        }
+      ]
+    },
+    {
+      "id": "lib-ddos-voip-tdos",
+      "name": "Telephony denial of service flooding call centre lines",
+      "summary": "Use when automated or spoofed calls flood inbound phone numbers, SIP trunks, or contact-centre queues so real callers cannot get through.",
+      "tags": [
+        "ddos",
+        "tdos",
+        "voip",
+        "sip",
+        "contact-center"
+      ],
+      "attack": [
+        "T1499"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Log call detail records from the SBC and contact-centre platform to the SIEM",
+          "Agree with the telephony carrier how to request upstream call filtering",
+          "Configure SBC call admission control and per-source SIP rate limits",
+          "Prepare an alternative public number or callback channel for emergencies"
+        ],
+        "identification": [
+          "Pull call detail records showing call volume, duration, and calling numbers per trunk",
+          "Identify patterns such as short silent calls, repeated ANI, or sequential spoofed numbers",
+          "Check SBC logs for SIP INVITE floods from internet sources outside the carrier",
+          "Confirm which DIDs and queues are targeted and the abandoned-call rate for real customers",
+          "Check whether the flood follows an extortion demand or a public dispute"
+        ],
+        "containment": [
+          "Ask the carrier to block or rate limit the offending calling patterns upstream",
+          "Enable an IVR challenge such as press-a-digit to filter robocalls",
+          "Restrict SIP signalling on the SBC to carrier IP ranges only",
+          "Route priority callers to an alternate number published to key customers"
+        ],
+        "eradication": [
+          "Close direct internet SIP exposure on PBX or SBC interfaces",
+          "Report the flood to the carrier and law enforcement with CDR evidence",
+          "Remove compromised or abused SIP credentials and rotate trunk passwords"
+        ],
+        "recovery": [
+          "Remove the IVR challenge when call patterns return to normal",
+          "Review contact-centre staffing and queue backlog created by the flood",
+          "Confirm emergency and outbound calling were unaffected"
+        ],
+        "lessons": [
+          "Add an alert on calls per minute and short-call ratio per DID",
+          "Document carrier response time and filtering capabilities",
+          "Evaluate a voice-firewall or carrier TDoS protection service"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Calls per minute by DID with short-call ratio",
+          "phase": "identification",
+          "spl": "index=voip sourcetype=<cdr_sourcetype> | eval short=if(duration<10,1,0) | timechart span=1m count sum(short) as short_calls by called_number"
+        },
+        {
+          "title": "Top calling numbers and their call counts",
+          "phase": "identification",
+          "spl": "index=voip sourcetype=<cdr_sourcetype> called_number=<target_did> | stats count avg(duration) as avg_dur by calling_number | sort - count | head 50"
+        },
+        {
+          "title": "SIP INVITEs from non-carrier sources",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest_port IN (5060,5061) All_Traffic.dest=<sbc_ip> by All_Traffic.src | lookup carrier_sip_ranges cidr AS All_Traffic.src OUTPUT carrier | where isnull(carrier) | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-ddos-email-bombing-user",
+      "name": "Email bombing of a user's mailbox",
+      "summary": "Use when a user suddenly receives thousands of subscription confirmations or junk emails, which often hides a fraud alert and precedes fake help-desk calls.",
+      "tags": [
+        "ddos",
+        "email-bombing",
+        "email",
+        "social-engineering"
+      ],
+      "attack": [
+        "T1499",
+        "T1566.004"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Configure mail gateway thresholds for inbound messages per recipient per hour",
+          "Warn staff that IT never cold-calls or messages about spam floods to request remote access",
+          "Ensure message trace and mailbox audit logs are retained and searchable"
+        ],
+        "identification": [
+          "Run message trace for the user to count inbound messages and sending domains per hour",
+          "Search the flood for legitimate security notices such as bank, payroll, or password resets",
+          "Ask the user about any calls or chat messages claiming to be IT support",
+          "Check whether the user installed remote support tools such as Quick Assist after the flood",
+          "Check the user's account for new inbox rules, MFA changes, or unfamiliar sign-ins"
+        ],
+        "containment": [
+          "Apply a temporary transport rule quarantining bulk confirmation mail to the user",
+          "Block external Teams or chat contact from unknown tenants to the targeted user",
+          "Isolate the endpoint if a remote support tool session was granted to the caller",
+          "Revoke sessions and reset the password if any credential was shared"
+        ],
+        "eradication": [
+          "Remove inbox rules or forwarding added during the flood",
+          "Uninstall unauthorised remote access tools and review persistence on the endpoint",
+          "Report sign-up abuse to the newsletter services used for the flood"
+        ],
+        "recovery": [
+          "Release legitimate messages from quarantine after review with the user",
+          "Remove the temporary transport rule once inbound volume is normal",
+          "Check with finance or HR for any account changes the flood may have hidden"
+        ],
+        "lessons": [
+          "Add alerting on per-recipient inbound message spikes",
+          "Correlate email bomb alerts with external chat and remote-tool launches",
+          "Update awareness training with the email-bomb then fake-helpdesk pattern"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Inbound messages per hour to the targeted user",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count dc(All_Email.src_user) as senders from datamodel=Email where All_Email.recipient=<target_user> by _time span=1h | sort _time"
+        },
+        {
+          "title": "Security notices hidden in the flood",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.recipient=<target_user> (All_Email.subject=\"*password*\" OR All_Email.subject=\"*verify*\" OR All_Email.subject=\"*payment*\" OR All_Email.subject=\"*transfer*\") by All_Email.src_user All_Email.subject"
+        },
+        {
+          "title": "Remote support tools launched on the user's endpoint",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.dest=<user_host> Processes.process_name IN (quickassist.exe,AnyDesk.exe,TeamViewer.exe,ScreenConnect.ClientService.exe) by Processes.process_name Processes.user _time"
+        }
+      ]
+    },
+    {
+      "id": "lib-ddos-expensive-search-queries",
+      "name": "Resource exhaustion via expensive search or report queries",
+      "summary": "Use when a small number of requests to search, filter, or reporting features drive databases or search clusters to full CPU, causing slowdowns site-wide.",
+      "tags": [
+        "ddos",
+        "layer7",
+        "database",
+        "search",
+        "application"
+      ],
+      "attack": [
+        "T1499.003",
+        "T1499.004"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Enable slow query logging on databases and search clusters with client attribution",
+          "Set query timeouts and maximum result windows in the application and search engine",
+          "Tag application logs with request ID so slow queries map to web requests"
+        ],
+        "identification": [
+          "Pull the slow query log and rank query shapes by total execution time",
+          "Map slow queries back to request URLs, user accounts, and client IPs",
+          "Check for wildcard, regex, deep pagination, or unbounded date range parameters",
+          "Determine whether requests come from authenticated users, a scraper, or a single tenant",
+          "Check database connection pool saturation and lock waits"
+        ],
+        "containment": [
+          "Kill long-running queries matching the abusive pattern",
+          "Rate limit or disable the expensive search parameter at the WAF or feature flag",
+          "Suspend the account or API key driving the queries",
+          "Route reporting traffic to a read replica if available"
+        ],
+        "eradication": [
+          "Add server-side limits on page depth, wildcard prefix, and date range",
+          "Add or fix indexes for the query shape that was abused",
+          "Require authentication for the expensive search feature"
+        ],
+        "recovery": [
+          "Re-enable the feature with limits and watch query latency",
+          "Confirm replication lag and cache hit rates have recovered",
+          "Restore suspended accounts after confirming their usage was legitimate or contracted"
+        ],
+        "lessons": [
+          "Add an alert on slow query rate per client or account",
+          "Load test search endpoints with worst-case parameters before release",
+          "Record whether WAF signatures could have caught the parameter pattern"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Slow requests by URL and client",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path=\"*/search*\" | stats count avg(response_time) as avg_rt max(response_time) as max_rt by clientip uri_path | where avg_rt>2000 | sort - avg_rt"
+        },
+        {
+          "title": "Database slow queries by shape",
+          "phase": "identification",
+          "spl": "index=db sourcetype=mysql:slowquery OR sourcetype=postgresql | rex field=_raw \"(?i)(?<qshape>select .{0,120})\" | stats count sum(query_time) as total_time by qshape user | sort - total_time | head 20"
+        },
+        {
+          "title": "Search parameter patterns in web logs",
+          "phase": "eradication",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.url=\"*/search*\" (Web.url=\"*page=*\" OR Web.url=\"*q=*%2A*\") by Web.src Web.url | sort - count | head 50"
+        }
+      ]
+    },
+    {
+      "id": "lib-ddos-game-streaming-flood",
+      "name": "Flood against game servers or live streaming service",
+      "summary": "Use when game servers, matchmaking, or live stream ingest are hit by floods, often targeting specific players, tournaments, or streamers, causing disconnects.",
+      "tags": [
+        "ddos",
+        "gaming",
+        "streaming",
+        "udp",
+        "volumetric"
+      ],
+      "attack": [
+        "T1498.001",
+        "T1499"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Host game and ingest servers with providers offering UDP-aware DDoS filtering",
+          "Hide game server IPs from clients where possible using relays or proxies",
+          "Collect per-server player count, tick rate, and packet loss metrics",
+          "Prepare a plan to migrate matches or events to backup regions"
+        ],
+        "identification": [
+          "Identify targeted server IPs and whether they host a particular match or player",
+          "Check whether flood packets mimic game protocol traffic or are generic UDP",
+          "Correlate disconnect spikes with specific player accounts or lobbies",
+          "Check if a streamer or tournament schedule leaked server addresses",
+          "Measure packet loss, tick rate, and player disconnect rate on affected servers"
+        ],
+        "containment": [
+          "Enable provider game-protocol filtering profiles for targeted servers",
+          "Move active matches to fresh server IPs not yet known to the attacker",
+          "Rate limit unauthenticated connection requests to matchmaking services",
+          "Pause or reschedule high-profile events if mitigation is insufficient"
+        ],
+        "eradication": [
+          "Suspend player accounts linked to leaking server IPs or running booter services",
+          "Remove server IP disclosure from client UI, logs, or APIs",
+          "Report booter services and evidence to the provider and law enforcement"
+        ],
+        "recovery": [
+          "Return matches to standard regions once traffic returns to baseline",
+          "Compensate or communicate with affected players and streamers",
+          "Verify stream ingest bitrates and dropped frames are normal"
+        ],
+        "lessons": [
+          "Add per-server UDP pps alerts tied to player disconnect metrics",
+          "Review how attackers learned target IPs and close that path",
+          "Track repeat targeting by player or event to anticipate future floods"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "UDP pps to game server fleet by server",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(All_Traffic.packets) as pkts sum(All_Traffic.bytes) as bytes from datamodel=Network_Traffic where All_Traffic.transport=udp All_Traffic.dest IN (<game_server_ips>) by _time span=1m All_Traffic.dest | sort - pkts"
+        },
+        {
+          "title": "Player disconnects by server and lobby",
+          "phase": "identification",
+          "spl": "index=game sourcetype=<game_server_sourcetype> event=player_disconnect | timechart span=1m count by server_id"
+        },
+        {
+          "title": "Players present on every attacked server",
+          "phase": "eradication",
+          "spl": "index=game sourcetype=<game_server_sourcetype> event=player_join server_ip IN (<attacked_ips>) | stats dc(server_ip) as servers values(server_ip) as ips by player_id | where servers>=2 | sort - servers"
+        }
+      ]
+    }
+  ]
+}

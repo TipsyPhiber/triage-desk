@@ -1,0 +1,1263 @@
+{
+  "category": {
+    "id": "bec",
+    "name": "BEC & payment fraud",
+    "description": "Business email compromise and payment fraud: bank-detail changes, executive wire requests, payroll diversion, invoice tampering and fund recovery."
+  },
+  "playbooks": [
+    {
+      "id": "lib-bec-vendor-bank-change",
+      "name": "Vendor bank-detail change request suspected to be fraudulent",
+      "summary": "Use when accounts payable received a request to change a supplier's remittance bank account and something is off: new domain, urgency, or a request outside the normal vendor portal.",
+      "tags": [
+        "bec",
+        "vendor-fraud",
+        "accounts-payable",
+        "payment-fraud"
+      ],
+      "attack": [
+        "T1656",
+        "T1566.002",
+        "T1534"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Require call-back verification to a number already on file before any vendor bank change",
+          "Log every vendor master data change in the ERP with requester and approver",
+          "Give AP a direct line to the SOC for suspicious payment requests"
+        ],
+        "identification": [
+          "Compare the requesting address and domain with the vendor contact on file in the ERP",
+          "Check the message headers for lookalike domains, reply-to mismatches or failed DMARC",
+          "Call the vendor on the phone number in the vendor master, not the one in the email",
+          "List payments scheduled to that vendor in the next payment run",
+          "Check whether the vendor master record was already changed and by whom"
+        ],
+        "containment": [
+          "Place a hold on all pending payments to the vendor until the bank details are verified",
+          "Revert the vendor master bank fields if they were updated from the fraudulent request",
+          "Block the lookalike domain at the gateway"
+        ],
+        "eradication": [
+          "Tell the vendor their identity is being used and suggest they check their own mailbox for compromise",
+          "Search AP mailboxes for other bank change requests from the same domain",
+          "Remove the fraudulent sender from any AP mailbox safe-sender list"
+        ],
+        "recovery": [
+          "Release held payments after verification with the vendor by phone",
+          "Record the verified bank details with a note of who confirmed them and when",
+          "Brief AP staff on the indicators that caught this attempt"
+        ],
+        "lessons": [
+          "Confirm whether the call-back control was followed or skipped and why",
+          "Add a detection for inbound mail to AP that mentions bank details from a domain first seen this month",
+          "Track how many vendor bank change requests are verified per quarter"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Mail to AP from the requesting domain",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Email where All_Email.recipient IN (<ap_mailboxes>) All_Email.src_user=\"*@<ioc_domain>\" by All_Email.src_user All_Email.subject | convert ctime(first)"
+        },
+        {
+          "title": "Vendor master changes in the ERP",
+          "phase": "identification",
+          "spl": "index=erp sourcetype=<erp_audit> object=vendor_master field IN (bank_account, iban, routing_number) earliest=-30d | table _time user vendor_id field old_value new_value"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-ceo-wire-request",
+      "name": "Executive impersonation email requesting an urgent wire transfer",
+      "summary": "Use when finance received an urgent, confidential request appearing to come from the CEO or CFO to send a wire, often to a new beneficiary, before any money has moved.",
+      "tags": [
+        "bec",
+        "ceo-fraud",
+        "wire-transfer",
+        "impersonation",
+        "executive"
+      ],
+      "attack": [
+        "T1656",
+        "T1566.003",
+        "T1585.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Require dual approval and a verbal check with the requester for wires over a set threshold",
+          "Configure display-name impersonation protection for all executive names",
+          "Give finance a known-good phone list for executives"
+        ],
+        "identification": [
+          "Check whether the sender is the executive's real mailbox, a lookalike domain or a free webmail account",
+          "Contact the executive by a known phone number to confirm whether they sent it",
+          "Check the executive's real mailbox for compromise if the message came from it",
+          "Record the beneficiary bank, account number and amount requested",
+          "Search for the same sender contacting other finance staff"
+        ],
+        "containment": [
+          "Stop the wire in the treasury system if it is queued",
+          "Block the sender address and domain at the gateway",
+          "Warn the finance and treasury teams about the active attempt"
+        ],
+        "eradication": [
+          "Reset credentials for the executive if their real account sent the request",
+          "Report the beneficiary account to your bank's fraud team",
+          "Remove the lure and any follow-ups from finance mailboxes"
+        ],
+        "recovery": [
+          "Thank the staff member who escalated and share the outcome with finance",
+          "Confirm no other payments went to the beneficiary account in the last 90 days",
+          "Review open payment requests that cite the executive's authority"
+        ],
+        "lessons": [
+          "Record whether the wire threshold and verbal check rules were followed",
+          "Add a detection for external mail using an executive display name to finance staff",
+          "Run a short tabletop with finance on executive wire requests"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Executive display name from external senders",
+          "phase": "identification",
+          "spl": "index=* sourcetype=ms:o365:reporting:messagetrace earliest=-14d NOT SenderAddress=\"*@<your_domain>\" | search Subject IN (\"*urgent*\", \"*wire*\", \"*confidential*\", \"*payment*\") | stats count values(RecipientAddress) as recipients by SenderAddress Subject"
+        },
+        {
+          "title": "Finance recipients of the sender",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=\"<sender>\" by All_Email.recipient All_Email.subject All_Email.action"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-payroll-diversion",
+      "name": "Payroll diversion: employee direct deposit changed to attacker account",
+      "summary": "Use when an employee's pay was redirected to a new bank account, either through a fake email to HR or an attacker logging in to the payroll portal as the employee.",
+      "tags": [
+        "bec",
+        "payroll-diversion",
+        "direct-deposit",
+        "hr",
+        "payment-fraud"
+      ],
+      "attack": [
+        "T1656",
+        "T1078",
+        "T1565.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Require HR to confirm direct deposit changes by phone or in person, never by email",
+          "Notify the employee's old address and phone automatically when bank details change",
+          "Hold the first pay run after a bank change for verification"
+        ],
+        "identification": [
+          "Determine whether the change came by email to HR or through a self-service portal login",
+          "If by email, check whether it came from the employee's real mailbox or a lookalike",
+          "If by portal, review the login IP, device and MFA method used for the change",
+          "Confirm with the employee in person or by known phone number that they did not request it",
+          "Search for other direct deposit changes made from the same IP or sender"
+        ],
+        "containment": [
+          "Revert the employee's bank details and stop the pending payment if possible",
+          "Lock self-service bank changes for any account accessed from the attacker IP",
+          "Reset the employee's SSO and payroll portal credentials"
+        ],
+        "eradication": [
+          "Contact the payroll provider and bank to recall any deposit already sent",
+          "Remove attacker MFA devices from the employee's accounts",
+          "Block the lookalike domain or webmail sender used to contact HR"
+        ],
+        "recovery": [
+          "Arrange an off-cycle payment to the employee for any lost pay",
+          "Confirm the next pay run reaches the correct account",
+          "Keep the employee informed of the recall status"
+        ],
+        "lessons": [
+          "Record whether the bank-change notification reached the employee and when",
+          "Add a detection for portal bank changes from IPs not seen for that employee",
+          "Check whether the employee was phished earlier and link the cases"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Payroll portal bank changes and their source IPs",
+          "phase": "identification",
+          "spl": "index=* sourcetype=<payroll_audit> action IN (bank_account_change, direct_deposit_update) earliest=-30d | stats count values(employee_id) as employees by src_ip user_agent | sort - count"
+        },
+        {
+          "title": "HR mailbox requests about direct deposit",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.recipient IN (<hr_mailboxes>) All_Email.subject IN (\"*direct deposit*\", \"*bank*\", \"*payroll*\") by All_Email.src_user All_Email.subject"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-gift-card-scam",
+      "name": "Gift card purchase request impersonating a manager",
+      "summary": "Use when a staff member was asked by someone posing as their manager to buy gift cards and send the codes, whether or not any cards were bought.",
+      "tags": [
+        "bec",
+        "gift-card",
+        "impersonation",
+        "fraud"
+      ],
+      "attack": [
+        "T1656",
+        "T1585.002"
+      ],
+      "severity": "Low",
+      "tasks": {
+        "preparation": [
+          "State in policy and onboarding that managers never ask staff to buy gift cards",
+          "Turn on external sender tagging so webmail impersonation is obvious",
+          "Give staff a simple way to check with a manager by chat or phone"
+        ],
+        "identification": [
+          "Record the sender address, the manager impersonated and the phone number if SMS was used",
+          "Find out whether cards were bought, which brand and whether codes were sent",
+          "Search mail for the same sender writing to other staff",
+          "Check how the attacker learned the reporting line, such as a public org chart"
+        ],
+        "containment": [
+          "Contact the gift card brand's fraud line with the card numbers to freeze unused balances",
+          "Block the sender address at the gateway",
+          "Warn the impersonated manager's team about the attempt"
+        ],
+        "eradication": [
+          "Report the sender to the webmail provider's abuse team",
+          "Remove the lure from other mailboxes",
+          "Keep receipts and card numbers for any police or insurer report"
+        ],
+        "recovery": [
+          "Reimburse the staff member under the expense policy if management approves",
+          "Reassure the staff member that reporting quickly was the right step",
+          "Check back with the card issuer on whether balances were frozen"
+        ],
+        "lessons": [
+          "Track how many gift card lures were reported versus acted on",
+          "Review public sources that expose reporting lines and remove what is not needed",
+          "Add a detection for external mail containing gift card wording sent to staff"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Gift card wording in external mail",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.subject IN (\"*gift card*\", \"*quick favor*\", \"*are you available*\") NOT All_Email.src_user=\"*@<your_domain>\" by All_Email.src_user All_Email.recipient All_Email.subject"
+        },
+        {
+          "title": "Other targets of the sender",
+          "phase": "containment",
+          "spl": "index=* sourcetype=ms:o365:reporting:messagetrace SenderAddress=\"<sender>\" | stats count values(Subject) as subjects by RecipientAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-compromised-vendor-invoice",
+      "name": "Real vendor mailbox compromised and sending altered invoices",
+      "summary": "Use when invoices with changed bank details come from a supplier's genuine mailbox, because the supplier was compromised, so headers and domains all look legitimate.",
+      "tags": [
+        "bec",
+        "vendor-email-compromise",
+        "invoice-fraud",
+        "supply-chain"
+      ],
+      "attack": [
+        "T1534",
+        "T1656",
+        "T1565.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Keep a security contact for top suppliers separate from their billing contacts",
+          "Flag invoices whose bank details differ from the vendor master automatically in the AP system",
+          "Retain inbound mail headers long enough to compare old and new messages from suppliers"
+        ],
+        "identification": [
+          "Compare bank details on the new invoice with previous paid invoices from the vendor",
+          "Check headers for the vendor's usual sending servers versus new IPs or client types",
+          "Call the vendor's security or finance lead on a known number to confirm compromise",
+          "Find all invoices and payment-related messages from the vendor in the last 60 days",
+          "Check whether any payment already went to the new account"
+        ],
+        "containment": [
+          "Hold all payments to the vendor until they confirm their mailbox is clean",
+          "Quarantine incoming mail from the vendor domain for review",
+          "Revert any vendor master bank changes made from these invoices"
+        ],
+        "eradication": [
+          "Share the suspicious headers with the vendor so they can investigate their mailbox",
+          "Ask the vendor to confirm the attacker's inbox rules and access have been removed",
+          "Request a signed letter on vendor letterhead confirming the correct bank details"
+        ],
+        "recovery": [
+          "Release held payments using the confirmed bank details",
+          "Lift the quarantine on the vendor domain after their remediation is confirmed",
+          "Start a recall with your bank for any payment already sent to the fraudulent account"
+        ],
+        "lessons": [
+          "Record whether the AP system flagged the bank detail mismatch",
+          "Add a detection for vendor mail arriving from new sending IPs or countries",
+          "Review which suppliers should be added to a vendor risk review"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Sending IPs used by the vendor over time",
+          "phase": "identification",
+          "spl": "index=* sourcetype=ms:o365:reporting:messagetrace SenderAddress=\"*@<vendor_domain>\" earliest=-90d | stats count min(_time) as first max(_time) as last by FromIP | convert ctime(first) ctime(last) | sort first"
+        },
+        {
+          "title": "Invoice-related mail from the vendor",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=\"*@<vendor_domain>\" All_Email.subject IN (\"*invoice*\", \"*payment*\", \"*remittance*\", \"*bank*\") by All_Email.recipient All_Email.subject All_Email.src_ip"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-attorney-impersonation",
+      "name": "Attorney or law firm impersonation demanding a confidential payment",
+      "summary": "Use when someone posing as outside counsel or a regulator contacts finance about a secret deal, settlement or legal matter that needs an immediate payment and must not be discussed.",
+      "tags": [
+        "bec",
+        "attorney-impersonation",
+        "wire-transfer",
+        "pretexting"
+      ],
+      "attack": [
+        "T1656",
+        "T1585.002",
+        "T1566.003"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Keep a list of the company's retained law firms and their known contacts with general counsel",
+          "Tell finance that legal payments must be confirmed with the in-house legal team first",
+          "Enable impersonation checks for the domains of retained law firms"
+        ],
+        "identification": [
+          "Check the sender domain against the retained law firm list held by legal",
+          "Ask general counsel whether the matter, firm and attorney named are real",
+          "Record any phone numbers, call times and beneficiary details provided",
+          "Search for earlier contact from the same domain to finance or executives"
+        ],
+        "containment": [
+          "Cancel any payment prepared for the matter",
+          "Block the impersonating domain and phone numbers where possible",
+          "Tell finance leadership that the attempt is active"
+        ],
+        "eradication": [
+          "Inform the real law firm that its name is being used",
+          "Report the beneficiary account to your bank's fraud desk",
+          "Purge the lure messages from recipient mailboxes"
+        ],
+        "recovery": [
+          "Confirm with legal that no genuine matter was disrupted",
+          "Brief executives who might be named in follow-up attempts",
+          "Record the attempt in the fraud register for the auditors"
+        ],
+        "lessons": [
+          "Check whether secrecy wording in the request delayed escalation",
+          "Add a detection for lookalikes of retained law firm domains",
+          "Include legal-pretext scenarios in finance fraud training"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Mail from law-firm lookalike domains",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=\"*@<ioc_domain>\" OR All_Email.subject IN (\"*confidential*acquisition*\", \"*legal matter*\", \"*settlement*\") by All_Email.src_user All_Email.recipient All_Email.subject"
+        },
+        {
+          "title": "Prior contact from the domain",
+          "phase": "identification",
+          "spl": "index=* sourcetype=ms:o365:reporting:messagetrace SenderAddress=\"*@<ioc_domain>\" earliest=-90d | stats count min(_time) as first values(Subject) as subjects by RecipientAddress | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-real-estate-closing-fraud",
+      "name": "Real estate closing wire instructions altered before settlement",
+      "summary": "Use when a buyer, title company or escrow agent received changed wiring instructions for a property closing, and funds may be sent to an attacker instead of the escrow account.",
+      "tags": [
+        "bec",
+        "real-estate",
+        "escrow",
+        "wire-fraud",
+        "title"
+      ],
+      "attack": [
+        "T1656",
+        "T1534",
+        "T1114.002"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Give every client the escrow wiring details in person at the start and say they will never change",
+          "Require a call to a known number before any closing wire is released",
+          "Monitor agent and escrow officer mailboxes for new forwarding rules"
+        ],
+        "identification": [
+          "Compare the altered instructions with the original escrow account details",
+          "Find out who sent the change and whether it came from a staff mailbox or a lookalike",
+          "Check the escrow officer's and agent's mailboxes for compromise and hidden rules",
+          "Confirm with the client whether funds were already wired and when",
+          "List other active closings handled by the same compromised mailbox"
+        ],
+        "containment": [
+          "Call the client's bank immediately to request a recall if funds were sent",
+          "Warn every client with an active closing handled by that mailbox by phone",
+          "Reset the compromised mailbox and revoke sessions"
+        ],
+        "eradication": [
+          "Remove forwarding rules and attacker access from the mailbox",
+          "File a complaint with the national cybercrime reporting center for wire fraud",
+          "Block the lookalike domain used in the altered instructions"
+        ],
+        "recovery": [
+          "Work with the title company and banks to reschedule the closing with verified instructions",
+          "Confirm the recall outcome with the receiving bank",
+          "Brief agents on the call-back step before the next closing"
+        ],
+        "lessons": [
+          "Record the time between wire and recall request and how it affected recovery",
+          "Add a detection for messages containing wire instructions sent from outside the escrow system",
+          "Decide whether closing instructions should only be delivered through a secure portal"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Messages containing wiring instructions",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.subject IN (\"*wire*instruction*\", \"*closing*\", \"*escrow*\", \"*updated*bank*\") by All_Email.src_user All_Email.recipient All_Email.subject _time span=1d"
+        },
+        {
+          "title": "Forwarding rules on escrow mailboxes",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity Operation IN (New-InboxRule, Set-InboxRule, Set-Mailbox) UserId IN (<escrow_mailboxes>) earliest=-60d | table _time UserId ClientIP Operation Parameters{}.Name Parameters{}.Value"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-wire-already-sent-recall",
+      "name": "Fraudulent wire already sent: recall and fund recovery",
+      "summary": "Use the moment finance realizes a wire went to a fraudulent account. The first hours decide whether funds can be frozen, so this playbook focuses on bank recall, law enforcement and evidence.",
+      "tags": [
+        "bec",
+        "wire-recall",
+        "fund-recovery",
+        "law-enforcement",
+        "payment-fraud"
+      ],
+      "attack": [
+        "T1656"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Keep the bank's 24-hour fraud desk number and relationship manager contact in the IR binder",
+          "Know how to file with the national cybercrime center and the financial fraud kill chain process",
+          "Notify the cyber insurer's claim line early, as policies often require it"
+        ],
+        "identification": [
+          "Record the wire reference, amount, value date, beneficiary bank, SWIFT or routing number and account",
+          "Collect the fraudulent instructions and full email headers that led to the wire",
+          "Identify who approved the wire and which verification steps were skipped",
+          "Check whether other payments went to the same beneficiary account"
+        ],
+        "containment": [
+          "Call the originating bank's fraud desk and request a recall and SWIFT gpi trace",
+          "File a complaint with the national cybercrime center the same day with the beneficiary details",
+          "Freeze further outbound wires from the affected account until approvals are reviewed"
+        ],
+        "eradication": [
+          "Find and fix the compromise that produced the fraudulent instructions",
+          "Remove the beneficiary from the treasury system's saved payee list",
+          "Preserve emails, call logs and approval records for law enforcement and the insurer"
+        ],
+        "recovery": [
+          "Track recall status with the bank daily and record every contact",
+          "Submit the insurance claim with the evidence package",
+          "Report the loss to auditors and the board as required"
+        ],
+        "lessons": [
+          "Record time from wire release to recall request",
+          "Identify the control that should have stopped the wire and make it mandatory",
+          "Run a tabletop on wire recall with treasury and the bank"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Treasury wires to the beneficiary account",
+          "phase": "identification",
+          "spl": "index=treasury sourcetype=<treasury_audit> beneficiary_account=<ioc_account> earliest=-180d | table _time initiator approver amount currency beneficiary_name beneficiary_bank status"
+        },
+        {
+          "title": "Mail mentioning the beneficiary details",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=ms:o365:reporting:messagetrace earliest=-30d Subject IN (\"*wire*\", \"*payment*\", \"*bank details*\") RecipientAddress IN (<finance_mailboxes>) | stats count by SenderAddress Subject FromIP"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-deepfake-exec-request",
+      "name": "Deepfake voice or video call from an executive requesting payment",
+      "summary": "Use when a staff member received a phone or video call where the voice or face of an executive appeared real but was likely synthetic, asking for a transfer or sensitive data.",
+      "tags": [
+        "bec",
+        "deepfake",
+        "voice-cloning",
+        "vishing",
+        "executive"
+      ],
+      "attack": [
+        "T1656",
+        "T1566.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Set a rule that no payment is approved on the strength of a call or video meeting alone",
+          "Agree on a shared code phrase or call-back process between executives and finance",
+          "Record which executives have large amounts of public audio or video online"
+        ],
+        "identification": [
+          "Record the call platform, caller ID or meeting link, time and duration",
+          "Ask the employee what was requested and what details the caller knew",
+          "Confirm with the real executive through a known number that they were not on the call",
+          "Collect any recording, meeting invite or chat transcript from the platform",
+          "Check for preceding emails or messages that set up the call"
+        ],
+        "containment": [
+          "Stop any payment or data transfer that came from the call",
+          "Block the meeting organizer account or phone number where possible",
+          "Alert finance and executive assistants that deepfake calls are active"
+        ],
+        "eradication": [
+          "Report the external meeting account to the meeting platform",
+          "Report the beneficiary account to the bank if payment details were given",
+          "Remove the meeting invite and follow-up messages from mailboxes"
+        ],
+        "recovery": [
+          "Give the employee clear support and confirm they will not be blamed",
+          "Brief all executives so they can warn their direct reports",
+          "Confirm with the bank that no transfer completed"
+        ],
+        "lessons": [
+          "Record whether the call-back rule existed and was used",
+          "Review the public audio and video of executives that could have been used for cloning",
+          "Add deepfake call scenarios to finance and assistant training"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "External meeting invites before the call",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity Workload=MicrosoftTeams Operation IN (MeetingParticipantDetail, MeetingDetail) earliest=-7d | search UserId=<suspect_user> OR Attendees{}.UPN=<suspect_user> | table _time UserId Operation Organizer.UPN JoinTime"
+        },
+        {
+          "title": "Messages that set up the call",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.recipient=\"<suspect_user>\" All_Email.subject IN (\"*call*\", \"*meeting*\", \"*urgent*\") NOT All_Email.src_user=\"*@<your_domain>\" by All_Email.src_user All_Email.subject"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-ach-fraud",
+      "name": "Unauthorized ACH payment initiated from the business banking portal",
+      "summary": "Use when an ACH batch or payment was created in online business banking without approval, usually by an attacker with a treasury user's stolen credentials.",
+      "tags": [
+        "bec",
+        "ach-fraud",
+        "online-banking",
+        "treasury",
+        "account-takeover"
+      ],
+      "attack": [
+        "T1078",
+        "T1656",
+        "T1565.001"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Require dual control for creating and releasing ACH batches in the banking portal",
+          "Enable ACH positive pay or debit block with the bank",
+          "Use dedicated, hardened workstations for treasury banking sessions"
+        ],
+        "identification": [
+          "Pull the banking portal audit trail for the user who created and released the batch",
+          "Record each payee, amount, routing and account number in the unauthorized batch",
+          "Check the treasury user's workstation for remote access tools or banking malware",
+          "Compare portal login IPs with the company's egress IPs"
+        ],
+        "containment": [
+          "Call the bank to stop the batch or request reversal of entries not yet settled",
+          "Disable the treasury user's banking credentials and tokens",
+          "Isolate the treasury workstation in EDR"
+        ],
+        "eradication": [
+          "Reimage the treasury workstation and issue new banking tokens",
+          "Remove unknown payees or templates added to the banking portal",
+          "Reset the user's corporate and banking passwords from a clean device"
+        ],
+        "recovery": [
+          "Work with the bank on ACH return requests within the allowed window",
+          "Restore treasury access with dual control confirmed active",
+          "Reconcile all ACH activity for the past 30 days"
+        ],
+        "lessons": [
+          "Record whether dual control was enforced or bypassed",
+          "Add a detection for banking portal logins from IPs outside corporate egress",
+          "Review whether ACH limits per batch are set appropriately"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Banking portal logins from non-corporate IPs",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.url=\"*<bank_portal_domain>*\" by Web.user Web.src Web.dest | search NOT Web.src IN (<corporate_egress_ips>)"
+        },
+        {
+          "title": "Remote tools on the treasury workstation",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.dest=<host> Processes.process_name IN (anydesk.exe, teamviewer.exe, screenconnect*.exe, vncviewer.exe, rustdesk.exe) by Processes.user Processes.process_name"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-crypto-payment-fraud",
+      "name": "Payment fraud demanding cryptocurrency transfer",
+      "summary": "Use when staff were pressured to pay an invoice, fine or vendor in cryptocurrency, or a treasury crypto wallet sent funds to an attacker address after a fraudulent request.",
+      "tags": [
+        "bec",
+        "cryptocurrency",
+        "payment-fraud",
+        "wallet"
+      ],
+      "attack": [
+        "T1656",
+        "T1566.003"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "State in policy that the company does not pay vendors or fines in cryptocurrency unless treasury approves",
+          "Keep contacts for exchanges' compliance teams if the company holds crypto",
+          "Know which blockchain analytics service can trace transfers"
+        ],
+        "identification": [
+          "Record the wallet address, chain, amount, transaction hash and the request that led to it",
+          "Check whether the request came by email, chat or phone and from which identity",
+          "Trace the receiving address with a blockchain explorer to see if funds moved to an exchange",
+          "Find other staff who received the same payment demand"
+        ],
+        "containment": [
+          "Contact the receiving exchange's compliance team with the transaction hash to request a freeze",
+          "Block further transfers from the corporate wallet until approvals are reviewed",
+          "Block the sender identity used for the request"
+        ],
+        "eradication": [
+          "Rotate keys or API credentials for any corporate exchange account used",
+          "Remove the attacker wallet from any saved address book",
+          "Report the theft to law enforcement with the transaction details"
+        ],
+        "recovery": [
+          "Track freeze and recovery requests with the exchange",
+          "Restore wallet operations with dual signing or multi-sig in place",
+          "Tell affected staff the outcome and next steps"
+        ],
+        "lessons": [
+          "Record why a crypto payment was possible without treasury sign-off",
+          "Add a watch for crypto wallet addresses appearing in inbound mail to finance",
+          "Decide whether corporate wallets need multi-signature for all outbound transfers"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Inbound mail mentioning crypto payment",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.subject IN (\"*bitcoin*\", \"*BTC*\", \"*USDT*\", \"*crypto*\", \"*wallet*\") by All_Email.src_user All_Email.recipient All_Email.subject"
+        },
+        {
+          "title": "Exchange API activity from corporate accounts",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=<exchange_audit> action IN (withdrawal, address_add, api_key_create) earliest=-14d | table _time user action asset amount destination_address src_ip"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-w2-data-request",
+      "name": "Fake executive request for employee W-2 or tax records",
+      "summary": "Use when HR or payroll received a request, often from someone posing as the CEO or CFO, for all employees' W-2 forms or tax data, and you must know if PII was sent.",
+      "tags": [
+        "bec",
+        "w2",
+        "tax-fraud",
+        "pii",
+        "hr"
+      ],
+      "attack": [
+        "T1656",
+        "T1566.003",
+        "T1048"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Require that bulk employee tax data only goes out through approved, encrypted systems",
+          "Set a DLP rule for outbound mail containing many SSNs or W-2 attachments",
+          "Tell HR and payroll that executives will never ask for W-2 bundles by email"
+        ],
+        "identification": [
+          "Confirm with the named executive by phone that they did not make the request",
+          "Find out if anyone replied with W-2 PDFs, spreadsheets or a payroll export",
+          "Check sent items and DLP logs for outbound mail with SSNs to the attacker address",
+          "Count the employees whose data was in any file sent"
+        ],
+        "containment": [
+          "Block the reply-to address and the sending domain",
+          "Ask the receiving provider to suspend the attacker mailbox and preserve data",
+          "Recall the message if it went to an internal or same-tenant address"
+        ],
+        "eradication": [
+          "Notify the tax authority's phishing reporting address about the data theft",
+          "Prepare employee breach notifications and identity protection with legal",
+          "Remove the lure and replies from HR mailboxes"
+        ],
+        "recovery": [
+          "Offer credit monitoring and identity protection PINs to affected employees",
+          "Watch for fraudulent tax filings reported by employees and track them",
+          "Brief HR and payroll on the attempt and the new rule"
+        ],
+        "lessons": [
+          "Record whether DLP fired on the outbound file and why it did not block",
+          "Add a detection for external replies from HR containing spreadsheets or PDFs with SSN patterns",
+          "Review state breach notification deadlines and whether they were met"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Outbound mail from HR with attachments",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user IN (<hr_mailboxes>) NOT All_Email.recipient=\"*@<your_domain>\" All_Email.file_name IN (\"*.pdf\", \"*.xlsx\", \"*.csv\", \"*.zip\") by All_Email.recipient All_Email.file_name All_Email.subject"
+        },
+        {
+          "title": "DLP matches for SSN patterns",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity Operation=DlpRuleMatch earliest=-7d | search PolicyDetails{}.Rules{}.ConditionsMatched.SensitiveInformation{}.SensitiveInformationTypeName=\"*Social Security*\" | table _time UserId ExceptionInfo.Reason PolicyDetails{}.PolicyName"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-internal-ap-mailbox-compromise",
+      "name": "Accounts payable mailbox compromised and used to redirect payments",
+      "summary": "Use when an attacker controls your own AP or finance clerk mailbox and is replying to vendors, editing invoices or approving bank changes from inside the company.",
+      "tags": [
+        "bec",
+        "accounts-payable",
+        "account-takeover",
+        "m365",
+        "invoice-fraud"
+      ],
+      "attack": [
+        "T1078.004",
+        "T1114.002",
+        "T1564.008",
+        "T1534"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Require phishing-resistant MFA for all finance staff",
+          "Alert on inbox rules in finance mailboxes that match vendor names or payment keywords",
+          "Keep a list of finance mailboxes and shared mailboxes for scoped searches"
+        ],
+        "identification": [
+          "Review sign-ins to the AP mailbox for new IPs and session reuse",
+          "Read sent items for messages to vendors that change bank details or payment dates",
+          "Check MailItemsAccessed for the volume of finance mail read by the attacker",
+          "List invoices or payment approvals actioned by the account since compromise",
+          "Check shared AP mailboxes the user can access for the same activity"
+        ],
+        "containment": [
+          "Revoke sessions, reset the password and block sign-in for the AP user",
+          "Freeze the next payment run until each change made by the account is checked",
+          "Remove the attacker's inbox rules on the mailbox and any shared mailboxes"
+        ],
+        "eradication": [
+          "Contact every vendor the attacker emailed and tell them which messages were fraudulent",
+          "Revert vendor master changes approved by the account",
+          "Remove attacker MFA methods and devices"
+        ],
+        "recovery": [
+          "Release the payment run after finance validates each payee",
+          "Re-enable the AP user with phishing-resistant MFA",
+          "Recall any payments that went to changed accounts"
+        ],
+        "lessons": [
+          "Record how the AP account was first compromised and link to the phishing case",
+          "Add a detection for finance accounts sending mail to vendors from new IPs",
+          "Require a second approver for any vendor master change made by AP staff"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Mail sent by the AP account to vendors",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=\"<suspect_user>\" NOT All_Email.recipient=\"*@<your_domain>\" by All_Email.recipient All_Email.subject _time span=1h"
+        },
+        {
+          "title": "Mailbox items accessed by attacker session",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity Operation=MailItemsAccessed MailboxOwnerUPN=<suspect_user> ClientIPAddress=<ioc_ip> | stats sum(OperationCount) as items count by ClientIPAddress ClientInfoString"
+        },
+        {
+          "title": "Vendor master changes approved by the account",
+          "phase": "containment",
+          "spl": "index=erp sourcetype=<erp_audit> user=<suspect_user> object=vendor_master earliest=-30d | table _time vendor_id field old_value new_value"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-customers-paid-fake-invoices",
+      "name": "Customers paid fake invoices sent in the company's name",
+      "summary": "Use when customers report paying invoices that looked like yours but carried a different bank account, sent from a lookalike domain or a compromised billing mailbox.",
+      "tags": [
+        "bec",
+        "customer-fraud",
+        "invoice-fraud",
+        "lookalike-domain",
+        "brand"
+      ],
+      "attack": [
+        "T1656",
+        "T1583.001",
+        "T1585.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Print the company's verified bank details and a call-to-verify notice on every invoice",
+          "Keep DMARC at reject for billing domains",
+          "Give the customer support team a script for customers reporting suspicious invoices"
+        ],
+        "identification": [
+          "Collect the fake invoices, headers and bank details from each reporting customer",
+          "Determine whether they came from a lookalike domain or your real billing mailbox",
+          "Check the billing mailbox and invoicing platform for compromise if the domain was real",
+          "Find out how the attacker knew which customers had open invoices"
+        ],
+        "containment": [
+          "Contact the receiving bank with the fraudulent account details for each customer report",
+          "Block the lookalike domain and request registrar suspension",
+          "Notify customers with open invoices that bank details have not changed"
+        ],
+        "eradication": [
+          "Secure the billing mailbox or invoicing platform if it was the source",
+          "Report the fraud to law enforcement with all customer reports",
+          "Remove any data exports or API keys the attacker created in the invoicing platform"
+        ],
+        "recovery": [
+          "Agree with finance and legal how to handle outstanding balances for defrauded customers",
+          "Confirm DMARC and billing domain protections are in place",
+          "Follow up with each affected customer on recall status"
+        ],
+        "lessons": [
+          "Record how customers spotted the fraud and how many paid before noticing",
+          "Add a detection for lookalikes of billing domains in domain monitoring",
+          "Consider moving customers to a payment portal so invoices do not carry bank details"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Invoicing platform exports and API key changes",
+          "phase": "identification",
+          "spl": "index=* sourcetype=<billing_platform_audit> action IN (export_customers, export_invoices, api_key_created, user_login) earliest=-30d | stats count values(action) as actions by user src_ip"
+        },
+        {
+          "title": "Outbound billing mail volume by recipient domain",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=\"<billing_mailbox>\" by All_Email.recipient All_Email.src_ip _time span=1d"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-purchase-order-fraud",
+      "name": "Purchase order fraud: suppliers shipping goods to impersonators",
+      "summary": "Use when suppliers report receiving purchase orders in your company's name, from lookalike domains, for goods on credit terms shipped to addresses you do not control.",
+      "tags": [
+        "bec",
+        "purchase-order-fraud",
+        "procurement",
+        "impersonation",
+        "supplier"
+      ],
+      "attack": [
+        "T1656",
+        "T1583.001",
+        "T1585.002"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Publish the official procurement email domain and PO format on the supplier portal",
+          "Give suppliers a phone number to confirm unexpected large orders",
+          "Monitor for lookalike domains of procurement domains"
+        ],
+        "identification": [
+          "Collect the fake POs, sender addresses, shipping addresses and named buyers from suppliers",
+          "Check the ERP to confirm no matching PO numbers exist",
+          "Identify whether real employee names were used as the buyer",
+          "Search for credit applications filed with suppliers in your company's name"
+        ],
+        "containment": [
+          "Tell the affected suppliers to halt shipments and cancel the orders",
+          "Block the lookalike domains at the gateway and request suspension",
+          "Notify carriers or freight forwarders of the delivery addresses if shipments are in transit"
+        ],
+        "eradication": [
+          "Report the delivery addresses to law enforcement",
+          "Ask suppliers to revoke credit accounts opened in your name",
+          "Warn named employees that their names are being used"
+        ],
+        "recovery": [
+          "Send a supplier advisory describing how to verify genuine orders",
+          "Confirm with legal that the company is not liable for the fraudulent orders",
+          "Track supplier reports for further attempts over 60 days"
+        ],
+        "lessons": [
+          "Record how many suppliers were contacted before the first report",
+          "Add the lookalike patterns to domain monitoring",
+          "Review public pages that list procurement staff and their emails"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Supplier replies to lookalike addresses",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.recipient=\"*@<lookalike_domain>\" OR All_Email.src_user=\"*@<lookalike_domain>\" by All_Email.src_user All_Email.recipient All_Email.subject"
+        },
+        {
+          "title": "Inbound supplier mail referencing PO numbers",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.recipient IN (<procurement_mailboxes>) All_Email.subject IN (\"*PO*\", \"*purchase order*\", \"*credit application*\") by All_Email.src_user All_Email.subject"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-check-fraud",
+      "name": "Mailed vendor check stolen, altered or counterfeited",
+      "summary": "Use when a check the company mailed was intercepted and washed, re-payee'd or copied, and the bank shows cleared items that do not match the check register.",
+      "tags": [
+        "bec",
+        "check-fraud",
+        "positive-pay",
+        "accounts-payable"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Enroll disbursement accounts in check positive pay with payee name matching",
+          "Reconcile the check register against bank-cleared items daily",
+          "Use security paper and tamper-evident envelopes for mailed checks"
+        ],
+        "identification": [
+          "Compare cleared check images from the bank with the issue file for payee, amount and date",
+          "Record the check numbers, depositing bank and endorsement on each fraudulent item",
+          "Confirm with the intended vendor that they never received the check",
+          "Look for patterns, such as checks mailed from the same postal facility or route"
+        ],
+        "containment": [
+          "Ask the bank to return the fraudulent items under the positive pay or UCC timeline",
+          "Place stop payments on other outstanding checks mailed in the same batch",
+          "Pause mailed checks from the affected account"
+        ],
+        "eradication": [
+          "Report the theft to the postal inspection service",
+          "Close the compromised account and open a new one if counterfeits used its numbers",
+          "File a police report for the insurer and the bank"
+        ],
+        "recovery": [
+          "Reissue payment to the vendor by ACH after verifying their bank details by phone",
+          "Update the vendor master to prefer electronic payment",
+          "Track bank reimbursement of the fraudulent items"
+        ],
+        "lessons": [
+          "Record whether positive pay flagged the items and whether payee matching was enabled",
+          "Measure how many vendors are still paid by mailed check",
+          "Set a target date to move most vendors to electronic payment"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Cleared items not matching the issue file",
+          "phase": "identification",
+          "spl": "index=treasury sourcetype=<bank_cleared_items> earliest=-30d | join type=left check_number [search index=treasury sourcetype=<check_issue_file> earliest=-90d | rename amount as issued_amount payee as issued_payee] | where amount!=issued_amount OR payee!=issued_payee OR isnull(issued_amount) | table check_number issued_payee payee issued_amount amount deposit_bank"
+        },
+        {
+          "title": "Positive pay exceptions",
+          "phase": "containment",
+          "spl": "index=treasury sourcetype=<positive_pay_exceptions> earliest=-14d | stats count values(reason) as reasons by account check_number decision"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-fraudulent-vendor-onboarding",
+      "name": "Fake vendor added to the ERP and paid for invoices",
+      "summary": "Use when a vendor record was created for a company that does not exist or is controlled by a fraudster, and invoices from it were approved and paid.",
+      "tags": [
+        "bec",
+        "vendor-onboarding",
+        "erp",
+        "invoice-fraud",
+        "procurement"
+      ],
+      "attack": [
+        "T1656",
+        "T1565.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Require tax ID, bank letter and business registry checks before vendor activation",
+          "Separate the roles that create vendors and approve their invoices",
+          "Log vendor creation and first payment events in the ERP audit trail"
+        ],
+        "identification": [
+          "Pull the vendor creation record and note who created and approved it",
+          "Check the vendor's tax ID, address and phone against public business registries",
+          "List all invoices and payments made to the vendor and who approved each",
+          "Check whether the vendor's bank account matches an employee's direct deposit account",
+          "Find out whether the request came by email from outside or from an internal user"
+        ],
+        "containment": [
+          "Block the vendor record in the ERP so no further payments can run",
+          "Hold any open invoices from the vendor",
+          "Preserve ERP logs and approval emails for the investigation"
+        ],
+        "eradication": [
+          "Ask the bank to recall recent payments to the vendor's account",
+          "Escalate to HR and legal if an employee was involved in the setup",
+          "Remove the requester's vendor creation rights if they abused them"
+        ],
+        "recovery": [
+          "Re-verify all vendors created in the last 90 days against the onboarding checklist",
+          "Report the fraud to auditors",
+          "Restore normal vendor creation with the new checks enforced"
+        ],
+        "lessons": [
+          "Record which onboarding check was skipped",
+          "Add an ERP report matching vendor bank accounts against payroll accounts",
+          "Track the time between vendor creation and first payment for anomalies"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Vendor creation and first payments",
+          "phase": "identification",
+          "spl": "index=erp sourcetype=<erp_audit> (action=vendor_create OR action=payment_released) vendor_id=<vendor_id> | table _time action user approver amount bank_account"
+        },
+        {
+          "title": "Recently created vendors with quick payments",
+          "phase": "lessons",
+          "spl": "index=erp sourcetype=<erp_audit> action=vendor_create earliest=-90d | stats min(_time) as created by vendor_id user | join vendor_id [search index=erp sourcetype=<erp_audit> action=payment_released earliest=-90d | stats min(_time) as first_paid sum(amount) as total by vendor_id] | eval days=round((first_paid-created)/86400,1) | where days<14"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-purchasing-card-compromise",
+      "name": "Corporate purchasing card details phished and misused",
+      "summary": "Use when an employee entered a corporate card number on a fake site or invoice page and unauthorized charges are appearing on the card program.",
+      "tags": [
+        "bec",
+        "corporate-card",
+        "card-fraud",
+        "phishing",
+        "expense"
+      ],
+      "attack": [
+        "T1056.003",
+        "T1566.002"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Set merchant category and per-transaction limits on corporate cards",
+          "Enable real-time transaction alerts to cardholders",
+          "Keep the card issuer's fraud line in the finance contact list"
+        ],
+        "identification": [
+          "Get the list of unauthorized transactions from the card program portal",
+          "Ask the cardholder where they last entered the card number and when",
+          "Check proxy logs for the cardholder visiting the phishing page",
+          "Find other cardholders who visited the same page"
+        ],
+        "containment": [
+          "Cancel the card with the issuer and request a replacement",
+          "Block the phishing domain at the proxy",
+          "Lower limits temporarily on cards for staff who received the same lure"
+        ],
+        "eradication": [
+          "File disputes for each unauthorized transaction",
+          "Check whether the cardholder also entered their corporate password on the page",
+          "Report the phishing site to its host"
+        ],
+        "recovery": [
+          "Issue the replacement card and update recurring vendor charges",
+          "Confirm disputes are credited in the next statement",
+          "Remind cardholders how real vendors request card payment"
+        ],
+        "lessons": [
+          "Record whether transaction alerts reached the cardholder in time",
+          "Add a detection for proxy visits to payment pages on newly registered domains",
+          "Review whether virtual single-use cards should replace physical cards for online purchases"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Cardholders who reached the phishing payment page",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Web.http_method) as methods from datamodel=Web where Web.url=\"*<ioc_domain>*\" by Web.user Web.src"
+        },
+        {
+          "title": "Card program alerts for affected cards",
+          "phase": "identification",
+          "spl": "index=* sourcetype=<card_program_audit> card_last4=<card_last4> earliest=-30d | table _time merchant mcc amount currency status"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-refund-redirect-fraud",
+      "name": "Fraudster posing as a customer requests a refund to a new account",
+      "summary": "Use when someone impersonating a customer asks for a refund, credit balance or overpayment to be sent to a different bank account than the original payment came from.",
+      "tags": [
+        "bec",
+        "refund-fraud",
+        "customer-impersonation",
+        "accounts-receivable"
+      ],
+      "attack": [
+        "T1656",
+        "T1585.002"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Require refunds to go back to the original payment method unless the customer verifies by phone",
+          "Train accounts receivable to spot changed contact details on refund requests",
+          "Log refund approvals in the billing system"
+        ],
+        "identification": [
+          "Compare the requester's address and phone with the customer record",
+          "Contact the customer on the number on file to confirm the request",
+          "Check whether the customer's real mailbox may be compromised by reviewing headers",
+          "Search for other refund requests with the same bank account or sender domain"
+        ],
+        "containment": [
+          "Cancel the pending refund",
+          "Flag the customer account for manual review of any changes",
+          "Block the requester's domain if it is a lookalike"
+        ],
+        "eradication": [
+          "Tell the customer if their mailbox appears compromised",
+          "Report the bank account to your bank's fraud desk",
+          "Remove any updated contact details the fraudster added to the customer record"
+        ],
+        "recovery": [
+          "Issue the genuine refund to the original payment method if one was due",
+          "Confirm the customer record matches verified details",
+          "Record the attempt in the fraud register"
+        ],
+        "lessons": [
+          "Record whether the original-method rule was in place and followed",
+          "Add a report for refunds sent to accounts that never paid the company",
+          "Share the pattern with the customer support team"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Refund requests to accounts receivable",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.recipient IN (<ar_mailboxes>) All_Email.subject IN (\"*refund*\", \"*overpayment*\", \"*credit balance*\") by All_Email.src_user All_Email.subject"
+        },
+        {
+          "title": "Refunds to new bank accounts",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=<billing_audit> action=refund_issued earliest=-90d | stats count sum(amount) as total by customer_id refund_account original_payment_account | where refund_account!=original_payment_account"
+        }
+      ]
+    },
+    {
+      "id": "lib-bec-lookalike-thread-insertion",
+      "name": "Lookalike domain inserted into an ongoing payment email thread",
+      "summary": "Use when someone swapped a participant's address for a lookalike in a live finance thread, so replies about payment now go to the attacker while the conversation history looks intact.",
+      "tags": [
+        "bec",
+        "thread-insertion",
+        "lookalike-domain",
+        "conversation-hijack"
+      ],
+      "attack": [
+        "T1656",
+        "T1583.001",
+        "T1114"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Configure the gateway to flag first-time senders with domains one edit away from known contacts",
+          "Teach finance staff to check the full address, not just the display name, on payment threads",
+          "Monitor domain registrations similar to top suppliers and partners"
+        ],
+        "identification": [
+          "Identify the exact message where the address changed to the lookalike",
+          "Determine which side leaked the thread by checking whether attacker-quoted text came from your mailbox or the partner's",
+          "List every message sent to the lookalike and whether it contained payment or banking details",
+          "Check your participants' mailboxes for compromise if the thread was stolen from your side"
+        ],
+        "containment": [
+          "Stop any payment based on details given in the hijacked thread",
+          "Block the lookalike domain and purge its messages",
+          "Start a new thread with the real partner by phone to confirm the true state of the deal"
+        ],
+        "eradication": [
+          "Reset the compromised mailbox on whichever side leaked the thread",
+          "Request suspension of the lookalike domain at the registrar",
+          "Notify the partner's security team of the lookalike"
+        ],
+        "recovery": [
+          "Re-confirm all bank details in the deal by phone before payment",
+          "Add the partner's real addresses to a verified contact list for finance",
+          "Recall any payment already sent"
+        ],
+        "lessons": [
+          "Record how many replies went to the lookalike before discovery",
+          "Add a detection for replies in an existing thread to a domain first seen that day",
+          "Decide whether external senders with lookalike domains should be blocked outright"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Messages to the lookalike in the thread",
+          "phase": "identification",
+          "spl": "index=* sourcetype=ms:o365:reporting:messagetrace (RecipientAddress=\"*@<lookalike_domain>\" OR SenderAddress=\"*@<lookalike_domain>\") | table _time SenderAddress RecipientAddress Subject Status"
+        },
+        {
+          "title": "First-seen sender domains replying to finance",
+          "phase": "lessons",
+          "spl": "| tstats summariesonly=false min(_time) as first count from datamodel=Email where All_Email.recipient IN (<finance_mailboxes>) All_Email.subject=\"RE:*\" by All_Email.src_user | where first>relative_time(now(), \"-1d\") | convert ctime(first)"
+        }
+      ]
+    }
+  ]
+}

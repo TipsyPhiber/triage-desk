@@ -42,6 +42,8 @@ This runs the tests, builds both variants, and writes `release/triage-desk-v<ver
 | File | For |
 | --- | --- |
 | `triage-desk.html` | Double-click to run. Works offline and air-gapped. Most customers want this. |
+| `connected/` | Connected edition (single file + `web/`) for customers who bought live Splunk. Ships to everyone; it only unlocks with a Connected key. |
+| `SPLUNK.md` | Splunk setup: tokens, CORS, certificates. |
 | `web/` | Static build for teams that want to host it on an internal web server. |
 | `EULA.md`, `CUSTOMER-README.md` | Shipped with every download. |
 
@@ -78,6 +80,7 @@ It prints a `TD1.…` key. Email it to the buyer; they paste it into **Settings 
 | `--name` | Licensee shown in the app (person or company) |
 | `--email` | Purchaser email (shown in the app; keep it for your records) |
 | `--seats` | Analysts covered. This is honor-system and not enforced. |
+| `--plan pro\|connected` | `pro` (default) or `connected`. Connected includes Pro and unlocks live Splunk in the Connected build. |
 | `--updates-until YYYY-MM-DD` | Perpetual license that covers every build released on or before this date. Newer builds show "renew for updates," and older builds keep working forever. Omit it for lifetime updates. |
 | `--expires YYYY-MM-DD` | Hard expiry. Use it for trials or subscriptions. |
 | `--json` | Machine-readable output (`{ lid, token }`), handy for automation |
@@ -97,6 +100,8 @@ Once sales volume justifies it, put the issue step behind your store's "order cr
 | Free | $0 | (no key) |
 | Pro, individual | $59 one-time, 12 months of updates | `--seats 1 --updates-until <+1y>` |
 | Pro, team (up to 10 analysts) | $349 one-time, 12 months of updates | `--seats 10 --updates-until <+1y>` |
+| Connected, individual | $149 one-time, 12 months of updates | `--plan connected --seats 1 --updates-until <+1y>` |
+| Connected, team (up to 10 analysts) | $899 one-time, 12 months of updates | `--plan connected --seats 10 --updates-until <+1y>` |
 | Update renewal | ~40% of original price per year | reissue with a new `--updates-until` |
 | 14-day trial | $0 | `--expires <+14d>` |
 

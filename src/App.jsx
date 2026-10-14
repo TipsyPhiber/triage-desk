@@ -21,6 +21,15 @@ import { PlaybooksModal } from './components/PlaybooksModal.jsx';
 import { SettingsModal } from './components/SettingsModal.jsx';
 import { ShortcutsModal } from './components/ShortcutsModal.jsx';
 import { Welcome } from './components/Welcome.jsx';
+import { CommandPalette } from './components/CommandPalette.jsx';
+import { ImportAlertModal } from './components/ImportAlertModal.jsx';
+import { SplunkResultsModal } from './components/SplunkResultsModal.jsx';
+import { cycleTheme } from './components/ThemeToggle.jsx';
+import { canUsePlaybook } from './license/entitlements.js';
+import { alertNote, hecEvents, hecPayload, iocLookupCsv } from './lib/splunk.js';
+import { loadSplunkConfig, sendToHec } from './lib/splunkClient.js';
+import { loadIocExtractor } from './iocLoader.js';
+import { BookOpen, FileText, Moon, Plus, Settings as SettingsIcon, Upload } from 'lucide-react';
 
 function isTyping(el) {
   if (!el) return false;
@@ -34,7 +43,8 @@ export default function App() {
   const [now, setNow] = useState(Date.now());
   const [intelOpen, setIntelOpen] = useState(() => typeof window === 'undefined' || window.innerWidth >= 1536);
   const [intelTab, setIntelTab] = useState('timeline');
-  const [modal, setModal] = useState(null); // { kind: 'new' | 'playbooks' | 'settings' | 'shortcuts', tab? }
+  const [modal, setModal] = useState(null); // { kind: 'new' | 'playbooks' | 'settings' | 'shortcuts' | 'import' | 'results', … }
+  const [palette, setPalette] = useState(false);
   const [toast, setToast] = useState(null); // { text, tone }
 
   const licenseStatus = useMemo(() => checkLicense(ws.license), [ws.license]);
@@ -96,22 +106,40 @@ export default function App() {
 
   const openUpgrade = useCallback(() => setModal({ kind: 'settings', tab: 'license' }), []);
 
-  const requestNewIncident = useCallback(() => {
+  const requestNewIncident = useCallback((opts = {}) => {
     if (atLimit) {
       notify('Free edition holds one incident at a time — upgrade to Pro for unlimited.', 'warn');
       openUpgrade();
       return;
     }
-    setModal({ kind: 'new' });
+    setModal({ kind: 'new', ...opts });
   }, [atLimit, notify, openUpgrade]);
+
+  const requestImport = useCallback(() => {
+    if (atLimit) { requestNewIncident(); return; }
+    setModal({ kind: 'import' });
+  }, [atLimit, requestNewIncident]);
+
+  // Ctrl/⌘+K opens the command palette from anywhere, even while typing.
+  useEffect(() => {
+    function onKey(e) {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        setPalette((v) => !v);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Global keyboard shortcuts (ignored while typing or with a dialog open).
   useEffect(() => {
     function onKey(e) {
       if (e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target)) return;
-      if (modal) return;
+      if (modal || palette) return;
       if (e.key === '?') { e.preventDefault(); setModal({ kind: 'shortcuts' }); return; }
       if (e.key === 'c' || e.key === 'C') { e.preventDefault(); requestNewIncident(); return; }
+      if (e.key === 'i' || e.key === 'I') { e.preventDefault(); requestImport(); return; }
       if (!incident) return;
       if (e.key === 't' || e.key === 'T') { e.preventDefault(); setIntelOpen((v) => !v); return; }
       if (e.key === 'n' || e.key === 'N') {
@@ -125,13 +153,48 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [modal, incident, requestNewIncident, updateIncident]);
+  }, [modal, palette, incident, requestNewIncident, updateIncident]);
 
   function createIncident({ playbook, name, severity }) {
     const inc = I.createIncident({ playbook, name, severity, tlp: ws.settings.defaultTlp });
     setWs((w) => ({ ...w, incidents: [...w.incidents, inc], activeIncidentId: inc.id }));
     setModal(null);
   }
+
+  // Start an incident from a Splunk alert: suggested playbook (if licensed),
+  // alert summary in Identification notes, and its indicators extracted.
+  async function importAlert(alert, suggested) {
+    const playbook = suggested && canUsePlaybook(suggested, ent) ? suggested : findPlaybook(GENERAL_PLAYBOOK_ID, []);
+    let inc = I.createIncident({ playbook, name: alert.name, severity: alert.severity, tlp: ws.settings.defaultTlp });
+    inc = I.setActivePhase(I.appendNote(inc, 'identification', alertNote(alert)), 'identification');
+    try {
+      const mod = await loadIocExtractor();
+      const found = mod.extract_iocs(alert.rawText);
+      if (found?.length) inc = I.recordIocs(inc, 'identification', found);
+    } catch { /* extraction is best effort */ }
+    setWs((w) => ({ ...w, incidents: [...w.incidents, inc], activeIncidentId: inc.id }));
+    setModal(null);
+    notify(`Imported “${alert.name}”. Review it, then declare to start the clock.`, 'ok');
+  }
+
+  function exportSplunk(kind) {
+    const base = reportFilename(incident.name, 'x').replace(/\.x$/, '');
+    if (kind === 'lookup') downloadFile(iocLookupCsv(incident), `${base}-iocs.csv`, 'text/csv');
+    else downloadFile(hecPayload(incident), `${base}-timeline-hec.json`, 'application/json');
+    notify(kind === 'lookup' ? 'Exported IOC lookup table' : 'Exported timeline as HEC events', 'ok');
+  }
+
+  async function sendTimeline() {
+    try {
+      const n = await sendToHec(loadSplunkConfig(), hecEvents(incident));
+      updateIncident((i) => I.logSplunk(i, `Sent ${n} timeline event${n === 1 ? '' : 's'} to Splunk HEC`));
+      notify(`Sent ${n} events to Splunk`, 'ok');
+    } catch (e) {
+      notify(e.message, 'warn');
+    }
+  }
+
+  const runSearch = ent.connected ? (spl, title) => setModal({ kind: 'results', spl, title }) : undefined;
 
   function quickStart() {
     createIncident({ playbook: findPlaybook(GENERAL_PLAYBOOK_ID, []), name: '', severity: 'Medium' });
@@ -174,7 +237,50 @@ export default function App() {
   const modals = (
     <>
       {modal?.kind === 'new' && (
-        <NewIncidentModal playbooks={playbooks} ent={ent} onCreate={createIncident} onClose={() => setModal(null)} onUpgrade={openUpgrade} />
+        <NewIncidentModal playbooks={playbooks} ent={ent} onCreate={createIncident} onClose={() => setModal(null)} onUpgrade={openUpgrade} initialQuery={modal.query} initialPlaybookId={modal.playbookId} />
+      )}
+      {modal?.kind === 'import' && (
+        <ImportAlertModal playbooks={playbooks} ent={ent} onImport={importAlert} onClose={() => setModal(null)} />
+      )}
+      {modal?.kind === 'results' && incident && (
+        <SplunkResultsModal
+          title={modal.title}
+          spl={modal.spl}
+          onClose={() => setModal(null)}
+          onLogged={(m) => updateIncident((i) => I.logSplunk(i, m))}
+          onOpenSettings={() => setModal({ kind: 'settings', tab: 'splunk' })}
+          onExtract={async (text) => {
+            try {
+              const mod = await loadIocExtractor();
+              const found = mod.extract_iocs(text);
+              updateIncident((i) => I.recordIocs(i, i.activePhase, found));
+              notify(`Added ${found.length} indicator${found.length === 1 ? '' : 's'} from Splunk results`, 'ok');
+            } catch (e) { notify(String(e?.message ?? e), 'warn'); }
+          }}
+        />
+      )}
+      {palette && (
+        <CommandPalette
+          onClose={() => setPalette(false)}
+          actions={[
+            { id: 'new', label: 'New incident', keywords: 'create start', icon: Plus, hint: 'C', run: () => requestNewIncident() },
+            { id: 'import', label: 'Import a Splunk alert', keywords: 'notable splunk paste', splunk: true, hint: 'I', run: requestImport },
+            { id: 'playbooks', label: 'Browse and edit playbooks', keywords: 'library', icon: BookOpen, run: () => setModal({ kind: 'playbooks' }) },
+            ...(incident ? [
+              { id: 'export', label: 'Export report (Markdown)', keywords: 'download report', icon: FileText, run: () => exportReport('md') },
+              { id: 'timeline', label: 'Toggle side panel', keywords: 'timeline iocs splunk', icon: BookOpen, hint: 'T', run: () => setIntelOpen((v) => !v) },
+              { id: 'splunk-hunt', label: 'Hunt this incident’s IOCs in Splunk', keywords: 'search spl', splunk: true, run: () => { setIntelOpen(true); setIntelTab('splunk'); } },
+              ...I.incidentPhases(incident).map((p, n) => ({ id: `ph:${p.id}`, label: `Go to ${p.name}`, keywords: 'phase', icon: BookOpen, hint: String(n + 1), run: () => updateIncident((i) => I.setActivePhase(i, p.id)) })),
+            ] : []),
+            { id: 'theme', label: 'Switch theme (light / dark / system)', keywords: 'dark mode appearance', icon: Moon, run: () => notify(`Theme: ${cycleTheme()}`, 'ok') },
+            { id: 'splunk-settings', label: 'Splunk settings', keywords: 'connect token hec', splunk: true, run: () => setModal({ kind: 'settings', tab: 'splunk' }) },
+            { id: 'settings', label: 'Settings & license', icon: SettingsIcon, run: () => setModal({ kind: 'settings' }) },
+            { id: 'backup', label: 'Back up or restore workspace', keywords: 'export import data', icon: Upload, run: () => setModal({ kind: 'settings', tab: 'data' }) },
+            { id: 'shortcuts', label: 'Keyboard shortcuts', icon: BookOpen, hint: '?', run: () => setModal({ kind: 'shortcuts' }) },
+          ]}
+          incidents={ws.incidents.map((inc) => ({ ...inc, run: () => setWs((w) => ({ ...w, activeIncidentId: inc.id })) }))}
+          playbooks={playbooks.map((pb) => Object.assign(Object.create(pb), { run: () => requestNewIncident({ playbookId: pb.id, query: '' }) }))}
+        />
       )}
       {modal?.kind === 'playbooks' && (
         <PlaybooksModal
@@ -191,6 +297,8 @@ export default function App() {
           initialTab={modal.tab}
           workspace={ws}
           licenseStatus={licenseStatus}
+          ent={ent}
+          onNotify={notify}
           onSettings={(settings) => setWs((w) => ({ ...w, settings }))}
           onLicense={(license) => setWs((w) => ({ ...w, license }))}
           onRestore={(restored) => setWs(restored)}
@@ -200,7 +308,7 @@ export default function App() {
       {modal?.kind === 'shortcuts' && <ShortcutsModal onClose={() => setModal(null)} />}
       <ConfirmHost />
       {toast && (
-        <div key={toast.id} role="status" className="anim-in fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-2.5 pl-3 pr-4 py-2.5 rounded-xl bg-raised border border-line-2 text-[13px] text-ink shadow-[0_20px_40px_-12px_rgba(0,0,0,.7)]">
+        <div key={toast.id} role="status" className="anim-in fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-2.5 pl-3 pr-4 py-2.5 rounded-xl bg-raised border border-line-2 text-[13px] text-ink shadow-pop">
           {toast.tone === 'warn' ? <TriangleAlert size={15} className="text-signal" /> : <CheckCircle2 size={15} className="text-ok" />}
           {toast.text}
         </div>
@@ -213,8 +321,12 @@ export default function App() {
       <>
         <Welcome
           ent={ent}
+          playbooks={playbooks}
           onQuickStart={quickStart}
-          onNew={requestNewIncident}
+          onNew={() => requestNewIncident()}
+          onSearch={(query) => requestNewIncident({ query })}
+          onPick={(playbookId, query) => requestNewIncident({ playbookId, query })}
+          onImport={requestImport}
           onOpenSettings={() => setModal({ kind: 'settings', tab: 'data' })}
         />
         {modals}
@@ -235,7 +347,9 @@ export default function App() {
         activeId={incident.id}
         now={now}
         onSwitch={(id) => setWs((w) => ({ ...w, activeIncidentId: id }))}
-        onNew={requestNewIncident}
+        onNew={() => requestNewIncident()}
+        onImport={requestImport}
+        onPalette={() => setPalette(true)}
         onDelete={deleteIncident}
         atLimit={atLimit}
         ent={ent}
@@ -247,7 +361,7 @@ export default function App() {
 
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {!saveOk && (
-          <div className="px-6 py-2 bg-rose-500/15 border-b border-rose-500/40 text-sm text-rose-200 flex items-center gap-2">
+          <div className="px-6 py-2 bg-danger/10 border-b border-danger/40 text-sm text-danger flex items-center gap-2">
             <TriangleAlert size={15} />
             Browser storage is full or disabled — changes are <strong>not being saved</strong>. Export a backup from Settings → Data now.
           </div>
@@ -319,6 +433,9 @@ export default function App() {
             phaseStatus={phaseActivity(phase.stage, lifecycle)}
             advisory={phaseAdvisory(phase.stage, lifecycle)}
             running={lifecycle === 'active'}
+            searches={(incident.searches || []).filter((x) => x.phase === phase.id)}
+            onCopied={(t) => notify(t, 'ok')}
+            onRunSearch={runSearch}
           />
         </main>
       </div>
@@ -330,6 +447,7 @@ export default function App() {
         onTab={setIntelTab}
         incident={incident}
         onCopied={(t) => notify(t, 'ok')}
+        splunk={{ connected: ent.connected, onRun: runSearch, onExport: exportSplunk, onSendHec: sendTimeline }}
       />
       {modals}
     </div>

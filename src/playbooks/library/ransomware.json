@@ -1,0 +1,1702 @@
+{
+  "category": {
+    "id": "ransomware",
+    "name": "Ransomware",
+    "description": "Ransomware and extortion incidents: encryption of endpoints, servers, hypervisors, cloud and SaaS data, data-theft extortion, and recovery decisions."
+  },
+  "playbooks": [
+    {
+      "id": "lib-ransomware-file-server-encryption",
+      "name": "Ransomware encrypting Windows file server shares",
+      "summary": "Use when users report unreadable files and ransom notes appearing across SMB shares on one or more Windows file servers, with mass renames to a new extension.",
+      "tags": [
+        "ransomware",
+        "windows",
+        "file-server",
+        "smb",
+        "encryption"
+      ],
+      "attack": [
+        "T1486",
+        "T1021.002",
+        "T1490",
+        "T1083"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable File Server Resource Manager file screens or canary files on every departmental share",
+          "Forward Windows Security 5140/5145 share-access events from file servers to Splunk",
+          "Keep an offline list of file server hostnames, share paths, and data owners for each share",
+          "Confirm file server snapshots replicate to a storage target not joined to the domain"
+        ],
+        "identification": [
+          "Identify the client host and account writing encrypted files from 5145 events on the file server",
+          "Record the new file extension and copy one ransom note and one encrypted sample to evidence storage",
+          "List every share where the ransom note filename appears and note first-seen timestamps",
+          "Check whether encryption is driven over SMB from a client or by a process on the server itself"
+        ],
+        "containment": [
+          "Disable the SMB sessions and the user account writing encrypted files on the file server",
+          "Isolate the originating workstation in EDR before it reaches additional shares",
+          "Set affected shares to read-only or stop the LanmanServer service if encryption continues",
+          "Block SMB (445) between user VLANs and the server VLAN except from approved jump hosts"
+        ],
+        "eradication": [
+          "Reimage the originating workstation rather than cleaning it in place",
+          "Reset passwords for the abused account and any accounts cached on the patient-zero host",
+          "Remove the ransomware binary and any scheduled tasks or services found on the file server"
+        ],
+        "recovery": [
+          "Restore affected folders from the last clean snapshot taken before the first encrypted write",
+          "Diff restored share contents against the pre-incident file count to confirm nothing was missed",
+          "Re-enable shares to users department by department while watching 5145 write rates"
+        ],
+        "lessons": [
+          "Measure time from first encrypted write to share isolation and set a target",
+          "Add a Splunk alert for one account modifying more than 500 share files in five minutes",
+          "Review which users had write access to shares they never use and trim permissions"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Mass file modification on shares by account",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=5145 host=<host> AccessMask IN (\"0x2\",\"0x6\",\"0x10000\") | bin _time span=5m | stats dc(Relative_Target_Name) as files values(Share_Name) as shares by _time, Account_Name, Source_Address | where files > 200 | sort - files"
+        },
+        {
+          "title": "Ransom note filename seen on shares",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=5145 Relative_Target_Name=\"*<note_filename>*\" | stats min(_time) as first_seen count by host, Share_Name, Source_Address, Account_Name | convert ctime(first_seen)"
+        },
+        {
+          "title": "SMB connections from patient-zero to other servers",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.src=<ioc_ip> All_Traffic.dest_port=445 by All_Traffic.dest, _time span=1h | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-esxi-hypervisor",
+      "name": "ESXi hypervisor datastores encrypted by ransomware",
+      "summary": "Use when many virtual machines go down at once and VMDK or VMX files on ESXi datastores are renamed or encrypted, usually after vCenter or ESXi shell access.",
+      "tags": [
+        "ransomware",
+        "esxi",
+        "vmware",
+        "hypervisor",
+        "linux"
+      ],
+      "attack": [
+        "T1486",
+        "T1021.004",
+        "T1529",
+        "T1078"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Forward ESXi hostd, shell.log, and auth.log plus vCenter events to Splunk via syslog",
+          "Disable SSH and ESXi Shell by default and enable lockdown mode on production hosts",
+          "Keep vCenter and ESXi root credentials in a vault separate from Active Directory",
+          "Back up VMs to an immutable repository that ESXi hosts cannot delete from"
+        ],
+        "identification": [
+          "Review ESXi shell.log for commands like esxcli vm process kill and vim-cmd vmsvc/power.off",
+          "Check vCenter events for SSH service enablement and the account that turned it on",
+          "List datastores containing renamed .vmdk files and the ransom note dropped in VM folders",
+          "Determine whether vCenter SSO was accessed through an AD-joined admin account"
+        ],
+        "containment": [
+          "Disable SSH on all ESXi hosts and rotate the root password from the DCUI",
+          "Block management network access to ESXi and vCenter except from a single clean admin workstation",
+          "Disable the AD group granted ESXi Admins rights and remove AD integration temporarily",
+          "Power down unaffected hosts' management interfaces until the access path is known"
+        ],
+        "eradication": [
+          "Remove the encryptor ELF binary and any persistence in /etc/rc.local.d/local.sh on each host",
+          "Reinstall ESXi on hosts where the root account was used rather than trusting the existing image",
+          "Patch ESXi and vCenter to current builds before reconnecting them to the cluster"
+        ],
+        "recovery": [
+          "Rank VMs by business criticality and restore domain controllers and DNS first",
+          "Restore VMs from immutable backups to rebuilt hosts and verify boot before reconnecting networks",
+          "Check whether flat VMDKs were only partially encrypted and test vendor recovery tools on copies"
+        ],
+        "lessons": [
+          "Decide whether ESXi hosts should remain joined to Active Directory",
+          "Add an alert for SSH enablement or mass VM power-off events on any host",
+          "Record how long hypervisor restores took versus the documented RTO"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "ESXi shell commands killing or powering off VMs",
+          "phase": "identification",
+          "spl": "index=vmware sourcetype=vmw-syslog (\"esxcli vm process kill\" OR \"vim-cmd vmsvc/power.off\" OR \"vmsvc/getallvms\") | stats count values(_raw) as commands by host | sort - count"
+        },
+        {
+          "title": "SSH service enabled on ESXi hosts",
+          "phase": "identification",
+          "spl": "index=vmware sourcetype=vmw-syslog (\"SSH access has been enabled\" OR \"TSM-SSH\" OR \"ESXi Shell for the root user has been enabled\") | table _time host _raw | sort _time"
+        },
+        {
+          "title": "Logins to vCenter and ESXi by account",
+          "phase": "containment",
+          "spl": "index=vmware (sourcetype=vmw-syslog OR sourcetype=vmware:events) (\"Accepted password\" OR \"UserLoginSessionEvent\") | rex \"for (?<user>\\S+) from (?<src>\\S+)\" | stats count min(_time) as first max(_time) as last by user, src, host"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-double-extortion-leak-site",
+      "name": "Victim listed on ransomware leak site with stolen data",
+      "summary": "Use when threat intel or a journalist reports your organization on a ransomware group's leak site, with or without encryption, and you must confirm exfiltration scope.",
+      "tags": [
+        "ransomware",
+        "double-extortion",
+        "exfiltration",
+        "leak-site",
+        "legal"
+      ],
+      "attack": [
+        "T1486",
+        "T1567.002",
+        "T1048",
+        "T1657"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Retain firewall and proxy logs with byte counts for at least 90 days to size exfiltration",
+          "Pre-arrange outside counsel and a threat intel provider who can safely monitor leak sites",
+          "Maintain a data inventory mapping file shares to regulated data types and owners",
+          "Agree in advance who may speak to media about a leak-site listing"
+        ],
+        "identification": [
+          "Have the intel provider capture the leak-site post, countdown timer, and sample files without downloading payloads",
+          "Match published sample file paths and names to internal shares to identify the source system",
+          "Search proxy and firewall logs for large outbound transfers to cloud storage or rclone/MEGA endpoints",
+          "Check whether encryption also occurred or this is a data-theft listing only"
+        ],
+        "containment": [
+          "Block egress to the identified exfiltration destinations at proxy and firewall",
+          "Disable accounts and API tokens used to stage or upload the archives",
+          "Remove staging archives (7z, rar, zip) found on servers after preserving copies for evidence"
+        ],
+        "eradication": [
+          "Remove the exfiltration tooling such as rclone configs or WinSCP from staging hosts",
+          "Close the initial access path identified from staging-host timelines",
+          "Rotate credentials stored in any files known to be in the stolen data set"
+        ],
+        "recovery": [
+          "Work with counsel to build the list of affected individuals from the confirmed file set",
+          "Prepare customer, regulator, and employee notifications on the timelines counsel sets",
+          "Keep monitoring the leak site for full publication and mirror links after the deadline"
+        ],
+        "lessons": [
+          "Add a detection for any single host uploading more than 5 GB to an uncategorized destination",
+          "Review whether DLP or egress controls should have caught the staging and upload",
+          "Record how long it took to map leaked samples to their source share"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Large outbound transfers by internal host",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(All_Traffic.bytes_out) as bytes_out from datamodel=Network_Traffic where All_Traffic.direction=outbound by All_Traffic.src, All_Traffic.dest, _time span=1h | where bytes_out > 2000000000 | eval GB=round(bytes_out/1073741824,2) | sort - GB"
+        },
+        {
+          "title": "Rclone or MEGA client execution",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Endpoint.Processes where (Processes.process_name IN (\"rclone.exe\",\"MEGAsync.exe\",\"megacmd.exe\") OR Processes.process=\"*copy * remote:*\") by Processes.dest, Processes.user, Processes.process | convert ctime(first)"
+        },
+        {
+          "title": "Archive creation on file servers before exfiltration",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.process_name IN (\"7z.exe\",\"7za.exe\",\"rar.exe\",\"WinRAR.exe\") Processes.process=\"* a *\" by Processes.dest, Processes.user, Processes.process, _time span=1h"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-rdp-brute-force",
+      "name": "Ransomware deployed after RDP brute force on exposed server",
+      "summary": "Use when encryption is traced to an internet-exposed RDP server that shows a run of failed logons followed by a successful one from an external IP.",
+      "tags": [
+        "ransomware",
+        "rdp",
+        "brute-force",
+        "initial-access",
+        "windows"
+      ],
+      "attack": [
+        "T1110.001",
+        "T1133",
+        "T1021.001",
+        "T1486"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Maintain an external attack-surface scan that flags any host with TCP 3389 open to the internet",
+          "Enforce account lockout and Network Level Authentication on all RDP-enabled servers",
+          "Collect Windows Security 4624/4625 and TerminalServices-LocalSessionManager logs centrally"
+        ],
+        "identification": [
+          "Count 4625 failures per source IP against the exposed server and find the first 4624 logon type 10 that followed",
+          "Identify the account that was guessed and whether it is local or domain",
+          "Review the RDP session timeline in LocalSessionManager event 21/24/25 for session duration",
+          "Look for tools dropped during the session such as network scanners or credential dumpers"
+        ],
+        "containment": [
+          "Remove the internet NAT or firewall rule exposing 3389 on the server",
+          "Disable the compromised account and log off its active sessions domain-wide",
+          "Block the brute-force source IPs at the perimeter and check them against VPN logs"
+        ],
+        "eradication": [
+          "Rebuild the exposed server from a known-good image",
+          "Delete or rename the guessable local administrator account and deploy LAPS",
+          "Hunt for the same account's logons to other internal servers and clean each one"
+        ],
+        "recovery": [
+          "Reintroduce remote access only through VPN or an RD Gateway with MFA",
+          "Restore encrypted data from backups taken before the first successful external logon",
+          "Monitor 4625 rates against the rebuilt server for two weeks"
+        ],
+        "lessons": [
+          "Explain why the RDP exposure was not caught by change control or attack-surface scans",
+          "Add an alert for any successful logon type 10 from a non-RFC1918 source",
+          "Audit password policy for service and local accounts that were brute-forceable"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "RDP failures then success from same external IP",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode IN (4624,4625) Logon_Type=10 host=<host> | eval outcome=if(EventCode=4624,\"success\",\"failure\") | stats count(eval(outcome=\"failure\")) as failures count(eval(outcome=\"success\")) as successes min(_time) as first by Source_Network_Address, Account_Name | where failures > 20 AND successes > 0"
+        },
+        {
+          "title": "Inbound RDP from internet at the firewall",
+          "phase": "identification",
+          "spl": "index=pan sourcetype=pan:traffic dest_port=3389 action=allowed NOT src_ip IN (\"10.0.0.0/8\",\"172.16.0.0/12\",\"192.168.0.0/16\") | stats count sum(bytes) as bytes by src_ip, dest_ip | sort - count"
+        },
+        {
+          "title": "Lateral logons by the brute-forced account",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.user=<suspect_user> Authentication.action=success by Authentication.dest, Authentication.src, _time span=1h | sort _time"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-vpn-appliance-exploit",
+      "name": "Ransomware after exploitation of a VPN or edge appliance",
+      "summary": "Use when the earliest attacker activity traces to an SSL VPN, firewall, or remote-access gateway vulnerability, followed by internal recon and encryption.",
+      "tags": [
+        "ransomware",
+        "vpn",
+        "edge-device",
+        "exploit",
+        "initial-access"
+      ],
+      "attack": [
+        "T1190",
+        "T1133",
+        "T1078",
+        "T1486"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Subscribe to vendor PSIRT feeds for every edge appliance model in use",
+          "Export VPN appliance system, authentication, and config-change logs to Splunk with 1-year retention",
+          "Document how to take an integrity snapshot of each appliance using the vendor's checker tool"
+        ],
+        "identification": [
+          "Run the vendor integrity checker and collect a support bundle before rebooting the appliance",
+          "Review VPN logs for sessions assigned internal IPs that do not match any known user device",
+          "Check appliance logs for exploit indicators published in the vendor advisory",
+          "Trace internal traffic from the VPN pool addresses used by the attacker to the first internal host"
+        ],
+        "containment": [
+          "Take the VPN portal offline or restrict it to a known IP allow-list until patched",
+          "Revoke all active VPN sessions and invalidate cached session cookies",
+          "Reset passwords for every account that authenticated through the appliance during the exposure window",
+          "Rotate the appliance's LDAP bind account and any certificates stored on it"
+        ],
+        "eradication": [
+          "Factory-reset the appliance and apply the fixed firmware before restoring a reviewed config",
+          "Remove backdoor admin accounts or modified config objects found in the support bundle",
+          "Eradicate internal footholds identified from the VPN-pool traffic trace"
+        ],
+        "recovery": [
+          "Reopen VPN access with MFA enforced and device posture checks enabled",
+          "Restore encrypted systems in dependency order and confirm no beacon traffic to attacker IPs",
+          "Watch appliance logs daily for re-exploitation attempts for 30 days"
+        ],
+        "lessons": [
+          "Measure time between the vendor advisory and patch deployment on the appliance",
+          "Decide whether edge appliances need EDR-equivalent log forwarding or replacement",
+          "Add a detection for VPN sessions from countries where no staff are located"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "VPN sessions by user and source country",
+          "phase": "identification",
+          "spl": "index=netfw sourcetype=pan:globalprotect OR sourcetype=\"fortigate_event\" (\"login\" OR \"tunnel-up\") | iplocation src_ip | stats count dc(src_ip) as ips values(Country) as countries by user | sort - ips"
+        },
+        {
+          "title": "Internal connections from attacker-assigned VPN IPs",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(All_Traffic.dest_port) as ports from datamodel=Network_Traffic where All_Traffic.src IN (<vpn_pool_ip>) by All_Traffic.dest, _time span=10m | sort _time"
+        },
+        {
+          "title": "Appliance configuration changes",
+          "phase": "eradication",
+          "spl": "index=netfw (sourcetype=pan:config OR sourcetype=\"fortigate_event\" subtype=system) (\"config\" OR \"admin\") | stats count values(cmd) as changes by admin, host | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-phishing-loader",
+      "name": "Ransomware following a phishing-delivered loader",
+      "summary": "Use when encryption is traced back days or weeks to a phishing email that installed a loader (e.g. a Qakbot or IcedID-style family) which later handed off to ransomware operators.",
+      "tags": [
+        "ransomware",
+        "phishing",
+        "loader",
+        "email",
+        "initial-access"
+      ],
+      "attack": [
+        "T1566.001",
+        "T1204.002",
+        "T1105",
+        "T1486"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Keep 90 days of email gateway message traces with attachment hashes and URLs",
+          "Block macro-enabled Office files and ISO/IMG attachments from external senders",
+          "Ensure EDR telemetry retention covers the typical loader-to-ransomware dwell time"
+        ],
+        "identification": [
+          "Trace patient zero back to the email message and record sender, subject, and attachment hash",
+          "Search the mail gateway for every recipient of the same campaign and who opened it",
+          "Pull EDR process trees for the loader's first execution on each recipient host",
+          "List C2 domains contacted by the loader and when hands-on-keyboard activity began"
+        ],
+        "containment": [
+          "Purge the phishing email from all mailboxes with the mail admin search-and-purge tool",
+          "Isolate every host where the loader executed, not just encrypted hosts",
+          "Sinkhole or block the loader C2 domains at DNS and proxy"
+        ],
+        "eradication": [
+          "Reimage all hosts where the loader ran even if they show no encryption",
+          "Remove loader persistence such as Run keys or scheduled tasks on any host not yet reimaged",
+          "Reset credentials of every user who logged on to a loader-infected host"
+        ],
+        "recovery": [
+          "Restore encrypted systems and confirm none contact the loader C2 domains after reconnection",
+          "Release quarantined legitimate email held by the emergency block rule",
+          "Brief the phished users and confirm they reported nothing else suspicious"
+        ],
+        "lessons": [
+          "Record dwell time between loader execution and encryption and why it went unnoticed",
+          "Add detections for the loader's parent-child process pattern from Outlook or the browser",
+          "Review whether the phishing report button was used and how quickly the SOC reacted"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Recipients of the phishing campaign",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where (All_Email.src_user=<sender> OR All_Email.subject=\"<subject>\" OR All_Email.file_hash=<attachment_hash>) by All_Email.recipient, All_Email.action, _time span=1h"
+        },
+        {
+          "title": "Office or browser spawning script hosts",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.parent_process_name IN (\"outlook.exe\",\"winword.exe\",\"excel.exe\",\"msedge.exe\",\"chrome.exe\") Processes.process_name IN (\"wscript.exe\",\"cscript.exe\",\"mshta.exe\",\"rundll32.exe\",\"regsvr32.exe\",\"powershell.exe\") by Processes.dest, Processes.user, Processes.process"
+        },
+        {
+          "title": "Hosts resolving loader C2 domains",
+          "phase": "containment",
+          "spl": "index=dns sourcetype=stream:dns query IN (<c2_domain_list>) | stats count min(_time) as first by src_ip, query | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-msp-rmm-tool",
+      "name": "Ransomware pushed through an MSP's RMM tool",
+      "summary": "Use when encryption starts simultaneously on many endpoints and the parent process is a remote monitoring and management agent operated by your managed service provider.",
+      "tags": [
+        "ransomware",
+        "msp",
+        "rmm",
+        "supply-chain",
+        "third-party"
+      ],
+      "attack": [
+        "T1199",
+        "T1072",
+        "T1219",
+        "T1486"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Keep an inventory of every RMM agent installed and which provider controls it",
+          "Contractually require the MSP to enforce MFA and share RMM audit logs on request",
+          "Hold a 24x7 emergency contact at the MSP and a procedure to cut their access"
+        ],
+        "identification": [
+          "Confirm in EDR that the encryptor's parent process is the RMM agent service",
+          "Request the RMM console audit log showing which technician account launched the job",
+          "Determine whether the MSP's own RMM server or a technician's credentials were compromised",
+          "Count endpoints that received the job versus those that were offline at the time"
+        ],
+        "containment": [
+          "Block the RMM agent's outbound connections to the provider's server at the firewall",
+          "Stop and disable the RMM agent service on all endpoints via GPO or EDR",
+          "Revoke the MSP's VPN, domain, and cloud admin accounts until they confirm cleanup"
+        ],
+        "eradication": [
+          "Uninstall the RMM agent fleet-wide and remove its cached scripts directory",
+          "Delete any scripts or software packages the attacker staged in the RMM console",
+          "Rotate any credentials stored as RMM script variables or in the MSP's password vault"
+        ],
+        "recovery": [
+          "Prioritize restoring endpoints that were online during the job; verify offline ones never ran it",
+          "Reinstall a reviewed RMM agent only after the MSP provides a root-cause report",
+          "Require per-action approval for mass script deployment in the restored RMM tenant"
+        ],
+        "lessons": [
+          "Review the third-party risk assessment that approved the MSP's access model",
+          "Add a detection for RMM agents spawning cmd or PowerShell on more than 20 hosts within 10 minutes",
+          "Decide whether the MSP should keep domain admin rights at all"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Processes spawned by RMM agents across the fleet",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false dc(Processes.dest) as hosts values(Processes.process) as cmds from datamodel=Endpoint.Processes where Processes.parent_process_name IN (\"<rmm_agent_exe>\") by Processes.process_name, _time span=10m | where hosts > 10 | sort - hosts"
+        },
+        {
+          "title": "RMM agent outbound connections",
+          "phase": "containment",
+          "spl": "index=pan sourcetype=pan:traffic app IN (\"<rmm_app_id>\") OR dest_ip=<msp_server_ip> | stats count dc(src_ip) as endpoints by dest_ip, app, action"
+        },
+        {
+          "title": "MSP account logons to internal systems",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.user IN (<msp_accounts>) by Authentication.user, Authentication.dest, Authentication.src, _time span=1h"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-data-theft-only-extortion",
+      "name": "Extortion demand for stolen data with no encryption",
+      "summary": "Use when an extortion email or call claims data was stolen and demands payment, but no systems are encrypted, so you must first verify the claim is real.",
+      "tags": [
+        "extortion",
+        "data-theft",
+        "exfiltration",
+        "ransomware",
+        "verification"
+      ],
+      "attack": [
+        "T1657",
+        "T1567",
+        "T1530",
+        "T1213"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Route extortion emails to a monitored security mailbox rather than leaving them with the recipient",
+          "Keep a playbook contact for counsel and law enforcement liaison for extortion threats",
+          "Log access to bulk data stores such as SharePoint, CRM exports, and database dumps"
+        ],
+        "identification": [
+          "Preserve the extortion message with full headers and any proof-of-theft file listing",
+          "Compare the claimed file listing against real directory structures to judge authenticity",
+          "Check whether the sample data could come from a previously known third-party breach",
+          "Search for bulk downloads or exports from the data source the samples point to"
+        ],
+        "containment": [
+          "Disable the account or API key that performed the bulk access, if found",
+          "Restrict external sharing links on the source repository while scoping",
+          "Instruct staff not to reply to or engage with the extortion contact"
+        ],
+        "eradication": [
+          "Close the access path, such as a misconfigured bucket, exposed API, or stolen token",
+          "Rotate secrets that appear in the stolen sample files",
+          "Remove any attacker-created OAuth apps, forwarding rules, or service accounts"
+        ],
+        "recovery": [
+          "Determine regulatory notification obligations with counsel based on the verified data set",
+          "Decide with leadership whether to engage the actor, documenting the reasoning",
+          "Monitor paste and leak sites for publication of the data"
+        ],
+        "lessons": [
+          "Record how authenticity was established and how long it took",
+          "Add alerting for bulk export volumes from the affected data source",
+          "Review data retention so less sensitive history is exposed next time"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Bulk SharePoint and OneDrive downloads by user",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=\"o365:management:activity\" Operation IN (\"FileDownloaded\",\"FileSyncDownloadedFull\") | bin _time span=1h | stats count dc(ObjectId) as files by _time, UserId, ClientIP | where files > 300 | sort - files"
+        },
+        {
+          "title": "Search for claimed file names in access logs",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=\"o365:management:activity\" (ObjectId=\"*<claimed_filename>*\" OR SourceFileName=\"<claimed_filename>\") | table _time UserId ClientIP Operation ObjectId"
+        },
+        {
+          "title": "Extortion email arrivals",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=<extortion_sender> by All_Email.recipient, All_Email.subject, _time span=1d"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-backup-deletion-precursor",
+      "name": "Shadow copy and backup deletion detected before encryption",
+      "summary": "Use when EDR or Splunk catches vssadmin, wbadmin, or backup console deletions on servers before any files are encrypted, giving a chance to stop the attack.",
+      "tags": [
+        "ransomware",
+        "vss",
+        "backup",
+        "precursor",
+        "early-warning"
+      ],
+      "attack": [
+        "T1490",
+        "T1562.001",
+        "T1059.003"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Alert on vssadmin delete shadows, wmic shadowcopy delete, wbadmin delete, and bcdedit recovery changes",
+          "Enable backup console audit logging for job deletion and retention changes",
+          "Pre-authorize the SOC to isolate servers without waiting for change approval"
+        ],
+        "identification": [
+          "Pull the full command line, parent process, and user for the shadow-copy deletion event",
+          "Check whether the same command ran on other hosts in the last hour",
+          "Review backup console audit logs for deleted jobs, shortened retention, or disabled immutability",
+          "Look for recently created admin accounts or new services on the host that ran the command"
+        ],
+        "containment": [
+          "Isolate every host that ran a recovery-inhibition command immediately",
+          "Disable the account that executed the commands and kill its sessions",
+          "Lock the backup console to break-glass accounts only and verify immutable copies still exist",
+          "Raise to incident commander as a probable imminent ransomware deployment"
+        ],
+        "eradication": [
+          "Hunt for staged encryptor binaries and deployment scripts in SYSVOL, ADMIN$, and temp folders",
+          "Remove attacker tools such as PsExec copies or remote admin installers found on isolated hosts",
+          "Reset krbtgt twice if domain admin was used to run the commands"
+        ],
+        "recovery": [
+          "Recreate shadow copy schedules and backup jobs that were deleted",
+          "Run a fresh full backup to immutable storage once hosts are clean",
+          "Return isolated hosts to the network in stages with heightened EDR watch"
+        ],
+        "lessons": [
+          "Record how close the attack came to encryption and which detection fired first",
+          "Confirm the backup system admin plane is no longer reachable with domain credentials",
+          "Test the recovery-inhibition alert quarterly with a benign simulation"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Recovery inhibition commands",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Endpoint.Processes where (Processes.process=\"*vssadmin* delete shadows*\" OR Processes.process=\"*shadowcopy delete*\" OR Processes.process=\"*wbadmin* delete*\" OR Processes.process=\"*bcdedit*recoveryenabled no*\") by Processes.dest, Processes.user, Processes.parent_process_name, Processes.process | convert ctime(first)"
+        },
+        {
+          "title": "Volume Shadow Copy service stopped",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:System\" EventCode=7036 Message=\"*Volume Shadow Copy*stopped*\" | stats count by host, _time"
+        },
+        {
+          "title": "Admin and service account creations on the host",
+          "phase": "eradication",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode IN (4720,4732,7045) host=<host> | table _time host EventCode Account_Name Target_Account_Name Service_Name"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-single-workstation-note",
+      "name": "Ransom note found on a single workstation",
+      "summary": "Use when one user reports a ransom note or encrypted local files and there is no sign yet of spread to servers or other endpoints.",
+      "tags": [
+        "ransomware",
+        "workstation",
+        "endpoint",
+        "triage"
+      ],
+      "attack": [
+        "T1486",
+        "T1204"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Give the helpdesk a script for ransom-note calls: unplug network, leave powered on, call SOC",
+          "Ensure user documents redirect to OneDrive or a share with version history",
+          "Keep EDR network isolation available to tier-1 analysts"
+        ],
+        "identification": [
+          "Isolate the workstation in EDR and collect a triage package before any reboot",
+          "Identify the encrypting process and how it arrived from the EDR process tree",
+          "Check whether the encryptor enumerated mapped drives or network shares",
+          "Search the fleet for the same encryptor hash, filename, or ransom note name"
+        ],
+        "containment": [
+          "Disable the user's account sessions to network shares while scope is confirmed",
+          "Revert OneDrive files synced from the workstation if encrypted copies were uploaded",
+          "Block the encryptor hash in EDR across all endpoints"
+        ],
+        "eradication": [
+          "Reimage the workstation",
+          "Reset the user's password and revoke their refresh tokens",
+          "Remove the delivery vector, such as the email or download link, everywhere it was seen"
+        ],
+        "recovery": [
+          "Restore the user's files from OneDrive version history or share snapshots",
+          "Confirm no other hosts show the ransom note filename in the next 72 hours",
+          "Hand the user a rebuilt device and verify application access"
+        ],
+        "lessons": [
+          "Record how the user received the encryptor and why prevention controls missed it",
+          "Check whether consumer-grade ransomware like this should be blocked by application control",
+          "Track time from user call to isolation"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Fleet search for the encryptor hash or name",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Endpoint.Processes where (Processes.process_hash=<sha256> OR Processes.process_name=<encryptor_name>) by Processes.dest, Processes.user | convert ctime(first)"
+        },
+        {
+          "title": "Ransom note file creation via Sysmon",
+          "phase": "identification",
+          "spl": "index=sysmon sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode=11 TargetFilename=\"*<note_filename>\" | stats count min(_time) as first by Computer | convert ctime(first)"
+        },
+        {
+          "title": "OneDrive mass modifications from the user",
+          "phase": "containment",
+          "spl": "index=o365 sourcetype=\"o365:management:activity\" UserId=<suspect_user> Operation IN (\"FileModified\",\"FileRenamed\",\"FileUploaded\") | timechart span=10m count"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-cloud-object-storage",
+      "name": "Cloud storage bucket objects encrypted or deleted for ransom",
+      "summary": "Use when S3 or Azure Blob objects are overwritten with encrypted copies, re-encrypted with an attacker-held key, or deleted and replaced with a ransom note object.",
+      "tags": [
+        "ransomware",
+        "aws",
+        "s3",
+        "azure",
+        "cloud-storage"
+      ],
+      "attack": [
+        "T1486",
+        "T1485",
+        "T1078.004",
+        "T1530"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable S3 versioning and Object Lock, or Blob soft delete and immutability, on business-critical buckets",
+          "Turn on CloudTrail S3 data events or Azure Storage diagnostic logs for sensitive buckets",
+          "Restrict who can call PutBucketPolicy, DeleteBucket, and KMS key policy changes via SCPs"
+        ],
+        "identification": [
+          "Search CloudTrail for PutObject, DeleteObject, and CopyObject bursts against the bucket and the principal",
+          "Check for CopyObject calls using SSE-C or an external KMS key ARN that you do not own",
+          "Locate the ransom note object and record its key name and upload time",
+          "Identify how the principal's credentials were obtained, such as a leaked access key or compromised role"
+        ],
+        "containment": [
+          "Deactivate the access key or revoke sessions for the role performing the writes",
+          "Apply a bucket policy denying writes and deletes from everyone but a break-glass role",
+          "Disable lifecycle rules that could expire older object versions during the investigation"
+        ],
+        "eradication": [
+          "Delete the attacker's IAM users, access keys, and roles created during the intrusion",
+          "Remove any bucket replication rules pointing to accounts you do not own",
+          "Rotate application secrets that were stored in the affected bucket"
+        ],
+        "recovery": [
+          "Restore prior object versions or undelete soft-deleted blobs from before the first malicious write",
+          "Verify restored objects decrypt with your own keys and match expected checksums",
+          "Re-enable application write access and watch request rates against baseline"
+        ],
+        "lessons": [
+          "Record whether Object Lock or versioning was enabled and how much it saved",
+          "Add an alert for CopyObject with SSE-C or a foreign KMS key on any bucket",
+          "Review why a long-lived access key with write scope existed"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "S3 write and delete bursts by principal",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=s3.amazonaws.com eventName IN (\"PutObject\",\"DeleteObject\",\"DeleteObjects\",\"CopyObject\") requestParameters.bucketName=<bucket> | bin _time span=5m | stats count by _time, userIdentity.arn, sourceIPAddress, eventName | where count > 500"
+        },
+        {
+          "title": "Objects re-encrypted with SSE-C or foreign KMS key",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=s3.amazonaws.com eventName IN (\"CopyObject\",\"PutObject\") (requestParameters.x-amz-server-side-encryption-customer-algorithm=* OR requestParameters.x-amz-server-side-encryption-aws-kms-key-id!=\"*<your_account_id>*\") | stats count by userIdentity.arn, requestParameters.bucketName"
+        },
+        {
+          "title": "Bucket policy, lifecycle, and versioning changes",
+          "phase": "containment",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName IN (\"PutBucketPolicy\",\"PutBucketLifecycle\",\"PutBucketVersioning\",\"PutBucketReplication\",\"DeleteBucketPolicy\") | table _time userIdentity.arn sourceIPAddress eventName requestParameters.bucketName"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-m365-sync-encryption",
+      "name": "Mass encryption of SharePoint and OneDrive through sync client",
+      "summary": "Use when a ransomware-infected endpoint's OneDrive or SharePoint sync client uploads encrypted versions of thousands of files to Microsoft 365 libraries.",
+      "tags": [
+        "ransomware",
+        "m365",
+        "sharepoint",
+        "onedrive",
+        "saas"
+      ],
+      "attack": [
+        "T1486",
+        "T1565.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Confirm SharePoint and OneDrive version history is enabled with enough major versions retained",
+          "Ingest the Office 365 Management Activity API into Splunk including SharePoint file events",
+          "Document the OneDrive Restore and SharePoint library restore procedures for admins"
+        ],
+        "identification": [
+          "Find the user and device generating FileModified and FileRenamed bursts in the unified audit log",
+          "List SharePoint sites and document libraries that received encrypted uploads",
+          "Note the earliest encrypted upload time to choose the restore point",
+          "Confirm whether the encryption happened on the endpoint or via a cloud API token"
+        ],
+        "containment": [
+          "Isolate the endpoint running the sync client in EDR",
+          "Block the device from SharePoint via Conditional Access or revoke the user's sessions",
+          "Pause sync for affected libraries to stop encrypted copies propagating to other users' devices"
+        ],
+        "eradication": [
+          "Reimage the infected endpoint before the user signs in to OneDrive again",
+          "Check other users' devices that synced the encrypted library for the ransom note executable",
+          "Remove any OAuth app consents granted by the user during the incident window"
+        ],
+        "recovery": [
+          "Use OneDrive Restore or SharePoint Restore this library to roll back to before the first encrypted upload",
+          "Spot-check restored files open correctly in Office desktop and web",
+          "Re-enable sync only after the user's device is rebuilt"
+        ],
+        "lessons": [
+          "Add an alert for any user modifying more than 1,000 SharePoint files in 15 minutes",
+          "Review whether Microsoft ransomware detection notifications reached the SOC",
+          "Measure restore time per library and document it for future RTO estimates"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "File modification burst by user and device",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=\"o365:management:activity\" Workload IN (\"SharePoint\",\"OneDrive\") Operation IN (\"FileModified\",\"FileRenamed\",\"FileUploaded\") | bin _time span=15m | stats count dc(SiteUrl) as sites by _time, UserId, ClientIP, UserAgent | where count > 500 | sort - count"
+        },
+        {
+          "title": "Libraries receiving files with ransomware extension",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=\"o365:management:activity\" Operation=\"FileRenamed\" DestinationFileExtension=<ransom_ext> | stats count min(_time) as first by SiteUrl, UserId | convert ctime(first)"
+        },
+        {
+          "title": "Other users syncing the affected libraries",
+          "phase": "eradication",
+          "spl": "index=o365 sourcetype=\"o365:management:activity\" Operation IN (\"FileSyncDownloadedFull\",\"FileSyncDownloadedPartial\") SiteUrl=\"<site_url>*\" | stats count by UserId, ClientIP"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-nas-appliance",
+      "name": "NAS appliance encrypted by internet-facing ransomware",
+      "summary": "Use when a Synology, QNAP, or similar NAS has its volumes encrypted, typically through an exposed admin web interface or a firmware vulnerability.",
+      "tags": [
+        "ransomware",
+        "nas",
+        "storage",
+        "edge-device",
+        "firmware"
+      ],
+      "attack": [
+        "T1190",
+        "T1486",
+        "T1110"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Keep NAS admin interfaces off the internet and behind VPN",
+          "Enable NAS immutable snapshots and send its syslog to Splunk",
+          "Track NAS firmware versions in the asset inventory with vendor advisory monitoring"
+        ],
+        "identification": [
+          "Check the NAS connection log for admin logins from external IP addresses",
+          "Record the firmware version and compare with recent vendor security advisories",
+          "Identify encrypted shared folders and the ransom note file name",
+          "Determine whether snapshots were deleted or are still intact"
+        ],
+        "containment": [
+          "Disconnect the NAS from the network while leaving it powered on",
+          "Remove port forwards for NAS web, SSH, and QuickConnect-style relay services",
+          "Change NAS admin passwords from a clean workstation once offline"
+        ],
+        "eradication": [
+          "Factory-reset the NAS and install the latest firmware",
+          "Delete unknown apps, scheduled tasks, and SSH keys found on the NAS before reset",
+          "Disable default admin accounts and enable 2FA for NAS logins"
+        ],
+        "recovery": [
+          "Restore shared folders from intact immutable snapshots or offsite backup",
+          "Remap client drive letters and confirm file permissions match the previous ACLs",
+          "Leave remote access disabled unless delivered through VPN"
+        ],
+        "lessons": [
+          "Record why the NAS was reachable from the internet",
+          "Add NAS firmware patching to the monthly patch cycle",
+          "Add an alert for NAS admin logins from non-internal IPs"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "NAS admin logins from external sources",
+          "phase": "identification",
+          "spl": "index=nas sourcetype=syslog host=<nas_host> (\"logged in\" OR \"login\" OR \"sign in\") | rex \"from \\[?(?<src_ip>\\d+\\.\\d+\\.\\d+\\.\\d+)\" | search NOT src_ip IN (\"10.*\",\"172.16.*\",\"192.168.*\") | stats count by src_ip, user"
+        },
+        {
+          "title": "Inbound connections to NAS management ports",
+          "phase": "containment",
+          "spl": "index=pan sourcetype=pan:traffic dest_ip=<nas_ip> dest_port IN (5000,5001,8080,443,22) | stats count sum(bytes) as bytes by src_ip, dest_port, action | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-database-wiped-ransom",
+      "name": "Exposed database wiped and replaced with ransom note",
+      "summary": "Use when a MongoDB, Elasticsearch, Redis, or similar database reachable from the internet has its collections or indices deleted and a single ransom record left behind.",
+      "tags": [
+        "ransomware",
+        "database",
+        "mongodb",
+        "elasticsearch",
+        "exposure"
+      ],
+      "attack": [
+        "T1485",
+        "T1190",
+        "T1530"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Scan the cloud perimeter for database ports such as 27017, 9200, and 6379 open to the internet",
+          "Require authentication and TLS on every database cluster, including dev and test",
+          "Schedule database snapshots retained outside the database host"
+        ],
+        "identification": [
+          "Confirm the ransom collection or index (e.g. README or read_me) and record its contents",
+          "Review database logs for dropDatabase, delete index, or FLUSHALL commands and source IPs",
+          "Determine whether data was copied out first by checking query volume or egress bytes",
+          "Identify what data the database held and whether it included personal data"
+        ],
+        "containment": [
+          "Restrict the database's security group or firewall to application hosts only",
+          "Enable authentication and rotate any default or shared credentials",
+          "Snapshot the current state of the database host for evidence"
+        ],
+        "eradication": [
+          "Remove any users, roles, or API keys the attacker created in the database",
+          "Rebuild the database host if shell-level access is suspected",
+          "Fix the infrastructure-as-code template that exposed the port"
+        ],
+        "recovery": [
+          "Restore the database from the last snapshot and replay application data if available",
+          "Validate application functionality and row or document counts after restore",
+          "Treat the ransom note's offer as unreliable: these actors rarely keep a copy"
+        ],
+        "lessons": [
+          "Add a cloud config rule alerting on database ports open to 0.0.0.0/0",
+          "Record whether the database was in an asset inventory with an owner",
+          "Decide whether exfiltration evidence triggers breach notification"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Destructive database commands",
+          "phase": "identification",
+          "spl": "index=db (sourcetype=mongod OR sourcetype=elasticsearch OR sourcetype=redis) (\"dropDatabase\" OR \"dropCollection\" OR \"DELETE /\" OR \"FLUSHALL\" OR \"FLUSHDB\") | rex \"(?<src_ip>\\d+\\.\\d+\\.\\d+\\.\\d+)\" | stats count min(_time) as first by host, src_ip | convert ctime(first)"
+        },
+        {
+          "title": "Internet connections to database ports",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count sum(All_Traffic.bytes_out) as bytes_out from datamodel=Network_Traffic where All_Traffic.dest=<db_ip> All_Traffic.dest_port IN (27017,9200,6379,5432,3306) by All_Traffic.src, All_Traffic.dest_port | sort - bytes_out"
+        },
+        {
+          "title": "Security group changes opening database ports",
+          "phase": "lessons",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName IN (\"AuthorizeSecurityGroupIngress\",\"ModifySecurityGroupRules\") \"0.0.0.0/0\" | table _time userIdentity.arn requestParameters.groupId requestParameters.ipPermissions.items{}.fromPort"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-ot-adjacent-network",
+      "name": "Ransomware in IT network adjacent to OT or plant systems",
+      "summary": "Use when ransomware hits corporate IT at a site with industrial control systems and you must decide whether to separate OT, keep production running, or shut down safely.",
+      "tags": [
+        "ransomware",
+        "ot",
+        "ics",
+        "manufacturing",
+        "segmentation"
+      ],
+      "attack": [
+        "T1486",
+        "T1021",
+        "T0828"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Document the IT/OT conduits, including historians, jump hosts, and remote vendor access",
+          "Agree with plant operations who can order an IT-OT disconnect and under what conditions",
+          "Keep offline copies of PLC programs, HMI projects, and engineering workstation images"
+        ],
+        "identification": [
+          "Check whether any encrypted hosts sit in the DMZ between IT and OT, such as the historian",
+          "Review firewall logs at the IT/OT boundary for new connections from compromised IT hosts",
+          "Confirm with operators that HMIs and engineering workstations are behaving normally",
+          "Identify which production processes depend on IT systems like MES or ERP"
+        ],
+        "containment": [
+          "Disconnect the IT/OT conduit at the boundary firewall per the agreed decision criteria",
+          "Disable remote vendor access paths into OT until the IT intrusion is scoped",
+          "Move plant to manual or local control procedures if supervisory systems are affected"
+        ],
+        "eradication": [
+          "Rebuild DMZ hosts like historians and jump servers from known-good images",
+          "Reset credentials shared between IT and OT domains, including service accounts",
+          "Scan engineering workstations offline with a portable scanner before reconnection"
+        ],
+        "recovery": [
+          "Reconnect OT to IT through a reviewed rule set that allows only required flows",
+          "Verify PLC logic matches offline golden copies before resuming automated production",
+          "Coordinate with plant safety before restarting any process halted during the incident"
+        ],
+        "lessons": [
+          "Record whether the IT-OT disconnect decision was made fast enough and by the right person",
+          "Remove dual-homed hosts discovered during the incident",
+          "Add OT network monitoring for new IT-originated sessions"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "New flows crossing the IT/OT boundary",
+          "phase": "identification",
+          "spl": "index=pan sourcetype=pan:traffic (src_zone=<it_zone> dest_zone IN (<ot_dmz_zone>,<ot_zone>)) earliest=-7d | stats count min(_time) as first by src_ip, dest_ip, dest_port, app | where first > relative_time(now(), \"-48h\") | convert ctime(first)"
+        },
+        {
+          "title": "Logons to historian and jump hosts",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.dest IN (<historian_host>,<ot_jump_host>) by Authentication.user, Authentication.src, Authentication.action, _time span=1h"
+        },
+        {
+          "title": "Remote vendor access sessions into OT",
+          "phase": "containment",
+          "spl": "index=netfw sourcetype=pan:globalprotect user IN (<vendor_accounts>) | stats count min(_time) as first max(_time) as last by user, src_ip"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-healthcare-ehr-outage",
+      "name": "Ransomware causing an EHR outage at a hospital",
+      "summary": "Use when ransomware takes down the electronic health record or its supporting systems and clinical teams must move to downtime procedures while IR proceeds.",
+      "tags": [
+        "ransomware",
+        "healthcare",
+        "ehr",
+        "patient-safety",
+        "downtime"
+      ],
+      "attack": [
+        "T1486",
+        "T1490",
+        "T1021.002"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Keep downtime forms, read-only EHR downtime viewers, and printed med lists ready per unit",
+          "Pre-identify clinical leadership who join the incident bridge for patient-safety decisions",
+          "Map EHR dependencies including interface engines, PACS, lab, pharmacy, and identity systems"
+        ],
+        "identification": [
+          "Determine whether the EHR database servers are encrypted or only dependent services like AD or Citrix",
+          "Check interface engine queues for halted HL7 traffic to lab, pharmacy, and radiology",
+          "Confirm whether medical devices on the clinical network show encryption or anomalous traffic",
+          "Identify protected health information on systems where staging or exfiltration occurred"
+        ],
+        "containment": [
+          "Activate EHR downtime procedures and notify every clinical unit via the overhead or paging system",
+          "Segment the clinical device network from the corporate network",
+          "Coordinate with nearby hospitals and EMS on ambulance diversion if clinical leadership requests it"
+        ],
+        "eradication": [
+          "Rebuild Citrix or VDI delivery servers that clinicians use to reach the EHR",
+          "Validate EHR vendor-hosted components with the vendor before reconnection",
+          "Reset privileged credentials used by interface engines and integration accounts"
+        ],
+        "recovery": [
+          "Restore the EHR in the vendor's recommended order and validate with clinical super-users",
+          "Back-enter downtime documentation into the EHR and reconcile medication administration records",
+          "Replay or reconcile queued HL7 messages so lab and radiology results are not lost",
+          "End diversion and downtime only after clinical leadership signs off"
+        ],
+        "lessons": [
+          "Review any patient-safety events that occurred during downtime",
+          "Assess HIPAA breach notification requirements with privacy and legal",
+          "Record how long downtime lasted per unit and what slowed restoration"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Encryption activity on EHR-dependent servers",
+          "phase": "identification",
+          "spl": "index=sysmon sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode=11 Computer IN (<ehr_server_list>) TargetFilename=\"*.<ransom_ext>\" | stats count min(_time) as first by Computer | convert ctime(first)"
+        },
+        {
+          "title": "HL7 interface traffic drop",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest_port IN (2575,6661) by All_Traffic.dest, _time span=15m | timechart span=15m sum(count) by All_Traffic.dest"
+        },
+        {
+          "title": "Corporate to clinical network connections",
+          "phase": "containment",
+          "spl": "index=pan sourcetype=pan:traffic src_zone=<corp_zone> dest_zone=<clinical_zone> | stats count by src_ip, dest_ip, dest_port, action | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-partial-encryption-decryptor",
+      "name": "Partially encrypted environment with decryptor offered",
+      "summary": "Use when encryption was interrupted or incomplete and the attacker offers a test decryption or decryptor, and you must decide between decrypting, restoring, or both.",
+      "tags": [
+        "ransomware",
+        "decryptor",
+        "recovery",
+        "partial-encryption"
+      ],
+      "attack": [
+        "T1486"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Keep an isolated lab network where untrusted decryptors can be tested on copies",
+          "Have a relationship with an IR firm that tracks decryptor quality for major ransomware families",
+          "Know where to check public decryptor projects such as No More Ransom"
+        ],
+        "identification": [
+          "Classify hosts as fully encrypted, partially encrypted, or untouched from EDR and file scans",
+          "Identify the ransomware family from the note and extension using an offline reference",
+          "Check whether a free public decryptor exists for the identified family and version",
+          "Sample encrypted files to see if only headers or intermittent blocks were encrypted"
+        ],
+        "containment": [
+          "Keep encrypted hosts powered on and isolated to preserve possible in-memory keys",
+          "Block the attacker's remaining access so encryption cannot be resumed",
+          "Snapshot encrypted volumes before any decryption attempt"
+        ],
+        "eradication": [
+          "Scan any received decryptor in the lab for additional payloads before use",
+          "Remove the encryptor and its launch mechanism from partially encrypted hosts",
+          "Confirm attacker persistence is cleared from the domain before decrypting production"
+        ],
+        "recovery": [
+          "Test decryption on copies of a small file set and verify file integrity",
+          "Restore from backup where backups are newer than the decryptor would recover",
+          "Use decryption only for data with no viable backup, working on snapshots"
+        ],
+        "lessons": [
+          "Record what interrupted the encryption and whether it can be engineered as a control",
+          "Compare decrypted-data integrity with restored-data integrity for future decisions",
+          "Document decryptor speed and failure rate for the family"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Hosts with encrypted file extension writes",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Filesystem where Filesystem.file_name=\"*.<ransom_ext>\" by Filesystem.dest | sort - count"
+        },
+        {
+          "title": "Encryptor process execution status by host",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false min(_time) as start max(_time) as end count from datamodel=Endpoint.Processes where Processes.process_hash=<sha256> by Processes.dest | eval minutes=round((end-start)/60,1) | convert ctime(start) ctime(end)"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-reextortion-ddos",
+      "name": "Ransomware actor adds DDoS or harassment to extortion",
+      "summary": "Use when, after a ransomware attack, the actor launches DDoS against public sites, emails or calls employees and customers, or re-extorts after a previous payment.",
+      "tags": [
+        "ransomware",
+        "ddos",
+        "extortion",
+        "harassment",
+        "triple-extortion"
+      ],
+      "attack": [
+        "T1498",
+        "T1499",
+        "T1657"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Keep an on-demand DDoS mitigation service contract and runbook for public sites",
+          "Prepare a template message telling staff how to handle calls or emails from the actor",
+          "Maintain customer-communications contacts who can respond to customers contacted directly"
+        ],
+        "identification": [
+          "Confirm the DDoS is volumetric or application-layer from CDN and firewall metrics",
+          "Collect every harassment email, voicemail, and SMS reported by staff and customers",
+          "Check whether contact details used came from the stolen data set",
+          "Determine whether the actor is the same group or a re-extortion by a different party"
+        ],
+        "containment": [
+          "Engage the DDoS provider to enable always-on mitigation and rate limits",
+          "Block the actor's sending domains and addresses at the email gateway",
+          "Redirect customer inquiries about the actor's messages to a dedicated support line"
+        ],
+        "eradication": [
+          "Confirm there is no remaining access that the actor could use to resume encryption",
+          "Rotate public-facing origin IPs if they were exposed and bypassing the CDN",
+          "Close any open web forms or support channels the actor is abusing"
+        ],
+        "recovery": [
+          "Step down DDoS mitigation thresholds gradually once attack traffic stops",
+          "Brief staff who were harassed and offer support resources",
+          "Share actor contact details and DDoS indicators with law enforcement"
+        ],
+        "lessons": [
+          "Record whether a previous payment led to the re-extortion",
+          "Assess whether origin servers should accept traffic only from the CDN",
+          "Review how quickly customer communications teams were engaged"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Request rate spike on public web front-ends",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.dest IN (<public_sites>) by Web.src, _time span=1m | stats sum(count) as requests dc(Web.src) as sources by _time | where requests > 10000"
+        },
+        {
+          "title": "Actor emails to staff",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user IN (<actor_addresses>) OR All_Email.subject=\"*<actor_keyword>*\" by All_Email.recipient, All_Email.src_user, All_Email.action"
+        },
+        {
+          "title": "Direct-to-origin traffic bypassing CDN",
+          "phase": "eradication",
+          "spl": "index=pan sourcetype=pan:traffic dest_ip=<origin_ip> dest_port IN (80,443) NOT src_ip IN (<cdn_ranges>) | stats count by src_ip | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-insider-assisted",
+      "name": "Insider suspected of assisting ransomware deployment",
+      "summary": "Use when evidence suggests an employee or contractor provided credentials, ran the payload, or was recruited by a ransomware affiliate, and HR and legal must be involved.",
+      "tags": [
+        "ransomware",
+        "insider-threat",
+        "hr",
+        "legal",
+        "credentials"
+      ],
+      "attack": [
+        "T1078",
+        "T1486",
+        "T1219"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Agree with HR and legal how insider investigations are run and who may know about them",
+          "Ensure employee monitoring notices cover endpoint and email investigation",
+          "Keep a restricted case-handling channel separate from general incident channels"
+        ],
+        "identification": [
+          "Correlate the employee's badge, VPN, and logon times with when the payload was launched",
+          "Check for remote access tools the employee installed outside approved software",
+          "Review email and chat for contact with external parties offering payment for access",
+          "Distinguish deliberate action from coerced or phished credentials before drawing conclusions"
+        ],
+        "containment": [
+          "Disable the employee's accounts, tokens, and badge in coordination with HR",
+          "Preserve the employee's devices and mailboxes under legal hold",
+          "Restrict knowledge of the suspect's identity to the need-to-know group"
+        ],
+        "eradication": [
+          "Remove remote access tools and accounts the insider created",
+          "Rotate shared credentials the insider could access, including service accounts",
+          "Review and revoke access the insider granted to other parties"
+        ],
+        "recovery": [
+          "Restore affected systems while confirming no insider-created backdoors remain",
+          "Hand forensic evidence to legal for possible law enforcement referral",
+          "Communicate to staff as agreed with HR without naming the individual"
+        ],
+        "lessons": [
+          "Review whether privileged access was proportionate to the insider's role",
+          "Add alerts for unapproved remote access tool installs",
+          "Assess whether security awareness covers recruitment approaches by criminal groups"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Suspect user activity around payload launch",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.user=<suspect_user> by Authentication.dest, Authentication.src, Authentication.app, _time span=15m | sort _time"
+        },
+        {
+          "title": "Remote access tools installed by the suspect",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.user=<suspect_user> Processes.process_name IN (\"AnyDesk.exe\",\"TeamViewer.exe\",\"ScreenConnect.ClientService.exe\",\"rustdesk.exe\",\"ngrok.exe\") by Processes.dest, Processes.process_name, _time span=1h"
+        },
+        {
+          "title": "Suspect email to external addresses",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=<suspect_user> NOT All_Email.recipient=\"*@<your_domain>\" by All_Email.recipient, All_Email.subject, _time span=1d"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-wiper-disguised",
+      "name": "Wiper disguised as ransomware",
+      "summary": "Use when a ransom note appears but there is no working payment channel, files are overwritten rather than encrypted, or MBR and partition tables are destroyed.",
+      "tags": [
+        "wiper",
+        "ransomware",
+        "destructive",
+        "nation-state",
+        "mbr"
+      ],
+      "attack": [
+        "T1485",
+        "T1561.002",
+        "T1486",
+        "T1490"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Keep offline, immutable backups and bare-metal recovery media for critical servers",
+          "Subscribe to government advisories on destructive malware targeting your sector",
+          "Maintain a list of systems that would need rebuild from scratch rather than restore"
+        ],
+        "identification": [
+          "Examine encrypted samples to see whether content is random overwrite with no recoverable key structure",
+          "Check whether hosts fail to boot due to MBR or partition table damage",
+          "Verify whether the ransom note's contact address or site is functional at all",
+          "Compare indicators with published wiper advisories rather than ransomware family references"
+        ],
+        "containment": [
+          "Shut down systems that have not yet been wiped if the wiper runs on a timer or reboot",
+          "Disable the GPO, scheduled task, or software deployment job spreading the wiper",
+          "Escalate to executives and national CERT as a destructive attack"
+        ],
+        "eradication": [
+          "Treat all wiped hosts as unrecoverable and plan full rebuilds",
+          "Hunt for the wiper's distribution mechanism and attacker accounts before rebuilding",
+          "Reset krbtgt and all privileged credentials given the likely deep domain access"
+        ],
+        "recovery": [
+          "Rebuild identity infrastructure first, then restore critical systems from offline backups",
+          "Restore data only from backups whose integrity has been verified off-network",
+          "Stand up interim business processes for systems with long rebuild times"
+        ],
+        "lessons": [
+          "Record how quickly the wiper was distinguished from ransomware",
+          "Review whether offline backups were truly unreachable",
+          "Share indicators with sector ISAC and national CERT"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Raw disk or MBR write access",
+          "phase": "identification",
+          "spl": "index=sysmon sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode=9 (Device=\"\\\\Device\\\\Harddisk0\\\\DR0\" OR Device=\"*PhysicalDrive*\") | stats count by Computer, Image | sort - count"
+        },
+        {
+          "title": "Scheduled tasks or GPO deploying the wiper",
+          "phase": "containment",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode IN (4698,5136) | search Task_Name=* OR ObjectClass=groupPolicyContainer | table _time host EventCode Account_Name Task_Name ObjectDN"
+        },
+        {
+          "title": "Hosts that stopped reporting after the event",
+          "phase": "identification",
+          "spl": "| tstats latest(_time) as last_seen where index=* by host | where last_seen < relative_time(now(), \"-2h\") AND last_seen > relative_time(now(), \"-24h\") | convert ctime(last_seen) | sort last_seen"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-linux-servers",
+      "name": "Ransomware encrypting Linux application servers",
+      "summary": "Use when Linux servers have files encrypted by an ELF encryptor, usually after SSH key theft or a web application compromise, and services such as databases stop.",
+      "tags": [
+        "ransomware",
+        "linux",
+        "ssh",
+        "servers"
+      ],
+      "attack": [
+        "T1486",
+        "T1021.004",
+        "T1098.004",
+        "T1489"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Forward auth.log, secure, and auditd execve records from Linux servers to Splunk",
+          "Inventory authorized SSH keys per server and manage them centrally",
+          "Deploy a Linux EDR sensor or at least auditd rules on production servers"
+        ],
+        "identification": [
+          "Review auth.log for SSH logins by key or password from unusual sources before encryption",
+          "Check auditd or bash history for the encryptor's execution and the user that ran it",
+          "List services stopped before encryption with systemctl logs, such as databases and web servers",
+          "Look for new entries in authorized_keys and crontab across the server fleet"
+        ],
+        "containment": [
+          "Block SSH between servers except from the bastion host",
+          "Remove attacker SSH keys from authorized_keys on every server where found",
+          "Disable the compromised user account and any sudo rights it has"
+        ],
+        "eradication": [
+          "Rebuild encrypted servers from configuration management rather than repairing them",
+          "Rotate all SSH keys and secrets present on the compromised hosts",
+          "Patch the web application or service that provided the initial foothold"
+        ],
+        "recovery": [
+          "Restore application data from backups and redeploy servers through the CI pipeline",
+          "Verify database consistency and replay transaction logs where available",
+          "Watch for re-appearing authorized_keys entries for two weeks"
+        ],
+        "lessons": [
+          "Decide whether to move to short-lived SSH certificates instead of static keys",
+          "Add alerts for new authorized_keys entries and SSH from non-bastion hosts",
+          "Record whether Linux servers lacked EDR coverage"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "SSH logins to Linux servers by source",
+          "phase": "identification",
+          "spl": "index=linux sourcetype IN (linux_secure,\"linux:auth\") \"Accepted\" | rex \"Accepted (?<method>\\S+) for (?<user>\\S+) from (?<src>\\S+)\" | stats count min(_time) as first by host, user, src, method | convert ctime(first)"
+        },
+        {
+          "title": "Encryptor execution in auditd",
+          "phase": "identification",
+          "spl": "index=linux sourcetype=linux:audit type=EXECVE | search a0 IN (\"*/tmp/*\",\"*/dev/shm/*\") OR a1=\"*--encrypt*\" | stats count by host, a0, a1, a2"
+        },
+        {
+          "title": "authorized_keys and crontab changes",
+          "phase": "containment",
+          "spl": "index=linux sourcetype=linux:audit type=PATH (name=\"*authorized_keys\" OR name=\"/var/spool/cron/*\" OR name=\"/etc/cron*\") nametype IN (CREATE,NORMAL) | stats count by host, name, auid"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-gpo-domain-wide",
+      "name": "Ransomware deployed domain-wide through Group Policy",
+      "summary": "Use when encryption begins on most domain-joined machines at once and a new or modified GPO is found launching the payload via a scheduled task or startup script.",
+      "tags": [
+        "ransomware",
+        "active-directory",
+        "gpo",
+        "domain-admin"
+      ],
+      "attack": [
+        "T1484.001",
+        "T1053.005",
+        "T1486",
+        "T1003.006"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Audit Directory Service Changes (5136/5137) on domain controllers and forward to Splunk",
+          "Keep a tiered admin model so domain admin credentials never touch workstations",
+          "Store an offline export of GPO backups and a hash list of SYSVOL contents"
+        ],
+        "identification": [
+          "Find the GPO created or modified just before encryption using 5136 events and GPO version numbers",
+          "Inspect the GPO's ScheduledTasks.xml or scripts.ini in SYSVOL for the payload path",
+          "Identify the account that edited the GPO and its logon source",
+          "Check for DCSync activity (4662 with replication GUIDs) from non-DC hosts"
+        ],
+        "containment": [
+          "Unlink and disable the malicious GPO, then remove the payload from SYSVOL and NETLOGON",
+          "Shut down or isolate domain controllers from user networks to stop further policy refreshes",
+          "Disable the account used to edit the GPO and all recently created admin accounts"
+        ],
+        "eradication": [
+          "Reset krbtgt twice, waiting for replication between resets",
+          "Rotate every Tier 0 credential, including service accounts with domain admin rights",
+          "Review AdminSDHolder, GPO delegations, and DC local admins for attacker changes"
+        ],
+        "recovery": [
+          "Restore or rebuild a clean domain controller first, following forest recovery guidance if needed",
+          "Restore workstations and servers in waves after Tier 0 is trusted",
+          "Compare SYSVOL contents with the offline hash list after recovery"
+        ],
+        "lessons": [
+          "Add an alert for any GPO creating scheduled tasks or startup scripts outside change windows",
+          "Record how the attacker obtained domain admin and close that path",
+          "Rehearse AD forest recovery annually"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "GPO modifications on domain controllers",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode IN (5136,5137,5141) ObjectClass=groupPolicyContainer | table _time host Account_Name ObjectDN AttributeLDAPDisplayName Value | sort _time"
+        },
+        {
+          "title": "DCSync from non-domain-controller hosts",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4662 (Properties=\"*1131f6aa-9c07-11d1-f79f-00c04fc2dcd2*\" OR Properties=\"*1131f6ad-9c07-11d1-f79f-00c04fc2dcd2*\") NOT Account_Name=\"*$\" | stats count by Account_Name, host"
+        },
+        {
+          "title": "Scheduled task creation across fleet",
+          "phase": "containment",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4698 | stats dc(host) as hosts values(host) as sample by Task_Name | where hosts > 20 | sort - hosts"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-payment-decision",
+      "name": "Ransom negotiation and payment decision",
+      "summary": "Use when leadership must decide whether to engage with or pay a ransomware actor, covering sanctions checks, negotiator engagement, insurer approval, and documentation.",
+      "tags": [
+        "ransomware",
+        "negotiation",
+        "payment",
+        "legal",
+        "insurance"
+      ],
+      "attack": [
+        "T1657"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Confirm the cyber insurance policy's ransom coverage and pre-approved negotiator panel",
+          "Document the board's ransom payment policy and who holds decision authority",
+          "Identify counsel experienced in OFAC and other sanctions screening for ransom payments"
+        ],
+        "identification": [
+          "Establish what the actor holds: decryption keys only, stolen data, or both",
+          "Quantify recovery time from backups versus decryption for each critical system",
+          "Have the negotiator attribute the group and report its history of honoring payments",
+          "Run sanctions screening on the group and wallet addresses with counsel"
+        ],
+        "containment": [
+          "Route all actor communications through the appointed negotiator only",
+          "Request proof of decryption on sample files and a file tree of stolen data",
+          "Restrict internal knowledge of the negotiation to the decision group"
+        ],
+        "eradication": [
+          "Continue eradication in parallel so the environment is clean regardless of the decision",
+          "Ensure any decryptor obtained is scanned and tested in isolation before use",
+          "Do not rely on the actor's promise to delete stolen data as a remediation step"
+        ],
+        "recovery": [
+          "Record the decision, rationale, approvers, and legal advice in the case file",
+          "If paying, have the insurer or negotiator handle the cryptocurrency transaction and receipts",
+          "Notify law enforcement of the extortion regardless of the payment decision"
+        ],
+        "lessons": [
+          "Review whether backup capability made non-payment viable and what would improve it",
+          "Update the ransom payment policy with lessons from this decision",
+          "Record negotiation timeline and actor behavior for threat intel"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Systems still encrypted for recovery estimate",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false dc(Filesystem.file_path) as encrypted_files from datamodel=Endpoint.Filesystem where Filesystem.file_name=\"*.<ransom_ext>\" by Filesystem.dest | sort - encrypted_files"
+        },
+        {
+          "title": "Connections to actor negotiation portal",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.url=\"*<negotiation_domain>*\" by Web.src, Web.user, _time span=1h"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-restore-at-scale",
+      "name": "Restoring hundreds of systems from backup after ransomware",
+      "summary": "Use after the environment is contained and the decision is to rebuild from backup, to sequence identity, infrastructure, and applications and avoid restoring infected images.",
+      "tags": [
+        "ransomware",
+        "recovery",
+        "backup",
+        "restore",
+        "business-continuity"
+      ],
+      "attack": [
+        "T1486"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Maintain a tiered application restore order with dependencies and RTOs per system",
+          "Test bare-metal and VM restores at scale at least once a year",
+          "Keep a clean-room network segment and build workstations for restore operations"
+        ],
+        "identification": [
+          "Identify the last known-clean backup per system using the earliest attacker activity date",
+          "Verify backup catalogs and immutable copies are intact and not modified by the attacker",
+          "Estimate restore throughput from backup storage to size the restore timeline",
+          "List systems with no usable backup that must be rebuilt from scratch"
+        ],
+        "containment": [
+          "Restore into an isolated clean-room VLAN with no route to the compromised network",
+          "Scan restored images for attacker persistence and known IOCs before promotion",
+          "Block restored systems from reaching known C2 infrastructure at the egress firewall"
+        ],
+        "eradication": [
+          "Remove attacker-created accounts, tasks, and services that exist in backups taken after initial access",
+          "Apply missing patches and EDR agents to each restored system before go-live",
+          "Rotate local administrator passwords on restored hosts via LAPS"
+        ],
+        "recovery": [
+          "Restore domain controllers, DNS, and DHCP first, then core infrastructure, then applications",
+          "Have application owners validate data currency and functionality before release",
+          "Track restore progress per system on a shared board visible to leadership"
+        ],
+        "lessons": [
+          "Compare actual restore time per tier against documented RTOs",
+          "Record backup gaps found and which systems had no viable restore point",
+          "Fund improvements to restore throughput identified as the bottleneck"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Restored hosts contacting known C2",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.src IN (<restored_hosts>) All_Traffic.dest IN (<ioc_ip_list>) by All_Traffic.src, All_Traffic.dest, All_Traffic.dest_port"
+        },
+        {
+          "title": "Persistence on restored hosts",
+          "phase": "eradication",
+          "spl": "index=wineventlog sourcetype IN (\"WinEventLog:Security\",\"WinEventLog:System\") EventCode IN (4698,4720,7045) host IN (<restored_hosts>) | table _time host EventCode Account_Name Task_Name Service_Name"
+        },
+        {
+          "title": "EDR agent coverage on restored systems",
+          "phase": "recovery",
+          "spl": "| tstats summariesonly=false latest(_time) as last from datamodel=Endpoint.Processes where Processes.dest IN (<restored_hosts>) by Processes.dest | eval reporting=if(last > relative_time(now(), \"-1h\"), \"yes\", \"no\") | convert ctime(last)"
+        }
+      ]
+    },
+    {
+      "id": "lib-ransomware-reinfection-post-recovery",
+      "name": "Re-infection or second encryption after ransomware recovery",
+      "summary": "Use when attacker activity or a second encryption wave appears weeks after recovery, indicating persistence, unrotated credentials, or a restored backdoor.",
+      "tags": [
+        "ransomware",
+        "reinfection",
+        "persistence",
+        "recovery"
+      ],
+      "attack": [
+        "T1078",
+        "T1505.003",
+        "T1053.005",
+        "T1486"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Keep the IOC list and attacker TTP notes from the original incident in the case file",
+          "Run elevated-sensitivity detections for 90 days after any ransomware recovery",
+          "Track which credentials were rotated during the first recovery and which were deferred"
+        ],
+        "identification": [
+          "Compare new activity indicators with the original incident's tools, IPs, and accounts",
+          "Check whether the re-entry used an account that was not rotated in the first recovery",
+          "Look for web shells or remote access tools on systems restored from post-compromise backups",
+          "Determine whether this is the same actor or a new affiliate using sold access"
+        ],
+        "containment": [
+          "Isolate hosts showing the re-entry activity immediately",
+          "Disable the re-used credentials and any accounts showing the same logon pattern",
+          "Block the original incident's IOCs again if any were removed from blocklists"
+        ],
+        "eradication": [
+          "Rotate every credential deferred during the first recovery, including service accounts",
+          "Rebuild any system restored from a backup taken after initial access",
+          "Run a full persistence sweep: services, tasks, WMI subscriptions, Run keys, web shells"
+        ],
+        "recovery": [
+          "Restore affected systems only from backups predating the original initial access",
+          "Have an independent party validate Tier 0 is clean before declaring recovery",
+          "Extend heightened monitoring another 90 days"
+        ],
+        "lessons": [
+          "Record which first-incident eradication step was skipped or incomplete",
+          "Turn the original incident's IOCs into permanent detections",
+          "Add a recovery exit checklist requiring credential and persistence sign-off"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Logons from original incident accounts or IPs",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where (Authentication.user IN (<original_accounts>) OR Authentication.src IN (<original_ioc_ips>)) by Authentication.user, Authentication.src, Authentication.dest, _time span=1h"
+        },
+        {
+          "title": "Web shell indicators on IIS servers",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.parent_process_name=\"w3wp.exe\" Processes.process_name IN (\"cmd.exe\",\"powershell.exe\",\"whoami.exe\",\"net.exe\") by Processes.dest, Processes.process"
+        },
+        {
+          "title": "WMI event subscription persistence",
+          "phase": "eradication",
+          "spl": "index=sysmon sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode IN (19,20,21) | stats count values(Destination) as consumers by Computer, User"
+        }
+      ]
+    }
+  ]
+}

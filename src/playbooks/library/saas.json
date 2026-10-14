@@ -1,0 +1,1896 @@
+{
+  "category": {
+    "id": "saas",
+    "name": "SaaS applications",
+    "description": "Incidents in business SaaS: Microsoft 365, Salesforce, Slack, GitHub, Google Workspace, file sharing, CRM, HR and data platforms, and SaaS-to-SaaS integrations."
+  },
+  "playbooks": [
+    {
+      "id": "lib-saas-m365-mailbox-forwarding-rule",
+      "name": "M365 mailbox compromised with a hidden forwarding or delete rule",
+      "summary": "Use when a user's Exchange Online mailbox has a new inbox rule forwarding, moving to RSS Feeds, or deleting messages, or SMTP forwarding was set, typical of business email compromise.",
+      "tags": [
+        "m365",
+        "exchange-online",
+        "bec",
+        "inbox-rule",
+        "email"
+      ],
+      "attack": [
+        "T1114.003",
+        "T1564.008",
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Confirm Unified Audit Log and MailItemsAccessed auditing are enabled for all mailboxes",
+          "Block automatic external forwarding with the outbound spam filter policy",
+          "Keep a contact path to finance for wire-fraud recall when a BEC is suspected"
+        ],
+        "identification": [
+          "List the user's inbox rules with Get-InboxRule -IncludeHidden and note ForwardTo, RedirectTo and DeleteMessage",
+          "Check Get-Mailbox for ForwardingSmtpAddress and DeliverToMailboxAndForward",
+          "Search UAL for New-InboxRule, Set-InboxRule and UpdateInboxRules from the user and their client IPs",
+          "Review MailItemsAccessed events to determine which messages the attacker read",
+          "Identify invoices or payment threads the attacker replied to from the mailbox"
+        ],
+        "containment": [
+          "Remove the malicious inbox rules and clear ForwardingSmtpAddress on the mailbox",
+          "Reset the user's password and revoke sessions with Revoke-MgUserSignInSession",
+          "Block the forwarding destination address in tenant allow/block list"
+        ],
+        "eradication": [
+          "Remove attacker-registered MFA methods and OAuth app consents on the account",
+          "Delete messages the attacker sent from the mailbox to internal and external recipients via Purview search",
+          "Check for mailbox delegates or SendAs permissions added during the compromise"
+        ],
+        "recovery": [
+          "Notify external recipients who received fraudulent payment instructions",
+          "Restore deleted messages from Recoverable Items for the user",
+          "Monitor the mailbox for rule recreation for 30 days"
+        ],
+        "lessons": [
+          "Alert on new inbox rules that forward externally or move to RSS Feeds or Archive",
+          "Measure whether finance verified payment changes out of band",
+          "Review how the initial credential was obtained, such as AiTM phishing"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Inbox rule creation with forwarding or deletion",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Workload=Exchange Operation IN (New-InboxRule,Set-InboxRule,UpdateInboxRules,Set-Mailbox) | search Parameters{}.Name IN (ForwardTo,RedirectTo,ForwardAsAttachmentTo,DeleteMessage,MoveToFolder,ForwardingSmtpAddress) | table _time UserId ClientIP Operation Parameters{}.Name Parameters{}.Value"
+        },
+        {
+          "title": "MailItemsAccessed by session for the compromised user",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Operation=MailItemsAccessed UserId=<suspect_user> | stats count dc(Folders{}.FolderItems{}.InternetMessageId) as messages by ClientIPAddress, SessionId, ClientInfoString | sort - messages"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-sharepoint-mass-download",
+      "name": "SharePoint Online mass file download by a single account",
+      "summary": "Use when one user or app downloads or syncs hundreds of files from SharePoint sites in a short time, possibly a compromised account, departing employee, or malicious app.",
+      "tags": [
+        "m365",
+        "sharepoint",
+        "exfiltration",
+        "insider-threat"
+      ],
+      "attack": [
+        "T1213.002",
+        "T1530",
+        "T1567"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Baseline per-user FileDownloaded and FileSyncDownloadedFull volumes in SharePoint",
+          "Enable Defender for Cloud Apps mass download policy for SharePoint",
+          "Apply sensitivity labels to high-value sites so impact can be scoped quickly"
+        ],
+        "identification": [
+          "Count FileDownloaded, FileSyncDownloadedFull and FileAccessed events per user and site",
+          "Determine whether downloads came from browser, OneDrive sync client or Graph API by UserAgent",
+          "List the sites and sensitivity labels of files downloaded",
+          "Check HR records for the user's notice period or performance actions",
+          "Correlate ClientIP with Entra sign-in logs for device compliance and location"
+        ],
+        "containment": [
+          "Revoke the user's sessions and block sign-in if compromise or malicious insider is suspected",
+          "Apply a Conditional Access policy restricting the user to web-only, no-download access",
+          "Remove the user from the most sensitive SharePoint site groups"
+        ],
+        "eradication": [
+          "Remove sync relationships for unmanaged devices from the user's account",
+          "Revoke any app registration or Graph token that performed downloads",
+          "Collect the device if it is corporate managed for forensic review"
+        ],
+        "recovery": [
+          "Restore normal access after investigation with legal and HR agreement",
+          "Confirm download volume returns to baseline",
+          "Provide data owners with the list of downloaded documents"
+        ],
+        "lessons": [
+          "Tune the mass download threshold per department",
+          "Evaluate blocking sync from unmanaged devices tenant-wide",
+          "Add departing-employee watchlist correlation to download alerts"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Top SharePoint downloaders by file count",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Workload=SharePoint Operation IN (FileDownloaded,FileSyncDownloadedFull) | stats count dc(ObjectId) as files dc(SiteUrl) as sites values(UserAgent) as ua by UserId, ClientIP | where files>200 | sort - files"
+        },
+        {
+          "title": "Download timeline for suspect user",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Workload=SharePoint Operation IN (FileDownloaded,FileSyncDownloadedFull) UserId=<suspect_user> | timechart span=15m count by SiteUrl limit=10"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-onedrive-external-sharing-spike",
+      "name": "Spike in OneDrive files shared externally or via Anyone links",
+      "summary": "Use when a user creates many external sharing invitations or Anyone links from OneDrive in a short time, a sign of exfiltration by an insider or a compromised account.",
+      "tags": [
+        "m365",
+        "onedrive",
+        "external-sharing",
+        "data-exposure"
+      ],
+      "attack": [
+        "T1567",
+        "T1213"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Set Anyone link expiry and default link type to Specific people in the SharePoint admin center",
+          "Restrict external sharing to allowed domains for sensitive departments",
+          "Keep a weekly baseline of external shares per user"
+        ],
+        "identification": [
+          "Count AnonymousLinkCreated, SharingInvitationCreated and AddedToSecureLink events per user",
+          "List recipients' external domains and check if any are personal email providers",
+          "Identify files shared and their sensitivity labels",
+          "Check AnonymousLinkUsed events to see whether links were opened and from where"
+        ],
+        "containment": [
+          "Remove Anyone links and external permissions on affected files with the sharing report",
+          "Temporarily disable external sharing for the user's OneDrive",
+          "Suspend the account if sharing is not explained by the user"
+        ],
+        "eradication": [
+          "Revoke guest accounts created by the user's invitations if not legitimate",
+          "Remove sync to personal devices",
+          "Reset credentials if the account was compromised"
+        ],
+        "recovery": [
+          "Re-share legitimately needed files with Specific people links",
+          "Confirm external sharing counts return to normal",
+          "Inform data owners of accessed links"
+        ],
+        "lessons": [
+          "Alert when a user creates more than N Anyone links in an hour",
+          "Review DLP policy coverage for OneDrive sharing",
+          "Consider making Anyone links unavailable for labeled content"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "External shares and Anyone links per user",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Workload=OneDrive Operation IN (AnonymousLinkCreated,SharingInvitationCreated,AddedToSecureLink,CompanyLinkCreated) | stats count dc(ObjectId) as files values(TargetUserOrGroupName) as recipients by UserId, Operation | sort - files"
+        },
+        {
+          "title": "Anyone link usage from outside",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Operation=AnonymousLinkUsed SiteUrl=\"*<suspect_user_slug>*\" | stats count by ClientIP, ObjectId"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-teams-external-access-abuse",
+      "name": "Teams external access used for phishing or malware delivery",
+      "summary": "Use when external tenants message employees in Microsoft Teams posing as IT or helpdesk, sending links or files, or initiating remote support sessions.",
+      "tags": [
+        "m365",
+        "teams",
+        "phishing",
+        "social-engineering"
+      ],
+      "attack": [
+        "T1566.003",
+        "T1219",
+        "T1534"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Configure Teams external access to an allow list of partner domains",
+          "Enable Teams message auditing and Safe Links for Teams",
+          "Brief the helpdesk on how it will and will not contact users through Teams"
+        ],
+        "identification": [
+          "Search UAL for ChatCreated and MessageSent where the sender tenant is external",
+          "Identify the external tenant ID and display names used, such as Help Desk",
+          "List every internal user who accepted the chat or replied",
+          "Check endpoints of contacted users for Quick Assist, AnyDesk or other remote tool launches",
+          "Review URLs and files shared in the chat with Defender for Office 365"
+        ],
+        "containment": [
+          "Block the external domain in Teams external access settings",
+          "Isolate endpoints where remote tools were launched after the chat",
+          "Reset credentials of users who shared codes or passwords in the chat"
+        ],
+        "eradication": [
+          "Uninstall remote access tools installed during the session",
+          "Remove malicious files from Teams and SharePoint via Purview content search",
+          "Hunt for persistence on endpoints touched by the remote session"
+        ],
+        "recovery": [
+          "Notify all employees of the pretext with screenshots",
+          "Confirm the blocked tenant cannot initiate chats",
+          "Re-enable affected users after endpoint remediation"
+        ],
+        "lessons": [
+          "Detect external chats whose display name contains help, support or IT",
+          "Consider disabling chat with unmanaged Teams accounts",
+          "Track how many users engaged before the block"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "External Teams chats to internal users",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Workload=MicrosoftTeams Operation IN (ChatCreated,MessageSent) ParticipantInfo.HasForeignTenantUsers=true | stats count dc(UserId) as recipients values(UserId) as users by ParticipantInfo.ParticipatingTenantIds{}, ChatName"
+        },
+        {
+          "title": "Remote support tools started after the chat",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Endpoint.Processes where Processes.process_name IN (\"QuickAssist.exe\",\"AnyDesk.exe\",\"TeamViewer.exe\",\"ScreenConnect.ClientService.exe\") by Processes.dest Processes.user Processes.process_name | `drop_dm_object_name(Processes)` | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-salesforce-data-export",
+      "name": "Salesforce bulk data export or report exfiltration",
+      "summary": "Use when Salesforce event logs show large report exports, Bulk API queries, or Data Export jobs by an unusual user or from a new IP, indicating CRM data theft.",
+      "tags": [
+        "salesforce",
+        "crm",
+        "exfiltration",
+        "data-theft"
+      ],
+      "attack": [
+        "T1213",
+        "T1567",
+        "T1530"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "License Salesforce Shield Event Monitoring and ingest ReportExport, BulkApi and API events",
+          "Restrict Export Reports and Weekly Data Export permissions to named profiles",
+          "Enable Transaction Security policies for large report exports"
+        ],
+        "identification": [
+          "Query ReportExport events for row counts and report names by user",
+          "Review BulkApi and API events for SOQL queries against Contact, Account and Opportunity",
+          "Check Setup Audit Trail for Data Export Service schedules created by the user",
+          "Compare the session's SOURCE_IP and USER_AGENT to the user's normal login history",
+          "Identify whether access came through a connected app or direct login"
+        ],
+        "containment": [
+          "Freeze the user in Setup and end their active sessions",
+          "Remove Export Reports and API Enabled permissions from the user's permission set",
+          "Add the source IP to a login IP restriction denial or restrict trusted IP ranges on the profile"
+        ],
+        "eradication": [
+          "Cancel scheduled data exports and delete pending export files",
+          "Reset the password and security token for the account",
+          "Revoke OAuth tokens for connected apps the user authorized"
+        ],
+        "recovery": [
+          "Restore permissions after review with least privilege",
+          "Confirm no further large exports occur",
+          "Give legal the object types and record counts exported"
+        ],
+        "lessons": [
+          "Add an alert for ReportExport events above a row threshold",
+          "Review how many users hold Export Reports and reduce it",
+          "Assess whether Transaction Security could have blocked the export in real time"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Large report exports by user",
+          "phase": "identification",
+          "spl": "index=salesforce sourcetype=sfdc:logfile EVENT_TYPE=ReportExport | stats count sum(ROW_COUNT) as rows values(REPORT_ID_DERIVED) as reports by USER_ID_DERIVED, CLIENT_IP | sort - rows"
+        },
+        {
+          "title": "Bulk API and API queries by user",
+          "phase": "identification",
+          "spl": "index=salesforce sourcetype=sfdc:logfile EVENT_TYPE IN (BulkApi,API,RestApi) USER_ID_DERIVED=<suspect_user> | stats count sum(ROWS_PROCESSED) as rows by ENTITY_NAME, CLIENT_IP, USER_AGENT | sort - rows"
+        },
+        {
+          "title": "Setup Audit Trail data export scheduling",
+          "phase": "identification",
+          "spl": "index=salesforce sourcetype=sfdc:setupaudittrail Section=\"Data Export\" | table _time CreatedByUsername Action Display"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-salesforce-connected-app-abuse",
+      "name": "Malicious or compromised Salesforce connected app accessing org data",
+      "summary": "Use when a new connected app is authorized in Salesforce, or an existing integration's OAuth tokens are used from unknown IPs to pull records via API, including vishing-led Data Loader installs.",
+      "tags": [
+        "salesforce",
+        "oauth",
+        "connected-app",
+        "third-party"
+      ],
+      "attack": [
+        "T1528",
+        "T1550.001",
+        "T1213"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Set connected apps to Admin approved users are pre-authorized and block uninstalled app use",
+          "Keep an inventory of approved connected apps with owners and IP ranges",
+          "Ingest LoginHistory and ConnectedAppPlugin and API events into the SIEM"
+        ],
+        "identification": [
+          "List connected apps and OAuth usage in Setup and find apps installed or first used recently",
+          "Review LoginHistory for OAuth logins by the app and their source IPs",
+          "Check whether a user was talked into authorizing a Data Loader style app over the phone",
+          "Count records queried by the app's sessions in API events",
+          "Identify the authorizing users and their profiles"
+        ],
+        "containment": [
+          "Revoke all OAuth tokens for the app in Connected Apps OAuth Usage",
+          "Block the connected app or set its policy to admin-approved only with no users assigned",
+          "Restrict the app's IP relaxation to enforce trusted ranges"
+        ],
+        "eradication": [
+          "Uninstall the unauthorized connected app",
+          "Rotate the consumer secret for legitimate apps whose tokens leaked",
+          "Reset credentials for users who authorized the app under social engineering"
+        ],
+        "recovery": [
+          "Re-authorize legitimate integrations with new credentials",
+          "Confirm API usage by the app has stopped",
+          "Notify affected customers if exfiltrated records include personal data"
+        ],
+        "lessons": [
+          "Alert on first-seen connected app OAuth logins",
+          "Train support and sales staff on vishing pretexts that request app authorization",
+          "Require API Enabled permission only for integration users"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "OAuth logins by connected app and IP",
+          "phase": "identification",
+          "spl": "index=salesforce sourcetype=sfdc:loginhistory LoginType=\"Remote Access 2.0\" | stats count min(_time) as first dc(UserId) as users by Application, SourceIp | convert ctime(first) | sort first"
+        },
+        {
+          "title": "API row volume by connected app",
+          "phase": "identification",
+          "spl": "index=salesforce sourcetype=sfdc:logfile EVENT_TYPE IN (API,RestApi,BulkApi) CONNECTED_APP_ID=<app_id> | stats sum(ROWS_PROCESSED) as rows count by ENTITY_NAME, CLIENT_IP | sort - rows"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-slack-token-leak",
+      "name": "Slack bot or user token leaked and used to read channels",
+      "summary": "Use when a Slack xoxb, xoxp or xoxc token is found in code, logs or a public paste, or the Slack audit log shows a token reading many channels or files from an unfamiliar IP.",
+      "tags": [
+        "slack",
+        "token",
+        "secrets",
+        "collection"
+      ],
+      "attack": [
+        "T1552.001",
+        "T1528",
+        "T1213"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Ingest Slack audit logs (Enterprise Grid) and Access Logs into the SIEM",
+          "Enable token rotation for Slack apps and restrict app installs to admin approval",
+          "Add Slack token patterns to source code secret scanning"
+        ],
+        "identification": [
+          "Determine the token type and owner (bot, user, or session cookie) and the app it belongs to",
+          "Review the app's OAuth scopes such as channels:history, files:read and users:read.email",
+          "Search audit logs for actions by the token's user or app from new IPs",
+          "Identify channels and files accessed and whether private channels or DMs were in scope",
+          "Find where and when the token was exposed"
+        ],
+        "containment": [
+          "Revoke the token with auth.revoke or by reinstalling the app",
+          "Sign the user out of all sessions in the admin console if a user token or cookie leaked",
+          "Restrict the app to specific channels until reissued"
+        ],
+        "eradication": [
+          "Remove the token from the repo history and CI logs",
+          "Rotate the app's signing secret and client secret",
+          "Scan channels the token could read for secrets pasted by users and rotate them"
+        ],
+        "recovery": [
+          "Reissue a new token with minimal scopes and store it in a secrets manager",
+          "Confirm audit logs show no use of the old token",
+          "Notify channel owners of the exposure where sensitive content was readable"
+        ],
+        "lessons": [
+          "Enforce IP allow lists for Slack app tokens where supported",
+          "Reduce bot scopes that grant history across all channels",
+          "Track time from token exposure to revocation"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Slack audit actions by app or user from new IPs",
+          "phase": "identification",
+          "spl": "index=slack sourcetype=slack:audit (actor.user.id=<suspect_user> OR entity.app.id=<app_id>) | stats count values(action) as actions min(_time) as first by context.ip_address, context.ua | convert ctime(first)"
+        },
+        {
+          "title": "File downloads and channel history reads",
+          "phase": "identification",
+          "spl": "index=slack sourcetype=slack:audit action IN (file_downloaded,file_downloaded_blocked,file_public_link_created) | stats count by actor.user.name, context.ip_address, action | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-slack-workspace-export",
+      "name": "Slack workspace or organization data export initiated",
+      "summary": "Use when an admin or owner starts a full workspace export, a corporate export including DMs, or a discovery API pull that was not requested by legal or compliance.",
+      "tags": [
+        "slack",
+        "export",
+        "exfiltration",
+        "admin-abuse"
+      ],
+      "attack": [
+        "T1213",
+        "T1567",
+        "T1078"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Limit Slack Owner and Admin roles and record who is allowed to run exports",
+          "Route export notifications to the security mailbox as well as owners",
+          "Document the legal and compliance process for legitimate exports"
+        ],
+        "identification": [
+          "Find export_started, corporate_exports_approved and export_downloaded events in the audit log",
+          "Confirm with legal whether a matter or request exists for the export",
+          "Identify the export scope: public channels only, or all channels and DMs",
+          "Check the downloading IP and device against the admin's normal access"
+        ],
+        "containment": [
+          "Cancel the export if still running and expire the download link",
+          "Demote the admin and reset their credentials if the export is unauthorized",
+          "Sign out the account from all devices"
+        ],
+        "eradication": [
+          "Audit other admin actions by the account such as SSO or retention changes",
+          "Remove additional admins the account promoted",
+          "Revoke Discovery API tokens or apps the admin authorized"
+        ],
+        "recovery": [
+          "Restore admin roster to the approved list",
+          "Notify affected staff or regulators as legal directs",
+          "Re-verify export settings and approvals"
+        ],
+        "lessons": [
+          "Alert on any export_started event in real time",
+          "Require two-person approval for corporate exports",
+          "Review whether retention settings reduce exposure of old DMs"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Slack export events",
+          "phase": "identification",
+          "spl": "index=slack sourcetype=slack:audit action IN (export_started,export_completed,export_downloaded,corporate_exports_approved,corporate_exports_enabled) | table _time actor.user.email action context.ip_address entity.workspace.name details.export_type"
+        },
+        {
+          "title": "Other admin actions by the exporting account",
+          "phase": "eradication",
+          "spl": "index=slack sourcetype=slack:audit actor.user.email=<suspect_user> earliest=-30d | stats count by action | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-github-org-compromise",
+      "name": "GitHub organization admin compromise or repo visibility changes",
+      "summary": "Use when a GitHub org owner account adds members, changes repository visibility to public, disables branch protection, or alters org security settings without a change request.",
+      "tags": [
+        "github",
+        "source-code",
+        "admin-abuse",
+        "data-exposure"
+      ],
+      "attack": [
+        "T1098",
+        "T1213.003",
+        "T1078"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Stream the GitHub Enterprise audit log to the SIEM including Git events",
+          "Require SSO and two-factor for all org members and keep owner count minimal",
+          "Disable members' ability to change repository visibility in org settings"
+        ],
+        "identification": [
+          "Search the audit log for repo.access, org.add_member, org.update_member and protected_branch.destroy",
+          "List repositories whose visibility changed to public and the exact time",
+          "Check org.disable_two_factor_requirement and SSO configuration changes",
+          "Identify new deploy keys, outside collaborators, and GitHub Apps installed",
+          "Review the owner's actor_ip and user agent against normal behavior"
+        ],
+        "containment": [
+          "Revert public repositories to private immediately",
+          "Remove the compromised owner's org role and revoke their SSO sessions and PATs",
+          "Remove outside collaborators and deploy keys added during the window"
+        ],
+        "eradication": [
+          "Restore branch protection and rulesets from your baseline configuration",
+          "Uninstall unauthorized GitHub Apps and revoke OAuth apps the owner approved",
+          "Rotate secrets that appear in repositories that were public, even briefly"
+        ],
+        "recovery": [
+          "Request removal of forks and cached copies through GitHub support where possible",
+          "Re-enable two-factor and SSO requirements and confirm member compliance",
+          "Re-establish owner accounts with hardware security keys"
+        ],
+        "lessons": [
+          "Alert on repo.access events that set visibility to public",
+          "Track how long sensitive code was exposed and how many clones occurred",
+          "Review break-glass owner account protections"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Repository visibility and protection changes",
+          "phase": "identification",
+          "spl": "index=github sourcetype=github:audit action IN (repo.access,protected_branch.destroy,protected_branch.update_admin_enforced,repository_ruleset.destroy) | table _time actor actor_ip action repo visibility"
+        },
+        {
+          "title": "Membership and org security setting changes",
+          "phase": "identification",
+          "spl": "index=github sourcetype=github:audit action IN (org.add_member,org.update_member,org.add_outside_collaborator,org.disable_two_factor_requirement,org.sso_response,public_key.create,integration_installation.create) | stats count values(action) as actions by actor, actor_ip"
+        },
+        {
+          "title": "Clones of repositories while public",
+          "phase": "identification",
+          "spl": "index=github sourcetype=github:audit action=git.clone repo=<repo> | stats count by actor_ip, actor, repository_public"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-google-drive-public-sharing",
+      "name": "Google Drive files shared publicly or to anyone with the link",
+      "summary": "Use when Google Workspace Drive audit shows files changed to public on the web or anyone with the link, especially sensitive folders or bulk changes by one user.",
+      "tags": [
+        "google-workspace",
+        "google-drive",
+        "data-exposure",
+        "sharing"
+      ],
+      "attack": [
+        "T1567",
+        "T1213"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Set Drive sharing defaults to restrict link sharing outside the domain for sensitive OUs",
+          "Ingest Drive audit logs via the Reports API",
+          "Enable Workspace DLP rules for regulated data in Drive"
+        ],
+        "identification": [
+          "Search Drive events for change_document_visibility to people_with_link or public_on_the_web",
+          "List the affected doc titles, owners and their visibility before and after",
+          "Check view events from external or anonymous viewers on the exposed files",
+          "Determine whether the change was intentional publishing or a compromised account"
+        ],
+        "containment": [
+          "Revert the files to restricted visibility using the security investigation tool bulk action",
+          "Disable link sharing outside the domain for the user's OU temporarily",
+          "Suspend the account if the sharing is unauthorized"
+        ],
+        "eradication": [
+          "Remove external collaborators added at the same time",
+          "Check Apps Script projects owned by the user for automated sharing",
+          "Reset the user's password and sign-in cookies if compromised"
+        ],
+        "recovery": [
+          "Request removal of any search engine cache of public documents",
+          "Confirm no public files remain via a Drive inventory query",
+          "Inform data owners of the exposure window"
+        ],
+        "lessons": [
+          "Alert on public_on_the_web visibility for files with DLP labels",
+          "Review OUs that still allow public sharing",
+          "Measure count of documents exposed and duration"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Drive visibility changes to public or link",
+          "phase": "identification",
+          "spl": "index=gws sourcetype=gws:reports:drive event.name=change_document_visibility (event.parameters.visibility=people_with_link OR event.parameters.visibility=public_on_the_web) | table _time actor.email event.parameters.doc_title event.parameters.owner event.parameters.old_visibility event.parameters.visibility"
+        },
+        {
+          "title": "Anonymous or external views of exposed files",
+          "phase": "identification",
+          "spl": "index=gws sourcetype=gws:reports:drive event.name=view event.parameters.doc_id=<doc_id> | stats count by actor.email, ipAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-box-dropbox-mass-share",
+      "name": "Box or Dropbox mass sharing or download by one account",
+      "summary": "Use when Box or Dropbox Business logs show one user creating many shared links, adding external collaborators, or downloading large folder trees, suggesting exfiltration.",
+      "tags": [
+        "box",
+        "dropbox",
+        "file-sharing",
+        "exfiltration"
+      ],
+      "attack": [
+        "T1567.002",
+        "T1530"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Ingest Box admin events and Dropbox team events into the SIEM",
+          "Set shared link defaults to company-only and require expiry for open links",
+          "Classify top-level folders with Box Shield or Dropbox labels"
+        ],
+        "identification": [
+          "Count SHARE, COLLABORATION_INVITE and DOWNLOAD events per user in Box admin logs",
+          "Count shared_link_create and file_download events per member in Dropbox team events",
+          "Identify external collaborator domains and link access levels",
+          "Determine data classification of the folders involved",
+          "Check whether the activity used the desktop client, web or an API app"
+        ],
+        "containment": [
+          "Disable shared links and remove external collaborators on affected folders",
+          "Suspend the user or revoke their active sessions and linked devices",
+          "Revoke API app authorizations the user granted"
+        ],
+        "eradication": [
+          "Remove the content from the user's personal space if it was copied there",
+          "Reset the account credentials and reenroll MFA",
+          "Remote wipe Box Drive or Dropbox desktop caches on unmanaged devices"
+        ],
+        "recovery": [
+          "Restore collaborations needed for business with expiring links",
+          "Confirm event volume returns to baseline",
+          "Give legal the folder list and external parties"
+        ],
+        "lessons": [
+          "Add Box Shield or Dropbox anomaly alerts to SOC routing",
+          "Review whether open links should be disallowed for classified folders",
+          "Track mean time to revoke links"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Box sharing and download volume per user",
+          "phase": "identification",
+          "spl": "index=box sourcetype=box:events event_type IN (SHARE,COLLABORATION_INVITE,DOWNLOAD,ITEM_SHARED_CREATE) | stats count by created_by.login, event_type | sort - count"
+        },
+        {
+          "title": "Dropbox shared links and downloads per member",
+          "phase": "identification",
+          "spl": "index=dropbox sourcetype=dropbox:team:events event_type.tag IN (shared_link_create,file_download,shared_content_add_member) | stats count by actor.user.email, event_type.tag, origin.geo_location.ip_address | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-zoom-bombing-recording-leak",
+      "name": "Zoom meeting bombing or cloud recording exposure",
+      "summary": "Use when uninvited participants disrupt Zoom meetings, meeting links leak publicly, or cloud recordings are shared without passcodes or downloaded by outsiders.",
+      "tags": [
+        "zoom",
+        "meetings",
+        "data-exposure",
+        "collaboration"
+      ],
+      "attack": [
+        "T1213"
+      ],
+      "severity": "Low",
+      "tasks": {
+        "preparation": [
+          "Enforce waiting rooms, passcodes and authenticated users for internal meetings by account setting lock",
+          "Require passcodes and expiry on shared cloud recordings",
+          "Ingest Zoom operation logs and webhooks into the SIEM"
+        ],
+        "identification": [
+          "Pull the meeting participant report for joiner names, emails and IPs",
+          "Determine where the meeting link was posted, such as a public calendar or social site",
+          "Review recording share settings and download events for affected recordings",
+          "Check operation logs for setting changes that disabled waiting rooms or passcodes"
+        ],
+        "containment": [
+          "End the meeting and regenerate the meeting ID and passcode",
+          "Disable share links for the exposed recordings",
+          "Lock the account setting that was changed at the account level"
+        ],
+        "eradication": [
+          "Delete or restrict recordings that contain sensitive content",
+          "Remove public posts of the meeting link where controllable",
+          "Report abusive participants to Zoom trust and safety"
+        ],
+        "recovery": [
+          "Reschedule the meeting with registration and authentication required",
+          "Confirm recordings now require sign-in to view",
+          "Communicate meeting hygiene guidance to the host's team"
+        ],
+        "lessons": [
+          "Audit large recurring meetings that use static links",
+          "Track recordings shared publicly per quarter",
+          "Decide whether external recording sharing should be disabled by default"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Zoom setting changes weakening meeting security",
+          "phase": "identification",
+          "spl": "index=zoom sourcetype=zoom:operationlogs category_type IN (\"Account\",\"User Settings\") (action=\"*Waiting Room*\" OR action=\"*Passcode*\" OR operation_detail=\"*passcode*\") | table _time operator category_type action operation_detail"
+        },
+        {
+          "title": "Recording downloads and shares",
+          "phase": "identification",
+          "spl": "index=zoom sourcetype=zoom:webhook event IN (recording.downloaded,recording.shared,recording.completed) payload.object.topic=\"<meeting_topic>\" | table _time event payload.operator payload.object.share_url"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-confluence-data-scraping",
+      "name": "Confluence spaces scraped by an account or API token",
+      "summary": "Use when Atlassian access logs show an account or API token viewing or exporting thousands of Confluence pages across spaces, a common pre-extortion data theft pattern.",
+      "tags": [
+        "atlassian",
+        "confluence",
+        "collection",
+        "exfiltration"
+      ],
+      "attack": [
+        "T1213.001",
+        "T1119"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable Atlassian Guard user activity logs and send audit logs to the SIEM",
+          "Restrict API token creation via Atlassian Admin policy for managed accounts",
+          "Mark spaces containing credentials or architecture docs as restricted"
+        ],
+        "identification": [
+          "Count page views and exports per account across spaces in the activity log",
+          "Check for space export or PDF export events and API calls to /wiki/rest/api/content",
+          "Identify the API token used and when it was created",
+          "List spaces accessed and search their content for credentials or keys",
+          "Compare IP and user agent with the account's normal pattern"
+        ],
+        "containment": [
+          "Revoke the account's API tokens from Atlassian Admin",
+          "Suspend the account and log out its sessions",
+          "Restrict the most sensitive spaces to a smaller group"
+        ],
+        "eradication": [
+          "Rotate any secrets found in pages the account viewed",
+          "Remove pages that hold plaintext credentials and move them to a vault",
+          "Reset the account's identity provider credentials"
+        ],
+        "recovery": [
+          "Restore access after validation",
+          "Confirm activity log shows normal page view volume",
+          "Inform space owners of what was read"
+        ],
+        "lessons": [
+          "Alert when an account views more than N distinct pages in an hour",
+          "Scan Confluence regularly for secrets",
+          "Review API token policy exceptions"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Confluence page views per account",
+          "phase": "identification",
+          "spl": "index=atlassian sourcetype=atlassian:confluence:audit (action=\"page_viewed\" OR action=\"space_exported\" OR action=\"page_exported\") | stats count dc(attributes.container_id) as spaces by actor.email, location.ip | sort - count"
+        },
+        {
+          "title": "API token creation and use",
+          "phase": "identification",
+          "spl": "index=atlassian sourcetype=atlassian:org:audit action IN (api_token_created,api_token_used) actor.email=<suspect_user> | table _time action location.ip attributes.token_label"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-atlassian-admin-compromise",
+      "name": "Jira or Confluence site admin account compromised",
+      "summary": "Use when an Atlassian org or site admin changes SSO, adds admins, installs Marketplace apps, or modifies global permissions unexpectedly.",
+      "tags": [
+        "atlassian",
+        "jira",
+        "admin-abuse",
+        "persistence"
+      ],
+      "attack": [
+        "T1098",
+        "T1078",
+        "T1484"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Limit org admins and enforce SSO with phishing-resistant MFA for them",
+          "Stream Atlassian organization audit logs to the SIEM",
+          "Restrict Marketplace app installs to admin request workflow"
+        ],
+        "identification": [
+          "Review org audit for admin role grants, identity provider changes and domain verification",
+          "List Marketplace or Forge apps installed recently and their scopes",
+          "Check Jira global permissions and Confluence global permission changes",
+          "Identify new user API tokens or service accounts created by the admin"
+        ],
+        "containment": [
+          "Remove admin rights from the compromised account and revoke sessions",
+          "Revert SAML or identity provider configuration to the approved settings",
+          "Uninstall apps installed during the incident"
+        ],
+        "eradication": [
+          "Remove admins and accounts the attacker added",
+          "Revoke API tokens and OAuth integrations they created",
+          "Reset the admin's identity provider credentials and MFA"
+        ],
+        "recovery": [
+          "Restore global permissions from documented baseline",
+          "Confirm SSO enforcement is active for all managed accounts",
+          "Verify no further admin changes from unknown actors"
+        ],
+        "lessons": [
+          "Alert on identity provider or admin role changes in the Atlassian org",
+          "Keep a configuration export to compare against after incidents",
+          "Review whether admin accounts are separate from daily-use accounts"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Atlassian org admin and SSO changes",
+          "phase": "identification",
+          "spl": "index=atlassian sourcetype=atlassian:org:audit action IN (user_granted_role,org_admin_added,saml_config_updated,identity_provider_updated,domain_verified,app_installed) | table _time actor.email action location.ip context"
+        },
+        {
+          "title": "Jira global permission changes",
+          "phase": "identification",
+          "spl": "index=atlassian sourcetype=atlassian:jira:audit category=permissions | stats count values(summary) as changes by authorAccountId, remoteAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-servicenow-data-exposure",
+      "name": "ServiceNow instance data exposed via public widget or ACL misconfiguration",
+      "summary": "Use when ServiceNow knowledge bases, Service Portal widgets or tables are readable by unauthenticated users, or a guest session queries records via REST or the Table API.",
+      "tags": [
+        "servicenow",
+        "itsm",
+        "data-exposure",
+        "misconfiguration"
+      ],
+      "attack": [
+        "T1213",
+        "T1190"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Apply the ServiceNow security baseline for ACLs and Service Portal public widgets",
+          "Send syslog transactions and sys_audit to the SIEM",
+          "Keep a list of knowledge bases intended for public access"
+        ],
+        "identification": [
+          "Query transaction logs for requests by the guest user to /api/now/table and widget endpoints",
+          "Review ACLs on sensitive tables such as sys_user, incident and kb_knowledge for public role",
+          "Check Service Portal widgets marked public that return record data",
+          "Identify records returned to unauthenticated sessions and their content"
+        ],
+        "containment": [
+          "Remove the public role from affected ACLs and widgets",
+          "Set the glide.security.use_csrf_token and public page restrictions per baseline",
+          "Block source IPs that bulk-queried the instance"
+        ],
+        "eradication": [
+          "Rotate credentials or secrets stored in exposed records",
+          "Review user criteria on knowledge bases for public exposure",
+          "Remove unused public pages and widgets"
+        ],
+        "recovery": [
+          "Re-test public pages with an unauthenticated session",
+          "Confirm guest transactions no longer return data",
+          "Notify data owners of exposed record types"
+        ],
+        "lessons": [
+          "Add a scheduled scan for public ACLs on sensitive tables",
+          "Alert on high-volume guest transactions",
+          "Include ServiceNow ACL review in each upgrade cycle"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Unauthenticated Table API and widget requests",
+          "phase": "identification",
+          "spl": "index=servicenow sourcetype=snow:syslog_transaction user=guest (url=\"*/api/now/table/*\" OR url=\"*/api/now/sp/widget/*\") | stats count by url, client_ip | sort - count"
+        },
+        {
+          "title": "ACL changes on sensitive tables",
+          "phase": "eradication",
+          "spl": "index=servicenow sourcetype=snow:sys_audit tablename=sys_security_acl | table _time user documentkey fieldname oldvalue newvalue"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-workday-payroll-change",
+      "name": "Workday direct deposit or payroll change by compromised account",
+      "summary": "Use when an employee reports missing pay, or Workday shows bank account changes made from unusual IPs or right after a password reset, indicating payroll diversion fraud.",
+      "tags": [
+        "workday",
+        "hr",
+        "payroll-fraud",
+        "account-takeover"
+      ],
+      "attack": [
+        "T1078",
+        "T1657"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Require step-up MFA in Workday for payment election changes",
+          "Notify employees by a separate channel when banking details change",
+          "Ingest Workday sign-on and business process audit reports into the SIEM"
+        ],
+        "identification": [
+          "Pull the Change Payment Elections business process history for affected workers",
+          "Compare sign-on IPs and user agents for the change against the worker's history",
+          "Search for multiple workers whose payment elections changed to the same bank routing number",
+          "Check identity provider logs for MFA resets or help desk password resets before the change"
+        ],
+        "containment": [
+          "Revert payment elections and hold the next payroll run for affected workers",
+          "Reset passwords and revoke sessions for affected accounts",
+          "Ask payroll to contact the receiving bank to recall or freeze deposits"
+        ],
+        "eradication": [
+          "Remove attacker MFA devices from the identity provider for affected workers",
+          "Delete email rules that hid Workday notifications in the worker's mailbox",
+          "Block the source IPs at the identity provider"
+        ],
+        "recovery": [
+          "Issue corrected pay to affected employees",
+          "Verify banking details with each worker by phone",
+          "Confirm no further payment election changes from attacker IPs"
+        ],
+        "lessons": [
+          "Alert on bank detail changes within 24 hours of an MFA or password reset",
+          "Tighten help desk identity verification for MFA resets",
+          "Track dollar amount diverted and recovered"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Payment election changes with source IP",
+          "phase": "identification",
+          "spl": "index=workday sourcetype=workday:activity taskDisplayName=\"*Payment Election*\" | stats count values(target) as workers by userId, ipAddress, deviceType | sort - count"
+        },
+        {
+          "title": "MFA or password resets preceding payroll change",
+          "phase": "identification",
+          "spl": "index=okta sourcetype=okta:im2 eventType IN (user.mfa.factor.reset_all,user.account.reset_password,user.mfa.factor.activate) target{}.alternateId=<suspect_user> | table _time eventType actor.alternateId client.ipAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-hubspot-crm-export",
+      "name": "HubSpot or CRM contact database exported by unusual user",
+      "summary": "Use when a marketing or sales CRM such as HubSpot shows a full contacts or companies export, or a private app token pulling records, by a user or integration not normally doing so.",
+      "tags": [
+        "hubspot",
+        "crm",
+        "exfiltration",
+        "insider-threat"
+      ],
+      "attack": [
+        "T1213",
+        "T1567"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Restrict the Export permission in HubSpot to a named group of super admins",
+          "Enable export notifications to the security mailbox",
+          "Ingest HubSpot account audit logs and login history"
+        ],
+        "identification": [
+          "Review account audit logs for export events and which object types and properties were exported",
+          "Check the user's login history for IP and country changes",
+          "Identify private app or API key usage pulling contacts via the CRM API",
+          "Confirm with the user's manager whether the export was business-justified"
+        ],
+        "containment": [
+          "Remove export permission from the user and deactivate the account if unexplained",
+          "Rotate private app access tokens used for the pull",
+          "Revoke connected app integrations installed recently"
+        ],
+        "eradication": [
+          "Delete copies of the export from shared drives the user can access",
+          "Reset credentials and force MFA enrollment",
+          "Remove the user's API keys and personal access keys"
+        ],
+        "recovery": [
+          "Restore least-privilege permission sets for the team",
+          "Confirm no repeat exports",
+          "Assess privacy notification requirements for exported contacts"
+        ],
+        "lessons": [
+          "Alert on any export above a contact count threshold",
+          "Add departing-employee checks to CRM export alerts",
+          "Review how many users can export"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "HubSpot export events",
+          "phase": "identification",
+          "spl": "index=hubspot sourcetype=hubspot:audit (action=EXPORT OR category=EXPORT) | table _time actingUser.userEmail action objectType details"
+        },
+        {
+          "title": "HubSpot logins for exporting user",
+          "phase": "identification",
+          "spl": "index=hubspot sourcetype=hubspot:login email=<suspect_user> | stats count min(_time) as first by ipAddress, countryCode, userAgent | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-zendesk-agent-takeover",
+      "name": "Zendesk support agent account taken over to access customer data",
+      "summary": "Use when a Zendesk agent or admin logs in from an unusual location, views or exports many tickets, changes customer emails, or creates API tokens, often used for social engineering of customers.",
+      "tags": [
+        "zendesk",
+        "customer-support",
+        "account-takeover",
+        "data-exposure"
+      ],
+      "attack": [
+        "T1078",
+        "T1213",
+        "T1098"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enforce SSO for Zendesk agents and disable native password login",
+          "Ingest Zendesk audit logs and access logs into the SIEM",
+          "Restrict API token creation to admins"
+        ],
+        "identification": [
+          "Pull the agent's access log for IPs and the audit log for ticket views and exports",
+          "Look for changes to end-user email or phone that enable customer account takeover",
+          "Check for new API tokens, OAuth clients or webhook targets",
+          "List customers whose tickets were viewed in the window"
+        ],
+        "containment": [
+          "Suspend the agent and revoke their sessions in Zendesk and the identity provider",
+          "Revoke API tokens and OAuth clients created during the window",
+          "Revert end-user contact changes made by the agent"
+        ],
+        "eradication": [
+          "Delete webhooks and triggers that forward ticket content externally",
+          "Reset the agent's identity provider credentials",
+          "Review macros the attacker modified to include phishing links"
+        ],
+        "recovery": [
+          "Contact customers whose accounts were changed to confirm control",
+          "Restore the agent after training and credential reset",
+          "Monitor for repeat logins from the attacker IPs"
+        ],
+        "lessons": [
+          "Alert on end-user identity changes by agents followed by password resets",
+          "Limit agent ability to change verified customer email",
+          "Measure customers affected"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Zendesk agent audit actions",
+          "phase": "identification",
+          "spl": "index=zendesk sourcetype=zendesk:audit actor_name=<suspect_user> | stats count values(action) as actions by source_type, ip_address | sort - count"
+        },
+        {
+          "title": "API token, webhook and trigger changes",
+          "phase": "identification",
+          "spl": "index=zendesk sourcetype=zendesk:audit source_type IN (api_token,webhook,trigger,macro) action IN (create,update) | table _time actor_name ip_address source_type source_label change_description"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-docusign-account-abuse",
+      "name": "DocuSign account abused to send phishing or fraudulent envelopes",
+      "summary": "Use when a compromised DocuSign user sends envelopes with lookalike invoices, payment change requests or credential-harvest links from your legitimate account to customers or vendors.",
+      "tags": [
+        "docusign",
+        "phishing",
+        "bec",
+        "account-takeover"
+      ],
+      "attack": [
+        "T1566.002",
+        "T1078",
+        "T1534"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Federate DocuSign to your identity provider with MFA",
+          "Enable DocuSign Monitor and ingest its events",
+          "Restrict who can create templates and bulk send"
+        ],
+        "identification": [
+          "List envelopes sent by the user in the window with recipients, subjects and documents",
+          "Check for new templates, brand changes or bulk send lists",
+          "Review login events for IP, location and authentication method",
+          "Extract URLs inside sent documents and check them in the sandbox"
+        ],
+        "containment": [
+          "Void outstanding envelopes sent by the attacker",
+          "Close the user's sessions and disable the DocuSign user",
+          "Block the phishing URLs at the proxy and mail gateway"
+        ],
+        "eradication": [
+          "Delete attacker templates and bulk send lists",
+          "Reset the user's identity provider credentials and MFA",
+          "Remove API integration keys created by the user"
+        ],
+        "recovery": [
+          "Notify recipients that envelopes were fraudulent and what to do",
+          "Re-enable the user after verification",
+          "Confirm no new envelopes from the attacker sessions"
+        ],
+        "lessons": [
+          "Alert on bulk sends to external recipients from non-sales users",
+          "Track recipients who signed or clicked",
+          "Review whether vendor payment changes accept DocuSign as verification"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Envelopes sent by suspect user",
+          "phase": "identification",
+          "spl": "index=docusign sourcetype=docusign:monitor action IN (\"Envelope Sent\",\"Bulk Send\") userEmail=<suspect_user> | stats count dc(data.recipientEmail) as recipients values(data.envelopeSubject) as subjects by ipAddress"
+        },
+        {
+          "title": "DocuSign logins and template changes",
+          "phase": "identification",
+          "spl": "index=docusign sourcetype=docusign:monitor action IN (\"Login\",\"Template Created\",\"Template Modified\",\"Integration Key Created\") | table _time userEmail action ipAddress location"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-snowflake-credential-stuffing",
+      "name": "Snowflake account accessed with stolen credentials and data staged out",
+      "summary": "Use when Snowflake login history shows password-only logins from new IPs or clients, followed by SHOW TABLES, large SELECTs, COPY INTO an external stage or GET commands.",
+      "tags": [
+        "snowflake",
+        "data-warehouse",
+        "credential-stuffing",
+        "exfiltration"
+      ],
+      "attack": [
+        "T1078",
+        "T1110.004",
+        "T1530",
+        "T1537"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enforce MFA or key-pair auth for all Snowflake users and block password-only service users",
+          "Apply network policies restricting login to corporate and integration IPs",
+          "Ingest LOGIN_HISTORY, QUERY_HISTORY and ACCESS_HISTORY from SNOWFLAKE.ACCOUNT_USAGE"
+        ],
+        "identification": [
+          "Query LOGIN_HISTORY for successful password logins with FIRST_AUTHENTICATION_FACTOR=PASSWORD from new IPs",
+          "Check REPORTED_CLIENT_TYPE for custom or scripted clients, or GUI tools like DBeaver, from unknown hosts",
+          "Search QUERY_HISTORY for SHOW TABLES, COPY INTO @stage, CREATE STAGE and GET by the session",
+          "Use ACCESS_HISTORY to list base objects and columns read",
+          "Identify the infostealer-infected host where the credential was captured if known"
+        ],
+        "containment": [
+          "Disable the user with ALTER USER SET DISABLED = TRUE and abort its running queries",
+          "Apply an account-level network policy blocking the attacker IPs",
+          "Drop external stages and storage integrations the attacker created"
+        ],
+        "eradication": [
+          "Rotate passwords and keys for every user that logged in from the attacker IPs",
+          "Remove roles granted to the compromised user during the session",
+          "Reimage the device that leaked the credential"
+        ],
+        "recovery": [
+          "Re-enable users with MFA or key-pair only",
+          "Confirm no logins from attacker infrastructure after containment",
+          "Provide legal with tables, row counts and data types exfiltrated"
+        ],
+        "lessons": [
+          "Make password-only authentication impossible by authentication policy",
+          "Alert on COPY INTO external stages not owned by data engineering",
+          "Track credentials discovered in infostealer logs as a preventive feed"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Password-only Snowflake logins by IP and client",
+          "phase": "identification",
+          "spl": "index=snowflake sourcetype=snowflake:login_history IS_SUCCESS=YES FIRST_AUTHENTICATION_FACTOR=PASSWORD SECOND_AUTHENTICATION_FACTOR=\"\" | stats count min(_time) as first by USER_NAME, CLIENT_IP, REPORTED_CLIENT_TYPE | convert ctime(first) | sort first"
+        },
+        {
+          "title": "Staging and export queries by suspect user",
+          "phase": "identification",
+          "spl": "index=snowflake sourcetype=snowflake:query_history USER_NAME=<suspect_user> (QUERY_TEXT=\"*COPY INTO @*\" OR QUERY_TEXT=\"*CREATE*STAGE*\" OR QUERY_TEXT=\"SHOW TABLES*\" OR QUERY_TYPE=GET_FILES) | table _time QUERY_TYPE QUERY_TEXT ROWS_PRODUCED BYTES_SCANNED"
+        },
+        {
+          "title": "Rows read per table by session",
+          "phase": "identification",
+          "spl": "index=snowflake sourcetype=snowflake:query_history USER_NAME=<suspect_user> QUERY_TYPE=SELECT | stats sum(ROWS_PRODUCED) as rows sum(BYTES_SCANNED) as bytes by DATABASE_NAME, SCHEMA_NAME, SESSION_ID | sort - rows"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-notion-public-page-leak",
+      "name": "Notion workspace page published to the web with internal data",
+      "summary": "Use when an internal Notion page or database is shared to the web, indexed by search engines, or allows duplication, exposing roadmaps, credentials, customer lists or HR notes.",
+      "tags": [
+        "notion",
+        "data-exposure",
+        "sharing",
+        "wiki"
+      ],
+      "attack": [
+        "T1213"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Disable Share to web for members on the Enterprise plan or restrict to workspace owners",
+          "Ingest Notion audit log events into the SIEM",
+          "Tell teams where public content should be published instead"
+        ],
+        "identification": [
+          "Search the Notion audit log for page_shared_to_web and allow_search_engine_indexing changes",
+          "Open the public URL in a private browser to confirm what is visible including sub-pages",
+          "Check whether Allow duplicate as template was on, letting outsiders copy the content",
+          "Search the web for the page title or notion.site URL to see if it was indexed",
+          "Identify secrets or personal data in the exposed pages and child databases"
+        ],
+        "containment": [
+          "Turn off Share to web on the page and all child pages",
+          "Disable search engine indexing and duplication on any page that must stay public",
+          "Remove guest access that was granted at the same time"
+        ],
+        "eradication": [
+          "Rotate any credentials or API keys visible on the page",
+          "Request search engine removal of cached copies",
+          "Move sensitive content to a restricted teamspace"
+        ],
+        "recovery": [
+          "Republish only approved content in a dedicated public teamspace",
+          "Confirm the URL now returns an access request page",
+          "Notify owners of exposed personal data"
+        ],
+        "lessons": [
+          "Alert on every share-to-web event outside marketing teamspaces",
+          "Run periodic scans for public notion.site pages tied to your workspace",
+          "Measure the time the page was public"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Notion pages shared to web",
+          "phase": "identification",
+          "spl": "index=notion sourcetype=notion:audit type IN (page_shared_to_web,page_sharing_settings_changed,allow_search_engine_indexing_enabled) | table _time actor.person.email type page.title ip_address"
+        },
+        {
+          "title": "Guest invites by the same actor",
+          "phase": "containment",
+          "spl": "index=notion sourcetype=notion:audit type IN (guest_added,member_invited) actor.person.email=<suspect_user> | table _time type target.email page.title"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-vendor-breach-notification",
+      "name": "Third-party SaaS vendor notifies you of a breach affecting your tenant",
+      "summary": "Use when a SaaS provider reports a breach, stolen support credentials, or compromised integration that may expose your data or tokens, and you must scope impact without full logs.",
+      "tags": [
+        "third-party",
+        "vendor-breach",
+        "supply-chain",
+        "saas"
+      ],
+      "attack": [
+        "T1199",
+        "T1195"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Maintain a SaaS inventory listing data types, integrations, tokens and admin contacts per vendor",
+          "Ensure contracts require breach notification with indicators and timelines",
+          "Store vendor log export instructions and support escalation contacts"
+        ],
+        "identification": [
+          "Read the vendor notice and record indicators, affected time window and data types",
+          "List every API key, OAuth grant and SSO trust your tenant has with the vendor",
+          "Pull the vendor's admin audit log for your tenant over the affected window",
+          "Search your logs for vendor-provided IOC IPs or user agents touching your systems",
+          "Identify downstream systems the vendor integration could reach"
+        ],
+        "containment": [
+          "Rotate API keys and client secrets you have issued to the vendor",
+          "Revoke and reissue OAuth grants the vendor app holds in your identity provider",
+          "Restrict the vendor integration to read-only or disable it until the vendor confirms remediation"
+        ],
+        "eradication": [
+          "Remove stale integrations and unused service accounts tied to the vendor",
+          "Reset passwords for any local accounts on the vendor platform",
+          "Request vendor confirmation of the root cause fix and token invalidation"
+        ],
+        "recovery": [
+          "Re-enable the integration with new credentials and narrowed scopes",
+          "Assess whether customer or employee notification is required based on data types",
+          "Track vendor follow-up reports until closure"
+        ],
+        "lessons": [
+          "Measure how long it took to enumerate all tokens for the vendor",
+          "Add vendor IOC ingestion to the threat intel workflow",
+          "Revisit the vendor's risk tier and contract terms"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Vendor IOC IPs across all data",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first max(_time) as last from datamodel=Authentication where Authentication.src IN (<ioc_ip>) by Authentication.src Authentication.user Authentication.app | `drop_dm_object_name(Authentication)` | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Vendor app activity in M365 and Entra",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity (AppId=<vendor_app_id> OR ApplicationId=<vendor_app_id>) | stats count values(Operation) as ops by ClientIP, Workload"
+        },
+        {
+          "title": "Vendor network traffic to and from your hosts",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest IN (<ioc_ip>) OR All_Traffic.src IN (<ioc_ip>) by All_Traffic.src All_Traffic.dest All_Traffic.dest_port | `drop_dm_object_name(All_Traffic)`"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-shadow-it-with-data",
+      "name": "Unsanctioned SaaS app discovered holding company data",
+      "summary": "Use when proxy logs, CASB discovery or expense reports reveal employees using an unapproved SaaS service and uploading company or customer data to it.",
+      "tags": [
+        "shadow-it",
+        "casb",
+        "data-governance",
+        "saas"
+      ],
+      "attack": [
+        "T1567"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Enable Defender for Cloud Apps or CASB discovery from proxy and firewall logs",
+          "Publish the list of sanctioned SaaS tools and the request process",
+          "Agree with procurement to flag SaaS charges on corporate cards"
+        ],
+        "identification": [
+          "Identify users and upload volume to the app domain from proxy or CASB discovery",
+          "Determine the app's account model: personal sign-up, corporate SSO, or Google or Microsoft OAuth login",
+          "Check the OAuth app consent list in Entra or Workspace for grants to the app",
+          "Interview the team owner to learn what data was stored and why",
+          "Review the vendor's security posture, data location and terms"
+        ],
+        "containment": [
+          "Block uploads to the domain at the proxy while assessment completes",
+          "Revoke OAuth consents granted to the app by employees",
+          "Ask users to stop adding new data"
+        ],
+        "eradication": [
+          "Request export and deletion of company data from the vendor with written confirmation",
+          "Close or transfer employee accounts on the service",
+          "Migrate the use case to a sanctioned tool"
+        ],
+        "recovery": [
+          "Restore the team's workflow in the approved tool",
+          "Monitor proxy logs for continued use",
+          "Onboard the app through vendor review if the business wants it"
+        ],
+        "lessons": [
+          "Track number of unsanctioned apps holding sensitive data",
+          "Restrict user OAuth consent to verified publishers",
+          "Shorten the approval process that drove teams to shadow IT"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Uploads to the unsanctioned app domain",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(Web.bytes_out) as bytes_out count from datamodel=Web where Web.url=\"*<app_domain>*\" Web.http_method IN (POST,PUT) by Web.user Web.src | `drop_dm_object_name(Web)` | sort - bytes_out"
+        },
+        {
+          "title": "OAuth consents to the app",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Operation=\"Consent to application.\" | search ModifiedProperties{}.NewValue=\"*<app_name>*\" | table _time UserId ObjectId ModifiedProperties{}.NewValue"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-saas-to-saas-oauth-theft",
+      "name": "SaaS-to-SaaS integration OAuth tokens stolen and replayed",
+      "summary": "Use when an integration platform or connected app's stored OAuth tokens are stolen, and attackers replay them against your Salesforce, GitHub, Google or M365 tenant from their own infrastructure.",
+      "tags": [
+        "oauth",
+        "token-theft",
+        "integration",
+        "supply-chain"
+      ],
+      "attack": [
+        "T1528",
+        "T1550.001",
+        "T1199"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Inventory every third-party integration holding OAuth refresh tokens into core SaaS",
+          "Prefer integrations that support IP allow lists or token binding",
+          "Record expected source IP ranges for each integration provider"
+        ],
+        "identification": [
+          "List API calls by the integration's client ID in each target SaaS and group by source IP",
+          "Flag calls from IPs outside the provider's published ranges or from VPS and Tor networks",
+          "Compare query patterns against normal sync jobs, such as full object enumeration",
+          "Check whether new users or apps authorized the same integration recently",
+          "Identify which tenants share the same integration and need parallel review"
+        ],
+        "containment": [
+          "Revoke all OAuth tokens issued to the integration's client in every target SaaS",
+          "Block the integration's client ID in admin settings until the provider rotates",
+          "Restrict integration access by IP where the target SaaS supports it"
+        ],
+        "eradication": [
+          "Re-authorize the integration with a fresh service account after provider confirmation",
+          "Rotate secrets and keys stored in records the attacker queried",
+          "Remove unused integrations found during scoping"
+        ],
+        "recovery": [
+          "Confirm replayed tokens now return invalid_grant or 401",
+          "Validate data sync resumes with new tokens",
+          "Report data accessed per platform to legal"
+        ],
+        "lessons": [
+          "Alert on any OAuth client used from a new ASN",
+          "Assign each integration a dedicated least-privilege service user",
+          "Measure time to revoke tokens across all SaaS platforms"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Integration API calls by source IP across SaaS",
+          "phase": "identification",
+          "spl": "(index=salesforce sourcetype=sfdc:logfile CONNECTED_APP_ID=<client_id>) OR (index=github sourcetype=github:audit oauth_application_id=<client_id>) OR (index=gws sourcetype=gws:reports:token event.parameters.client_id=<client_id>) | eval ip=coalesce(CLIENT_IP, actor_ip, ipAddress) | stats count min(_time) as first by sourcetype, ip | convert ctime(first) | sort first"
+        },
+        {
+          "title": "Google Workspace OAuth token activity for the client",
+          "phase": "identification",
+          "spl": "index=gws sourcetype=gws:reports:token event.parameters.client_id=<client_id> | stats count by event.name, actor.email, ipAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-m365-ediscovery-abuse",
+      "name": "M365 eDiscovery or content search abused by an administrator",
+      "summary": "Use when a Purview eDiscovery case or content search is created and exported targeting executives, HR, or legal mailboxes without an associated legal matter.",
+      "tags": [
+        "m365",
+        "purview",
+        "ediscovery",
+        "insider-threat",
+        "admin-abuse"
+      ],
+      "attack": [
+        "T1114.002",
+        "T1213",
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Limit eDiscovery Manager and Administrator role group membership",
+          "Require legal ticket references in eDiscovery case names",
+          "Audit SearchCreated, SearchExported and CaseAdminUpdated operations to the SIEM"
+        ],
+        "identification": [
+          "List SearchCreated, SearchStarted, SearchExported and SearchExportDownloaded by the admin",
+          "Review the search query and target locations for executive or HR mailboxes",
+          "Check whether the admin added themselves to eDiscovery role groups recently",
+          "Confirm with legal whether a hold or matter justifies the search",
+          "Find where the export was downloaded and the device used"
+        ],
+        "containment": [
+          "Remove the admin from eDiscovery role groups",
+          "Delete the unauthorized search and its export",
+          "Revoke the admin's sessions if the account may be compromised"
+        ],
+        "eradication": [
+          "Recover the downloaded export from the device used",
+          "Review other privileged role assignments held by the admin",
+          "Reset credentials if compromise is suspected rather than insider misuse"
+        ],
+        "recovery": [
+          "Inform affected custodians per HR and legal guidance",
+          "Reapprove eDiscovery role membership",
+          "Monitor for new searches by the admin"
+        ],
+        "lessons": [
+          "Alert on content searches targeting executive mailboxes",
+          "Require dual approval for eDiscovery exports",
+          "Review privileged role reviews cadence"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Content search and export activity",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Workload=SecurityComplianceCenter Operation IN (SearchCreated,SearchStarted,SearchExported,SearchExportDownloaded,SearchPreviewed,CaseMemberAdded) | table _time UserId Operation ObjectId ClientIP Parameters"
+        },
+        {
+          "title": "Role group membership changes for eDiscovery",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Operation IN (\"Add-RoleGroupMember\",\"Update-RoleGroupMember\") | search Parameters{}.Value=\"*eDiscovery*\" | table _time UserId Operation Parameters{}.Value"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-exchange-transport-rule-tampering",
+      "name": "Exchange Online transport rule created to copy or redirect mail",
+      "summary": "Use when a mail flow (transport) rule is added or changed to BCC, redirect, or bypass filtering for mail org-wide or for specific executives, a tenant-level BEC persistence technique.",
+      "tags": [
+        "m365",
+        "exchange-online",
+        "transport-rule",
+        "persistence",
+        "email"
+      ],
+      "attack": [
+        "T1114.003",
+        "T1562.001",
+        "T1098"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Restrict Exchange Administrator and Organization Management role holders",
+          "Export the approved transport rule set as a baseline",
+          "Audit New-TransportRule and Set-TransportRule into the SIEM with alerting"
+        ],
+        "identification": [
+          "List transport rules with Get-TransportRule and compare against the baseline",
+          "Inspect actions such as BlindCopyTo, RedirectMessageTo, SetSCL -1 and DeleteMessage",
+          "Check rule conditions that target executives, finance or specific keywords like invoice",
+          "Identify the admin and IP that created or modified the rule in the UAL",
+          "Run message trace to see which messages matched the rule and their destinations"
+        ],
+        "containment": [
+          "Disable and then remove the malicious transport rule",
+          "Revoke sessions and reset credentials of the admin account that created it",
+          "Block external recipients used by the rule"
+        ],
+        "eradication": [
+          "Remove connectors or accepted domains the attacker created",
+          "Restore spam and phishing filtering settings the rule bypassed",
+          "Review other admin changes such as new mail-enabled service principals"
+        ],
+        "recovery": [
+          "Recall or report messages sent to attacker destinations",
+          "Confirm message trace shows no further redirects",
+          "Notify executives whose mail was copied"
+        ],
+        "lessons": [
+          "Alert on transport rules with external BCC or redirect actions",
+          "Use PIM for Exchange admin roles",
+          "Count the messages exposed via the rule"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Transport rule changes",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Workload=Exchange Operation IN (New-TransportRule,Set-TransportRule,Enable-TransportRule,New-InboundConnector,New-OutboundConnector) | table _time UserId ClientIP Operation Parameters{}.Name Parameters{}.Value"
+        },
+        {
+          "title": "Messages delivered to rule destination",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=ms:o365:reporting:messagetrace RecipientAddress=<attacker_address> | stats count by SenderAddress, Subject | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-power-automate-exfil-flow",
+      "name": "Power Automate flow used to exfiltrate mail or files",
+      "summary": "Use when a Power Automate cloud flow is created that copies email, SharePoint files or Dataverse records to personal OneDrive, Gmail, Dropbox or an HTTP endpoint.",
+      "tags": [
+        "m365",
+        "power-automate",
+        "exfiltration",
+        "automation"
+      ],
+      "attack": [
+        "T1567",
+        "T1020",
+        "T1114"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Configure Power Platform DLP policies separating business and non-business connectors",
+          "Audit CreateFlow and EditFlow events in the Unified Audit Log",
+          "Restrict environment creation to admins"
+        ],
+        "identification": [
+          "Search UAL for CreateFlow and EditFlow by the suspect user",
+          "Open the flow definition in Power Platform admin center to list triggers and actions",
+          "Identify connectors used such as Gmail, HTTP, or Dropbox and their target accounts",
+          "Review flow run history for the number of items processed",
+          "Check whether the user's account was compromised or acting as an insider"
+        ],
+        "containment": [
+          "Turn off the flow and remove the user's connections in the environment",
+          "Block non-business connectors in the environment's DLP policy",
+          "Suspend the user if the flow is not explained"
+        ],
+        "eradication": [
+          "Delete the flow after exporting it as evidence",
+          "Remove other flows owned by the user that send data outside",
+          "Reset credentials if account compromise is suspected"
+        ],
+        "recovery": [
+          "Restore business flows that were disabled by the DLP change",
+          "Confirm runs have stopped",
+          "Quantify messages or files sent out"
+        ],
+        "lessons": [
+          "Alert on new flows using personal email or HTTP connectors",
+          "Review the default environment DLP posture",
+          "Add flow inventory to quarterly access reviews"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Flow creation and edits",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Workload=MicrosoftFlow Operation IN (CreateFlow,EditFlow,PutConnection) | table _time UserId Operation FlowDetailsUrl FlowConnectorNames"
+        },
+        {
+          "title": "Flows using exfil-capable connectors",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Workload=MicrosoftFlow Operation=CreateFlow (FlowConnectorNames=\"*Gmail*\" OR FlowConnectorNames=\"*HTTP*\" OR FlowConnectorNames=\"*Dropbox*\" OR FlowConnectorNames=\"*OneDrive (Consumer)*\") | stats count by UserId, FlowConnectorNames"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-copilot-ai-oversharing",
+      "name": "Copilot or AI assistant surfaces sensitive data to unauthorized users",
+      "summary": "Use when Microsoft 365 Copilot or another enterprise AI assistant returns salary, M&A, HR or credential content to users who should not see it because of overshared permissions.",
+      "tags": [
+        "copilot",
+        "ai-assistant",
+        "data-exposure",
+        "permissions",
+        "m365"
+      ],
+      "attack": [
+        "T1213"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Run SharePoint data access governance reports for sites shared with Everyone except external users",
+          "Apply sensitivity labels with encryption to confidential content before AI rollout",
+          "Ensure CopilotInteraction audit events are retained and ingested"
+        ],
+        "identification": [
+          "Pull CopilotInteraction audit records for the reported prompt and user",
+          "List AccessedResources in the interaction to find the source documents",
+          "Check the sharing permissions on each source file and site",
+          "Search interactions by other users referencing the same documents",
+          "Classify the content exposed and who received it"
+        ],
+        "containment": [
+          "Remove Everyone and broad group permissions from the source sites and files",
+          "Apply restricted content discovery or restricted access control to the site",
+          "Apply a confidential sensitivity label that blocks AI summarization where supported"
+        ],
+        "eradication": [
+          "Fix inherited permission breaks and sharing links that granted broad access",
+          "Run an oversharing assessment across sites with similar content",
+          "Remove stale guest and org-wide links on HR and finance sites"
+        ],
+        "recovery": [
+          "Verify the prompt no longer returns the content for the same user",
+          "Brief affected data owners and HR",
+          "Communicate acceptable use guidance for the assistant"
+        ],
+        "lessons": [
+          "Track count of sites with org-wide access before and after cleanup",
+          "Add DLP for Copilot policies on labeled content",
+          "Include permission hygiene as an AI rollout gate"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Copilot interactions referencing a sensitive file",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Operation=CopilotInteraction | spath path=CopilotEventData.AccessedResources{}.Name output=resources | search resources=\"*<file_name>*\" | stats count values(resources) as resources by UserId"
+        },
+        {
+          "title": "Broad sharing on the source site",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Workload=SharePoint Operation IN (AddedToGroup,SharingSet,CompanyLinkCreated) SiteUrl=\"*<site_slug>*\" | table _time UserId Operation TargetUserOrGroupName ObjectId"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-calendar-contacts-sync-exfil",
+      "name": "Calendar and contacts synced to an unknown device or app",
+      "summary": "Use when a mailbox or Google account shows a new ActiveSync or EWS device, CalDAV/CardDAV client, or OAuth app pulling calendar and contacts, revealing meetings, travel and org structure.",
+      "tags": [
+        "email",
+        "calendar",
+        "contacts",
+        "collection"
+      ],
+      "attack": [
+        "T1114",
+        "T1087.003",
+        "T1528"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Restrict ActiveSync to managed devices via device access rules or Intune",
+          "Disable legacy protocols such as EWS and IMAP for users who do not need them",
+          "Ingest Google Workspace token and mobile reports and M365 device events"
+        ],
+        "identification": [
+          "Run Get-MobileDevice for the mailbox to find new partnerships and their FirstSyncTime",
+          "Review Google token events for apps granted calendar.readonly or contacts.readonly",
+          "Check MailItemsAccessed and calendar FolderBind events from EWS clients",
+          "Identify whether the user knowingly added the device or app"
+        ],
+        "containment": [
+          "Remove and block the device partnership with Remove-MobileDevice and device access rules",
+          "Revoke the OAuth token for the app in Workspace admin or Entra",
+          "Reset the user's password if the device was set up with stolen credentials"
+        ],
+        "eradication": [
+          "Disable CalDAV and CardDAV or EWS access for the user",
+          "Remove calendar delegates or shared calendars added externally",
+          "Review other users who authorized the same app"
+        ],
+        "recovery": [
+          "Re-enroll the user's legitimate devices through MDM",
+          "Confirm no further syncs from the removed device ID",
+          "Warn the user about meeting details that may be exposed"
+        ],
+        "lessons": [
+          "Alert on new mobile device partnerships for executives",
+          "Block user consent for calendar and contacts scopes",
+          "Review legacy protocol usage tenant-wide"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "New mobile device partnerships",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=o365:management:activity Workload=Exchange Operation IN (Set-CASMailbox,New-MobileDevice,Add-MailboxPermission) OR (Operation=MailItemsAccessed ClientInfoString=\"*ActiveSync*\") UserId=<suspect_user> | table _time Operation ClientIP ClientInfoString"
+        },
+        {
+          "title": "Google OAuth grants for calendar or contacts scopes",
+          "phase": "identification",
+          "spl": "index=gws sourcetype=gws:reports:token event.name=authorize (event.parameters.scope{}=\"*calendar*\" OR event.parameters.scope{}=\"*contacts*\") | stats count by actor.email, event.parameters.app_name, event.parameters.client_id"
+        }
+      ]
+    },
+    {
+      "id": "lib-saas-admin-mfa-disabled",
+      "name": "MFA disabled or bypassed for a SaaS administrator account",
+      "summary": "Use when a SaaS platform's admin account has MFA removed, SSO enforcement bypassed with a local password, or a bypass code issued, enabling direct takeover of the admin console.",
+      "tags": [
+        "mfa",
+        "admin-abuse",
+        "account-takeover",
+        "saas"
+      ],
+      "attack": [
+        "T1556.006",
+        "T1098",
+        "T1078"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enforce SSO for admins on every SaaS and disable local password login where allowed",
+          "Keep break-glass local admin accounts with hardware keys in a sealed process",
+          "Alert on MFA and SSO configuration events per SaaS"
+        ],
+        "identification": [
+          "Find MFA removal, bypass code, or SSO enforcement disable events for the admin account",
+          "Identify who made the change: the admin themselves, another admin, or support",
+          "Review admin console logins following the change and their source IPs",
+          "List configuration changes made by the account after MFA was removed"
+        ],
+        "containment": [
+          "Re-enable MFA and SSO enforcement for the account",
+          "Reset the local password and revoke sessions and API keys",
+          "Demote the account to non-admin until validated"
+        ],
+        "eradication": [
+          "Revert configuration changes made after MFA was disabled",
+          "Remove admins or integrations created in that window",
+          "Investigate the account that issued the bypass if not the user"
+        ],
+        "recovery": [
+          "Restore admin rights with phishing-resistant MFA",
+          "Confirm SSO-only login works for all admins",
+          "Document approved break-glass usage"
+        ],
+        "lessons": [
+          "Inventory which SaaS apps still allow local admin passwords",
+          "Alert when bypass codes are generated",
+          "Measure time MFA was off"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Admin MFA and SSO enforcement changes across SaaS",
+          "phase": "identification",
+          "spl": "(index=okta sourcetype=okta:im2 eventType IN (user.mfa.factor.deactivate,user.mfa.factor.reset_all,system.mfa.factor.deactivate)) OR (index=github sourcetype=github:audit action IN (org.disable_two_factor_requirement,org.disable_saml)) OR (index=slack sourcetype=slack:audit action IN (pref.two_factor_auth_changed,pref.sso_setting_changed)) | table _time sourcetype eventType action actor.alternateId actor"
+        },
+        {
+          "title": "Admin console logins after MFA removal",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Authentication where Authentication.user=<suspect_user> Authentication.action=success by Authentication.app Authentication.src | `drop_dm_object_name(Authentication)` | convert ctime(first)"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1250 @@
+{
+  "category": {
+    "id": "gcp",
+    "name": "Google Cloud",
+    "description": "Incidents in Google Cloud organizations: IAM and service accounts, Cloud Storage, Compute, GKE, BigQuery, logging, and org policy abuse."
+  },
+  "playbooks": [
+    {
+      "id": "lib-gcp-service-account-key-leaked",
+      "name": "GCP service account key file leaked",
+      "summary": "Use when a service account JSON key is found in a public repository, paste site, or container image, or Google notifies you that a key was exposed publicly.",
+      "tags": [
+        "gcp",
+        "iam",
+        "service-account",
+        "credential-leak"
+      ],
+      "attack": [
+        "T1552.001",
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enforce the iam.disableServiceAccountKeyCreation org policy except in approved projects",
+          "Inventory existing user-managed service account keys with their owners",
+          "Route Cloud Audit Logs from all projects to Splunk through a Pub/Sub sink"
+        ],
+        "identification": [
+          "Record the key ID from private_key_id in the leaked JSON and the service account email",
+          "Search audit logs for authenticationInfo.serviceAccountKeyName matching the key ID",
+          "Check the Policy Analyzer key usage data for last authentication time of the key",
+          "List the IAM roles the service account holds across projects and folders",
+          "Identify the source IPs and user agents that used the key since the leak"
+        ],
+        "containment": [
+          "Disable the leaked key with gcloud iam service-accounts keys disable",
+          "Remove high-privilege role bindings from the service account temporarily",
+          "Delete any new keys or service accounts created by sessions using the leaked key"
+        ],
+        "eradication": [
+          "Delete the leaked key after confirming the workload uses a replacement",
+          "Remove the key from the repository history and any built container images",
+          "Delete resources created by the attacker with the key in every project"
+        ],
+        "recovery": [
+          "Move the workload to attached service accounts or workload identity federation",
+          "Confirm the workload authenticates without the deleted key",
+          "Watch audit logs for authentication attempts with the deleted key ID"
+        ],
+        "lessons": [
+          "Count remaining user-managed keys and set a retirement plan",
+          "Add a detection for service account key use from outside known IP ranges",
+          "Review why the key was stored where it leaked"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Calls authenticated with the leaked key",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.authenticationInfo.serviceAccountKeyName=*<key_id>* | stats count min(_time) as first values(data.protoPayload.methodName) as methods by data.protoPayload.requestMetadata.callerIp, data.protoPayload.requestMetadata.callerSuppliedUserAgent | convert ctime(first)"
+        },
+        {
+          "title": "Keys and accounts created by the service account",
+          "phase": "containment",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.authenticationInfo.principalEmail=<sa_email> data.protoPayload.methodName IN (google.iam.admin.v1.CreateServiceAccountKey, google.iam.admin.v1.CreateServiceAccount, SetIamPolicy) | table _time data.resource.labels.project_id data.protoPayload.methodName data.protoPayload.resourceName"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-sa-impersonation-chain",
+      "name": "Service account impersonation chain to a privileged account",
+      "summary": "Use when a principal uses GenerateAccessToken or signJwt to impersonate service accounts in sequence, reaching one with broader privileges than the original identity.",
+      "tags": [
+        "gcp",
+        "iam",
+        "impersonation",
+        "privilege-escalation"
+      ],
+      "attack": [
+        "T1550.001",
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable Data Access audit logs for IAM Service Account Credentials API",
+          "Restrict roles/iam.serviceAccountTokenCreator to named principals per service account",
+          "Map approved impersonation relationships for automation"
+        ],
+        "identification": [
+          "List GenerateAccessToken, GenerateIdToken, and SignJwt calls with caller and target service account",
+          "Follow the delegation chain in serviceAccountDelegationInfo to the original principal",
+          "Compare each hop with the approved impersonation map",
+          "List actions taken with the final impersonated token",
+          "Check who granted Token Creator on the target service accounts and when"
+        ],
+        "containment": [
+          "Remove roles/iam.serviceAccountTokenCreator bindings that enabled unexpected hops",
+          "Disable the originating user or service account",
+          "Disable the privileged target service account if the workload can tolerate it"
+        ],
+        "eradication": [
+          "Undo IAM and resource changes made by the impersonated tokens",
+          "Search for other principals granted Token Creator or Service Account User recently",
+          "Remediate the original principal's compromise"
+        ],
+        "recovery": [
+          "Re-enable the privileged service account with tightened impersonation bindings",
+          "Confirm automation pipelines still impersonate along approved paths",
+          "Run IAM Recommender to remove unused impersonation grants"
+        ],
+        "lessons": [
+          "Add a detection for impersonation chains with more than one hop",
+          "Audit project-level Token Creator grants that apply to all service accounts",
+          "Record which privileged accounts were reachable"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Token generation for impersonation",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.serviceName=iamcredentials.googleapis.com data.protoPayload.methodName IN (GenerateAccessToken, GenerateIdToken, SignJwt, SignBlob) | table _time data.protoPayload.authenticationInfo.principalEmail data.protoPayload.resourceName data.protoPayload.authenticationInfo.serviceAccountDelegationInfo{}.firstPartyPrincipal.principalEmail data.protoPayload.requestMetadata.callerIp"
+        },
+        {
+          "title": "Grants of Token Creator or Service Account User",
+          "phase": "eradication",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.methodName=*SetIamPolicy (data.protoPayload.serviceData.policyDelta.bindingDeltas{}.role=roles/iam.serviceAccountTokenCreator OR data.protoPayload.serviceData.policyDelta.bindingDeltas{}.role=roles/iam.serviceAccountUser) | table _time data.protoPayload.authenticationInfo.principalEmail data.protoPayload.resourceName data.protoPayload.serviceData.policyDelta.bindingDeltas{}.member"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-public-gcs-bucket",
+      "name": "Cloud Storage bucket made public to allUsers",
+      "summary": "Use when a GCS bucket or object IAM policy grants allUsers or allAuthenticatedUsers, or public access prevention is turned off on a bucket holding internal data.",
+      "tags": [
+        "gcp",
+        "gcs",
+        "data-exposure",
+        "misconfiguration"
+      ],
+      "attack": [
+        "T1530"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enforce storage.publicAccessPrevention org policy on all non-website projects",
+          "Enable uniform bucket-level access so object ACLs cannot grant public access",
+          "Label buckets with data classification and owning team"
+        ],
+        "identification": [
+          "Find the storage.setIamPermissions call that added allUsers or allAuthenticatedUsers",
+          "Check the bucket's publicAccessPrevention setting history",
+          "Review Data Access logs for anonymous storage.objects.get calls during exposure",
+          "Determine the classification of the exposed objects",
+          "Confirm with the bucket owner whether public access was intended"
+        ],
+        "containment": [
+          "Remove allUsers and allAuthenticatedUsers bindings with gcloud storage buckets remove-iam-policy-binding",
+          "Set public access prevention to enforced on the bucket",
+          "Enable uniform bucket-level access if legacy ACLs were in use"
+        ],
+        "eradication": [
+          "Rotate any credentials stored in the exposed objects",
+          "Remove objects uploaded anonymously if write access was granted",
+          "Fix the IaC module or script that produced the public binding"
+        ],
+        "recovery": [
+          "Serve intentionally public content through a dedicated website project",
+          "Confirm Security Command Center shows no PUBLIC_BUCKET_ACL finding",
+          "Hand the access log extract to privacy for exposure assessment"
+        ],
+        "lessons": [
+          "Track exposure duration from binding change to removal",
+          "Add an alert on setIamPermissions with allUsers members",
+          "Review projects excluded from the public access prevention policy"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Bucket IAM changes granting public members",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.serviceName=storage.googleapis.com data.protoPayload.methodName IN (storage.setIamPermissions, storage.buckets.update) (data.protoPayload.serviceData.policyDelta.bindingDeltas{}.member=allUsers OR data.protoPayload.serviceData.policyDelta.bindingDeltas{}.member=allAuthenticatedUsers) | table _time data.resource.labels.bucket_name data.protoPayload.authenticationInfo.principalEmail data.protoPayload.serviceData.policyDelta.bindingDeltas{}.role"
+        },
+        {
+          "title": "Anonymous object reads from the bucket",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.methodName=storage.objects.get data.resource.labels.bucket_name=<bucket> (data.protoPayload.authenticationInfo.principalEmail=\"\" OR NOT data.protoPayload.authenticationInfo.principalEmail=*) | stats count dc(data.protoPayload.resourceName) as objects by data.protoPayload.requestMetadata.callerIp"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-gcs-mass-download",
+      "name": "Mass download of objects from Cloud Storage",
+      "summary": "Use when a principal reads an unusual number of GCS objects or bytes, or uses gsutil or Storage Transfer Service to copy bucket contents to another project.",
+      "tags": [
+        "gcp",
+        "gcs",
+        "exfiltration",
+        "data-loss"
+      ],
+      "attack": [
+        "T1530",
+        "T1537"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable Data Access audit logs for Cloud Storage on sensitive projects",
+          "Place sensitive projects inside a VPC Service Controls perimeter",
+          "Baseline daily object reads per principal for sensitive buckets"
+        ],
+        "identification": [
+          "Count objects read by the principal per hour and compare with the baseline",
+          "Identify caller IPs and whether requests came through the VPC SC perimeter",
+          "Check for storagetransfer.googleapis.com jobs created to copy the bucket",
+          "Look for storage.objects.list enumeration before the reads",
+          "Check for VPC SC violation logs showing blocked copy attempts"
+        ],
+        "containment": [
+          "Remove the principal's storage roles on the bucket",
+          "Disable the principal or its keys if it is a service account",
+          "Delete or pause Storage Transfer jobs created by the attacker"
+        ],
+        "eradication": [
+          "Remediate how the principal's credentials were obtained",
+          "Rotate secrets contained in the downloaded objects",
+          "Remove any destination bucket bindings the attacker added"
+        ],
+        "recovery": [
+          "Add the bucket's project to the VPC SC perimeter if it was outside",
+          "Provide the data owner a list of objects read",
+          "Monitor the principal for continued reads for 30 days"
+        ],
+        "lessons": [
+          "Add a detection on distinct objects read per principal per hour",
+          "Review whether the principal needed bucket-wide read access",
+          "Decide whether Storage Transfer Service should be restricted by org policy"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Object reads per principal per hour",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.methodName=storage.objects.get data.resource.labels.bucket_name=<bucket> | bin _time span=1h | stats dc(data.protoPayload.resourceName) as objects by _time, data.protoPayload.authenticationInfo.principalEmail, data.protoPayload.requestMetadata.callerIp | sort - objects"
+        },
+        {
+          "title": "Storage Transfer jobs and VPC SC violations",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message (data.protoPayload.serviceName=storagetransfer.googleapis.com data.protoPayload.methodName=*CreateTransferJob) OR data.protoPayload.metadata.violationReason=* | table _time data.protoPayload.methodName data.protoPayload.authenticationInfo.principalEmail data.protoPayload.metadata.violationReason data.protoPayload.resourceName"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-compute-cryptomining",
+      "name": "Compute Engine instances launched for cryptomining",
+      "summary": "Use when Security Command Center reports cryptomining, or many high-CPU or GPU Compute Engine instances appear unexpectedly in a project or zone.",
+      "tags": [
+        "gcp",
+        "compute",
+        "cryptomining",
+        "resource-hijacking"
+      ],
+      "attack": [
+        "T1496"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable Security Command Center Premium threat detection for the organization",
+          "Set GPU and CPU quotas low in projects that do not need them",
+          "Configure billing budgets with alerts per project"
+        ],
+        "identification": [
+          "List compute.instances.insert calls by machine type, zone, and caller",
+          "Read instance metadata startup-script values for miner download commands",
+          "Check VPC flow logs for egress to mining pool ports",
+          "Check whether instance templates or managed instance groups were created to scale the miners",
+          "Identify the credential used and how it was obtained"
+        ],
+        "containment": [
+          "Stop the mining instances after snapshotting their boot disks",
+          "Disable the service account or user that created them",
+          "Add an egress firewall rule denying mining pool destinations"
+        ],
+        "eradication": [
+          "Delete the instances, templates, and managed instance groups the attacker created",
+          "Remove project-wide SSH keys added to metadata",
+          "Sweep every zone and project for attacker resources"
+        ],
+        "recovery": [
+          "Request a billing adjustment from Google Cloud support with the timeline",
+          "Restore reduced quotas in the project",
+          "Confirm SCC has no active cryptomining findings"
+        ],
+        "lessons": [
+          "Add a detection for instance creation with GPU accelerators",
+          "Restrict usable regions with gcp.resourceLocations org policy",
+          "Measure cost incurred before containment"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Instance creation by machine type",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.methodName IN (v1.compute.instances.insert, beta.compute.instances.insert, v1.compute.instanceTemplates.insert, v1.compute.instanceGroupManagers.insert) | rex field=data.protoPayload.request.machineType \"machineTypes/(?<machine_type>[^/]+)$\" | stats count values(machine_type) as types by data.resource.labels.project_id, data.resource.labels.zone, data.protoPayload.authenticationInfo.principalEmail"
+        },
+        {
+          "title": "Egress to mining pool ports",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(All_Traffic.bytes) as bytes from datamodel=Network_Traffic where All_Traffic.dest_port IN (3333, 4444, 5555, 7777, 14444) by All_Traffic.src, All_Traffic.dest, All_Traffic.dest_port | sort - bytes"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-org-policy-removed",
+      "name": "GCP organization policy constraint removed or relaxed",
+      "summary": "Use when an org policy such as domain-restricted sharing, key creation, or public access prevention is deleted or overridden at the organization, folder, or project level.",
+      "tags": [
+        "gcp",
+        "org-policy",
+        "defense-evasion",
+        "governance"
+      ],
+      "attack": [
+        "T1484.002",
+        "T1562"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Manage org policies only through a Terraform pipeline with code review",
+          "Limit roles/orgpolicy.policyAdmin to the cloud governance team",
+          "Alert on SetOrgPolicy, DeleteOrgPolicy, and UpdatePolicy calls"
+        ],
+        "identification": [
+          "Identify the constraint changed, the resource level, and the caller",
+          "Diff the live policy against the Terraform definition",
+          "List resources created during the relaxed period that the constraint would have blocked",
+          "Check whether the caller also changed IAM on the same folder or project",
+          "Confirm whether a change request exists for the override"
+        ],
+        "containment": [
+          "Reapply the constraint from the pipeline at the original level",
+          "Remove the caller's orgpolicy admin role pending review",
+          "Revoke tokens for the caller's sessions"
+        ],
+        "eradication": [
+          "Remove non-compliant resources created while the constraint was relaxed",
+          "Delete service account keys or external IAM members added during the window",
+          "Remediate the caller's compromised credential if applicable"
+        ],
+        "recovery": [
+          "Run the policy pipeline in plan mode to confirm no drift",
+          "Verify the constraint blocks a test violation",
+          "Report final policy state to cloud governance"
+        ],
+        "lessons": [
+          "Add daily drift detection for org policies",
+          "Review who holds policy admin at folder levels",
+          "Track the time the constraint was relaxed"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Org policy changes",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.serviceName IN (orgpolicy.googleapis.com, cloudresourcemanager.googleapis.com) data.protoPayload.methodName IN (*SetOrgPolicy, *ClearOrgPolicy, *CreatePolicy, *UpdatePolicy, *DeletePolicy) | table _time data.protoPayload.methodName data.protoPayload.resourceName data.protoPayload.authenticationInfo.principalEmail data.protoPayload.requestMetadata.callerIp"
+        },
+        {
+          "title": "Key creation and external IAM during the relaxed window",
+          "phase": "eradication",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message earliest=<change_time> data.protoPayload.methodName IN (google.iam.admin.v1.CreateServiceAccountKey, SetIamPolicy) | table _time data.resource.labels.project_id data.protoPayload.methodName data.protoPayload.authenticationInfo.principalEmail data.protoPayload.serviceData.policyDelta.bindingDeltas{}.member"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-audit-log-sink-deleted",
+      "name": "Cloud Logging sink deleted or audit logs excluded",
+      "summary": "Use when a log sink exporting audit logs is deleted or updated, an exclusion filter drops audit entries, or the _Default bucket retention is reduced.",
+      "tags": [
+        "gcp",
+        "logging",
+        "defense-evasion",
+        "audit"
+      ],
+      "attack": [
+        "T1562.008"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Use an aggregated organization sink to a locked log bucket in a security project",
+          "Lock the destination log bucket's retention policy",
+          "Alert when the Pub/Sub subscription feeding Splunk stops delivering messages"
+        ],
+        "identification": [
+          "Identify the DeleteSink, UpdateSink, or exclusion change and its caller",
+          "Compare the sink filter before and after any update",
+          "Determine which projects and log types stopped flowing and for how long",
+          "Check the _Required bucket, which cannot be disabled, for admin activity in the gap",
+          "Look for Data Access audit config changes via SetIamPolicy auditConfigs"
+        ],
+        "containment": [
+          "Recreate the sink with the original filter and destination",
+          "Remove the exclusion filter that dropped audit entries",
+          "Revoke the caller's logging admin roles"
+        ],
+        "eradication": [
+          "Reconstruct the gap from the _Required bucket and the locked central bucket",
+          "Undo changes the attacker made during the gap",
+          "Re-grant the sink writer identity permission on the destination"
+        ],
+        "recovery": [
+          "Confirm audit entries from all projects reach Splunk again",
+          "Restore Data Access audit log configuration on affected services",
+          "Document any unrecoverable log gap"
+        ],
+        "lessons": [
+          "Restrict logging.sinks.delete with a custom role and deny policy",
+          "Add a delivery-latency monitor on the Splunk Pub/Sub subscription",
+          "Measure time to detect the log gap"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Sink, exclusion, and bucket changes",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.serviceName=logging.googleapis.com data.protoPayload.methodName IN (google.logging.v2.ConfigServiceV2.DeleteSink, google.logging.v2.ConfigServiceV2.UpdateSink, google.logging.v2.ConfigServiceV2.CreateExclusion, google.logging.v2.ConfigServiceV2.UpdateExclusion, google.logging.v2.ConfigServiceV2.UpdateBucket, google.logging.v2.ConfigServiceV2.UpdateSettings) | table _time data.protoPayload.methodName data.protoPayload.resourceName data.protoPayload.authenticationInfo.principalEmail data.protoPayload.request"
+        },
+        {
+          "title": "Projects that stopped sending audit logs",
+          "phase": "identification",
+          "spl": "| tstats max(_time) as last_seen where index=gcp sourcetype=google:gcp:pubsub:message by data.resource.labels.project_id | where last_seen < relative_time(now(), \"-2h\") | convert ctime(last_seen)"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-owner-granted-external",
+      "name": "Owner or Editor role granted to an external account",
+      "summary": "Use when SetIamPolicy grants roles/owner, roles/editor, or other admin roles on a project, folder, or organization to a gmail.com or non-corporate identity.",
+      "tags": [
+        "gcp",
+        "iam",
+        "persistence",
+        "external-access"
+      ],
+      "attack": [
+        "T1098.003",
+        "T1078.004"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enforce iam.allowedPolicyMemberDomains to restrict members to the corporate Workspace customer ID",
+          "Alert on SetIamPolicy binding deltas that add basic roles",
+          "Keep an approved list of vendor domains with project access"
+        ],
+        "identification": [
+          "Extract the member, role, and resource from the policyDelta binding deltas",
+          "Check the member domain against corporate and approved vendor domains",
+          "Identify who made the grant and from which IP",
+          "Search for activity by the external member after the grant",
+          "Check whether domain-restricted sharing was overridden on the resource"
+        ],
+        "containment": [
+          "Remove the external member's binding with remove-iam-policy-binding",
+          "Disable the granting principal if the grant was unauthorized",
+          "Reapply domain-restricted sharing on the resource"
+        ],
+        "eradication": [
+          "Remove resources, keys, or service accounts created by the external member",
+          "Search all projects for other bindings to the same external identity",
+          "Remediate the granting principal's compromise"
+        ],
+        "recovery": [
+          "Confirm the project IAM policy matches its Terraform state",
+          "Run Policy Analyzer to confirm the external identity has no remaining access",
+          "Inform the project owner of the final IAM state"
+        ],
+        "lessons": [
+          "Add a detection for any SetIamPolicy member ending in gmail.com",
+          "Review why basic roles are still used on this project",
+          "Measure time from grant to removal"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Admin roles granted to non-corporate members",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.methodName=*SetIamPolicy | spath path=data.protoPayload.serviceData.policyDelta.bindingDeltas{} output=delta | mvexpand delta | spath input=delta | search action=ADD role IN (roles/owner, roles/editor, roles/resourcemanager.organizationAdmin, roles/iam.securityAdmin) NOT member=*@<corp_domain> | table _time data.protoPayload.resourceName role member data.protoPayload.authenticationInfo.principalEmail"
+        },
+        {
+          "title": "Actions by the external member",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.authenticationInfo.principalEmail=<external_member> | stats count values(data.protoPayload.methodName) as methods by data.resource.labels.project_id, data.protoPayload.requestMetadata.callerIp"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-gke-cluster-compromise",
+      "name": "GKE cluster compromised through workload or API access",
+      "summary": "Use when a GKE workload is exploited, an unexpected identity gains cluster-admin, privileged pods are created, or the Kubernetes API is reached from an unknown network.",
+      "tags": [
+        "gcp",
+        "gke",
+        "kubernetes",
+        "containers"
+      ],
+      "attack": [
+        "T1610",
+        "T1611",
+        "T1613"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable GKE Security Posture and Container Threat Detection",
+          "Use private clusters with authorized networks on the control plane",
+          "Enable GKE Workload Identity and disable legacy metadata endpoints"
+        ],
+        "identification": [
+          "Review Kubernetes audit logs for clusterrolebindings created to cluster-admin",
+          "List pods created with privileged, hostPID, or hostPath mounts",
+          "Check exec and attach calls into running pods by user and source IP",
+          "Identify the vulnerable workload and its image digest",
+          "Check whether the node service account token was used outside the cluster"
+        ],
+        "containment": [
+          "Apply a deny-all NetworkPolicy to the compromised namespace",
+          "Delete rogue clusterrolebindings and service account tokens",
+          "Restrict master authorized networks to the admin network range"
+        ],
+        "eradication": [
+          "Delete attacker-created pods, DaemonSets, and CronJobs",
+          "Recreate node pools that ran privileged attacker pods",
+          "Patch or replace the exploited workload image"
+        ],
+        "recovery": [
+          "Redeploy workloads from signed images with Binary Authorization enforced",
+          "Rotate cluster credentials with gcloud container clusters update --start-credential-rotation",
+          "Confirm Container Threat Detection shows no new findings"
+        ],
+        "lessons": [
+          "Enforce Pod Security Admission restricted profile on application namespaces",
+          "Add a detection for cluster-admin bindings outside GitOps",
+          "Review whether the public control plane endpoint was necessary"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "RBAC and privileged workload changes in GKE",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.resource.type=k8s_cluster data.protoPayload.methodName IN (io.k8s.authorization.rbac.v1.clusterrolebindings.create, io.k8s.authorization.rbac.v1.rolebindings.create, io.k8s.core.v1.pods.create, io.k8s.apps.v1.daemonsets.create, io.k8s.batch.v1.cronjobs.create) | table _time data.resource.labels.cluster_name data.protoPayload.methodName data.protoPayload.resourceName data.protoPayload.authenticationInfo.principalEmail data.protoPayload.requestMetadata.callerIp"
+        },
+        {
+          "title": "Exec into pods",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.resource.type=k8s_cluster data.protoPayload.methodName IN (io.k8s.core.v1.pods.exec.create, io.k8s.core.v1.pods.attach.create) | stats count by data.protoPayload.authenticationInfo.principalEmail, data.protoPayload.resourceName, data.protoPayload.requestMetadata.callerIp"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-cloud-function-backdoor",
+      "name": "Cloud Functions or Cloud Run service backdoored",
+      "summary": "Use when a Cloud Function or Cloud Run service is deployed or updated by an unexpected principal, gains allUsers invoker access, or runs with a privileged service account.",
+      "tags": [
+        "gcp",
+        "cloud-functions",
+        "cloud-run",
+        "persistence",
+        "serverless"
+      ],
+      "attack": [
+        "T1525",
+        "T1546"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Deploy functions and Cloud Run services only from Cloud Build with a dedicated service account",
+          "Give each function a dedicated runtime service account instead of the default compute account",
+          "Record the source archive hash and image digest for each release"
+        ],
+        "identification": [
+          "List CreateFunction, UpdateFunction, and Cloud Run ReplaceService calls by principal",
+          "Compare the deployed source or image digest with the last release record",
+          "Check SetIamPolicy for roles/cloudfunctions.invoker or roles/run.invoker granted to allUsers",
+          "Identify the runtime service account and its roles",
+          "Review the function's logs for outbound calls or token requests"
+        ],
+        "containment": [
+          "Remove allUsers invoker bindings from the function or service",
+          "Roll traffic back to the last known-good revision",
+          "Disable the deploying principal pending review"
+        ],
+        "eradication": [
+          "Delete attacker-created functions, services, and Eventarc triggers",
+          "Redeploy from the trusted Cloud Build pipeline",
+          "Rotate secrets the runtime service account could access"
+        ],
+        "recovery": [
+          "Confirm revisions and digests match the release record",
+          "Assign a least-privilege runtime service account",
+          "Watch invocation logs for unusual callers for two weeks"
+        ],
+        "lessons": [
+          "Add a detection for allUsers invoker grants",
+          "Enforce the iam.automaticIamGrantsForDefaultServiceAccounts org policy",
+          "Review which humans can deploy production functions"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Function and Cloud Run deployments",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.serviceName IN (cloudfunctions.googleapis.com, run.googleapis.com) data.protoPayload.methodName IN (*CreateFunction, *UpdateFunction, *CreateService, *ReplaceService, *UpdateService) | table _time data.protoPayload.methodName data.protoPayload.resourceName data.protoPayload.authenticationInfo.principalEmail data.protoPayload.requestMetadata.callerIp"
+        },
+        {
+          "title": "Public invoker grants",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.methodName=*SetIamPolicy data.protoPayload.serviceName IN (cloudfunctions.googleapis.com, run.googleapis.com) data.protoPayload.serviceData.policyDelta.bindingDeltas{}.member=allUsers | table _time data.protoPayload.resourceName data.protoPayload.authenticationInfo.principalEmail"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-metadata-token-theft",
+      "name": "Access token stolen from the GCE metadata server",
+      "summary": "Use when an SSRF or compromised workload reads service account tokens from metadata.google.internal and those tokens are used from outside the instance or for unusual APIs.",
+      "tags": [
+        "gcp",
+        "compute",
+        "metadata",
+        "ssrf",
+        "credential-theft"
+      ],
+      "attack": [
+        "T1552.005",
+        "T1190"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Attach least-privilege service accounts to instances instead of the default compute account",
+          "Avoid the cloud-platform access scope on instances that do not need it",
+          "Log application requests with full URLs so SSRF payloads are visible"
+        ],
+        "identification": [
+          "Search web logs for requests containing metadata.google.internal or 169.254.169.254",
+          "Check whether the vulnerable code path lets the caller set the Metadata-Flavor: Google header",
+          "Find audit log calls by the instance service account from caller IPs not belonging to the instance",
+          "List APIs and resources accessed with the stolen token",
+          "Identify the vulnerable application endpoint and parameter"
+        ],
+        "containment": [
+          "Remove the instance service account's high-privilege role bindings",
+          "Stop the instance or block the vulnerable endpoint at Cloud Armor",
+          "Disable the service account if other workloads do not depend on it"
+        ],
+        "eradication": [
+          "Patch the application's URL fetching to allowlist destinations",
+          "Remove resources or IAM changes made with the stolen token",
+          "Replace the default compute service account with a dedicated account"
+        ],
+        "recovery": [
+          "Re-enable the service account after access tokens have expired and the fix is deployed",
+          "Confirm no further use of the account from external IPs",
+          "Add SSRF regression tests to the application's CI"
+        ],
+        "lessons": [
+          "Add a detection for instance service account use from non-GCP IPs",
+          "Count instances using the default compute service account with Editor",
+          "Review Cloud Armor rules for SSRF patterns"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Requests targeting the metadata server",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where (Web.url=\"*metadata.google.internal*\" OR Web.url=\"*169.254.169.254*\" OR Web.url=\"*computeMetadata*\") by Web.src, Web.dest, Web.url | sort - count"
+        },
+        {
+          "title": "Instance service account used from unexpected IPs",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.authenticationInfo.principalEmail=<instance_sa> NOT data.protoPayload.requestMetadata.callerIp IN (<instance_ips>) | stats count values(data.protoPayload.methodName) as methods by data.protoPayload.requestMetadata.callerIp, data.protoPayload.requestMetadata.callerSuppliedUserAgent"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-bigquery-dataset-exfil",
+      "name": "BigQuery dataset exfiltrated by export or copy",
+      "summary": "Use when a principal runs large extract jobs, copies tables into another project, shares a dataset externally, or queries far more data than usual from sensitive BigQuery datasets.",
+      "tags": [
+        "gcp",
+        "bigquery",
+        "exfiltration",
+        "data-loss"
+      ],
+      "attack": [
+        "T1530",
+        "T1537"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Place BigQuery projects with sensitive data inside a VPC Service Controls perimeter",
+          "Tag sensitive datasets with policy tags for column-level security",
+          "Baseline bytes processed per principal per day"
+        ],
+        "identification": [
+          "List jobservice.jobcompleted events with extract or copy jobs and their destinations",
+          "Check destination tables and GCS URIs for projects outside the organization",
+          "Rank principals by totalBilledBytes on the sensitive datasets",
+          "Check dataset IAM changes adding external members or allAuthenticatedUsers",
+          "Review VPC SC violation logs for blocked BigQuery egress"
+        ],
+        "containment": [
+          "Remove the principal's BigQuery data viewer roles on the dataset",
+          "Remove external members from the dataset access list",
+          "Cancel running extract or copy jobs with bq cancel"
+        ],
+        "eradication": [
+          "Delete in-org copies of the data created by the attacker",
+          "Remediate the principal's credential compromise",
+          "Revoke authorized views or routines that exposed the dataset"
+        ],
+        "recovery": [
+          "Bring the project into the VPC SC perimeter if it was outside",
+          "Provide the data owner a list of tables and columns accessed",
+          "Engage privacy for breach assessment if personal data was exported"
+        ],
+        "lessons": [
+          "Add a detection on extract jobs to buckets outside the organization",
+          "Review whether analysts need table-wide export rights",
+          "Measure volume exported before containment"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "BigQuery extract and copy jobs",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.serviceName=bigquery.googleapis.com data.protoPayload.methodName=jobservice.jobcompleted (data.protoPayload.serviceData.jobCompletedEvent.job.jobConfiguration.extract.destinationUris{}=* OR data.protoPayload.serviceData.jobCompletedEvent.job.jobConfiguration.tableCopy.destinationTable.projectId=*) | table _time data.protoPayload.authenticationInfo.principalEmail data.protoPayload.serviceData.jobCompletedEvent.job.jobConfiguration.extract.destinationUris{} data.protoPayload.serviceData.jobCompletedEvent.job.jobConfiguration.tableCopy.destinationTable.projectId"
+        },
+        {
+          "title": "Top principals by bytes billed",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.methodName=jobservice.jobcompleted | eval bytes=tonumber('data.protoPayload.serviceData.jobCompletedEvent.job.jobStatistics.totalBilledBytes') | stats sum(bytes) as bytes count by data.protoPayload.authenticationInfo.principalEmail | eval GB=round(bytes/1024/1024/1024,1) | sort - bytes"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-firewall-open-internet",
+      "name": "VPC firewall rule opened to 0.0.0.0/0",
+      "summary": "Use when a VPC firewall rule allows ingress from 0.0.0.0/0 to SSH, RDP, database, or all ports, exposing Compute Engine or GKE nodes to the internet.",
+      "tags": [
+        "gcp",
+        "firewall",
+        "exposure",
+        "misconfiguration"
+      ],
+      "attack": [
+        "T1562.007",
+        "T1133"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Provide Identity-Aware Proxy TCP forwarding for administrative access",
+          "Use hierarchical firewall policies to deny internet ingress on admin ports",
+          "Enable VPC flow logs and firewall rules logging on production subnets"
+        ],
+        "identification": [
+          "Identify the firewall rule, ports, target tags, and creator from audit logs",
+          "List instances matching the rule's target tags or service accounts",
+          "Review firewall rule logs for allowed connections from internet sources",
+          "Check exposed hosts for successful logins or exploitation during exposure",
+          "Ask the creator whether the rule was intended as temporary"
+        ],
+        "containment": [
+          "Delete or disable the rule with gcloud compute firewall-rules update --disabled",
+          "Replace it with an IAP source range 35.235.240.0/20 rule if access is needed",
+          "Isolate hosts showing signs of compromise by removing their network tags"
+        ],
+        "eradication": [
+          "Investigate compromised hosts for persistence and rebuild them",
+          "Rotate credentials on exposed database or admin services",
+          "Fix the Terraform module or script that created the rule"
+        ],
+        "recovery": [
+          "Move administrators to IAP-based SSH",
+          "Confirm SCC shows no OPEN_FIREWALL findings for the project",
+          "Monitor firewall logs for continued inbound attempts"
+        ],
+        "lessons": [
+          "Add a hierarchical policy denying 0.0.0.0/0 on admin ports organization-wide",
+          "Record the exposure duration and connection count",
+          "Add an alert on firewall rules with sourceRanges 0.0.0.0/0"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Firewall rules opened to the internet",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.methodName IN (v1.compute.firewalls.insert, v1.compute.firewalls.patch, v1.compute.firewalls.update) data.protoPayload.request.sourceRanges{}=\"0.0.0.0/0\" | table _time data.resource.labels.project_id data.protoPayload.resourceName data.protoPayload.request.alloweds{}.ports{} data.protoPayload.authenticationInfo.principalEmail"
+        },
+        {
+          "title": "Allowed internet connections on the rule",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.jsonPayload.rule_details.reference=*<rule_name>* data.jsonPayload.disposition=ALLOWED | stats count dc(data.jsonPayload.connection.src_ip) as sources by data.jsonPayload.connection.dest_ip, data.jsonPayload.connection.dest_port"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-project-created-for-abuse",
+      "name": "Unauthorized GCP project created for abuse",
+      "summary": "Use when a new project appears in the organization or under a billing account without a request, often used to run compute, AI services, or staging infrastructure outside normal controls.",
+      "tags": [
+        "gcp",
+        "resource-manager",
+        "billing",
+        "resource-hijacking"
+      ],
+      "attack": [
+        "T1578",
+        "T1496",
+        "T1583"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Remove roles/resourcemanager.projectCreator from the domain-wide default grant",
+          "Require new projects to be created through a project factory pipeline",
+          "Restrict roles/billing.user on billing accounts to the project factory"
+        ],
+        "identification": [
+          "Identify the CreateProject call, creator, parent folder, and source IP",
+          "Check whether a billing account was linked with UpdateProjectBillingInfo",
+          "List APIs enabled in the project with services.enable calls",
+          "Enumerate resources created in the project, such as instances or Vertex AI endpoints",
+          "Check whether the creator is a compromised user or service account"
+        ],
+        "containment": [
+          "Unlink billing from the project with gcloud billing projects unlink",
+          "Remove the creator's projectCreator and billing roles",
+          "Move the project into a quarantine folder with deny policies"
+        ],
+        "eradication": [
+          "Shut down the project with gcloud projects delete after evidence capture",
+          "Remove any IAM bindings granting external identities access to the project",
+          "Search for other projects created by the same principal"
+        ],
+        "recovery": [
+          "Request billing review for charges incurred by the project",
+          "Confirm the project is in DELETE_REQUESTED state",
+          "Verify the project factory remains the only creator"
+        ],
+        "lessons": [
+          "Add an alert for CreateProject by principals other than the project factory",
+          "Review the organization-level IAM for broad project creation rights",
+          "Measure charges incurred before detection"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Project creation and billing linkage",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.methodName IN (CreateProject, google.cloudresourcemanager.v3.Projects.CreateProject, AssignResourceToBillingAccount, UpdateProjectBillingInfo) | table _time data.protoPayload.methodName data.protoPayload.resourceName data.protoPayload.authenticationInfo.principalEmail data.protoPayload.requestMetadata.callerIp"
+        },
+        {
+          "title": "APIs enabled and resources created in the new project",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.resource.labels.project_id=<project_id> (data.protoPayload.methodName=*EnableService OR data.protoPayload.methodName=*insert OR data.protoPayload.methodName=*Create*) | stats count by data.protoPayload.serviceName, data.protoPayload.methodName, data.protoPayload.authenticationInfo.principalEmail"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-secret-manager-access",
+      "name": "Unusual access to Secret Manager secret versions",
+      "summary": "Use when a principal calls AccessSecretVersion on many secrets or on secrets it never used before, indicating credential harvesting from Secret Manager.",
+      "tags": [
+        "gcp",
+        "secret-manager",
+        "credential-access"
+      ],
+      "attack": [
+        "T1555.006",
+        "T1552"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable Data Access audit logs for secretmanager.googleapis.com",
+          "Grant roles/secretmanager.secretAccessor per secret rather than at project level",
+          "Label secrets with the owning application and rotation contact"
+        ],
+        "identification": [
+          "Count distinct secrets accessed by the principal and compare with prior weeks",
+          "Check whether ListSecrets enumeration preceded the access calls",
+          "Identify caller IPs and whether they belong to the workload's runtime",
+          "List the downstream systems each secret grants access to",
+          "Check for PERMISSION_DENIED accesses showing probing beyond granted scope"
+        ],
+        "containment": [
+          "Remove project-level secretAccessor bindings from the principal",
+          "Disable the principal or its service account keys",
+          "Disable the accessed secret versions after new versions are added"
+        ],
+        "eradication": [
+          "Rotate each accessed secret and update consuming applications",
+          "Check downstream systems for logins using the harvested credentials",
+          "Remediate the principal's compromise"
+        ],
+        "recovery": [
+          "Destroy the old secret versions once consumers use the new ones",
+          "Configure rotation schedules and Pub/Sub notifications on critical secrets",
+          "Monitor the principal's secret access for 30 days"
+        ],
+        "lessons": [
+          "Add a detection on distinct AccessSecretVersion per principal per hour",
+          "Replace project-level accessor grants with per-secret grants",
+          "Measure time to rotate all exposed secrets"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Distinct secrets accessed per principal",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.serviceName=secretmanager.googleapis.com data.protoPayload.methodName=google.cloud.secretmanager.v1.SecretManagerService.AccessSecretVersion | rex field=data.protoPayload.resourceName \"secrets/(?<secret>[^/]+)\" | bin _time span=1h | stats dc(secret) as secrets values(secret) as names by _time, data.protoPayload.authenticationInfo.principalEmail, data.protoPayload.requestMetadata.callerIp | where secrets > 5"
+        },
+        {
+          "title": "Denied secret access attempts",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.serviceName=secretmanager.googleapis.com data.protoPayload.status.code=7 | stats count values(data.protoPayload.resourceName) as secrets by data.protoPayload.authenticationInfo.principalEmail"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-cloud-sql-public-ip",
+      "name": "Cloud SQL instance exposed with public IP and open networks",
+      "summary": "Use when a Cloud SQL instance gains a public IP with authorized networks of 0.0.0.0/0, SSL enforcement is removed, or the instance is exported to an unknown bucket.",
+      "tags": [
+        "gcp",
+        "cloud-sql",
+        "database",
+        "exposure"
+      ],
+      "attack": [
+        "T1133",
+        "T1530"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enforce sql.restrictPublicIp and sql.restrictAuthorizedNetworks org policies",
+          "Use Cloud SQL Auth Proxy or private service access for application connections",
+          "Enable Cloud SQL database audit flags such as pgaudit or the MySQL audit plugin"
+        ],
+        "identification": [
+          "Find cloudsql.instances.update calls that set ipv4Enabled or added authorizedNetworks",
+          "Check whether requireSsl or sslMode was relaxed in the same change",
+          "Review database logs for logins from internet addresses during the exposure",
+          "Check for cloudsql.instances.export calls and the destination bucket",
+          "Identify which database users have weak or default passwords"
+        ],
+        "containment": [
+          "Remove 0.0.0.0/0 from authorized networks and disable the public IP",
+          "Re-enable SSL-only connections on the instance",
+          "Revoke the caller's cloudsql.admin role pending review"
+        ],
+        "eradication": [
+          "Rotate database user passwords, starting with the postgres or root user",
+          "Delete database users created by an attacker",
+          "Remove exported dump files from any bucket the attacker controlled or used"
+        ],
+        "recovery": [
+          "Reconnect applications through the Auth Proxy or private IP",
+          "Confirm SCC shows no PUBLIC_SQL_INSTANCE or SQL_NO_ROOT_PASSWORD findings",
+          "Review query logs for data access during the exposure window"
+        ],
+        "lessons": [
+          "Add an alert on authorizedNetworks changes containing 0.0.0.0/0",
+          "Review why the org policy did not apply to this project",
+          "Measure the exposure window"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Cloud SQL network and SSL changes",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.serviceName=cloudsql.googleapis.com data.protoPayload.methodName IN (cloudsql.instances.update, cloudsql.instances.patch, cloudsql.instances.export, cloudsql.users.create, cloudsql.users.update) | table _time data.protoPayload.methodName data.protoPayload.resourceName data.protoPayload.request.body.settings.ipConfiguration.authorizedNetworks{}.value data.protoPayload.request.body.settings.ipConfiguration.requireSsl data.protoPayload.authenticationInfo.principalEmail"
+        },
+        {
+          "title": "Database connections from public addresses",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.resource.type=cloudsql_database data.textPayload=*connection* | rex field=data.textPayload \"host=(?<client_ip>\\d+\\.\\d+\\.\\d+\\.\\d+)\" | where isnotnull(client_ip) AND NOT cidrmatch(\"10.0.0.0/8\", client_ip) | stats count by data.resource.labels.database_id, client_ip"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-kms-key-destroyed",
+      "name": "Cloud KMS key version destroyed or disabled",
+      "summary": "Use when DestroyCryptoKeyVersion or disable calls target a Cloud KMS key protecting CMEK data, or the key's IAM policy grants decrypt access to an unknown principal.",
+      "tags": [
+        "gcp",
+        "kms",
+        "encryption",
+        "data-destruction"
+      ],
+      "attack": [
+        "T1485",
+        "T1486"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Set a long scheduled destruction duration on key rings holding CMEK keys",
+          "Keep Cloud KMS keys in a dedicated security project with restricted IAM",
+          "Map each CMEK key to the BigQuery, GCS, Compute, and SQL resources it protects"
+        ],
+        "identification": [
+          "Identify the key version, caller, and scheduled destroy time from the audit event",
+          "Check whether versions were disabled before the destroy request",
+          "Diff the key's IAM policy for new cryptoKeyEncrypterDecrypter grantees",
+          "List workloads failing with key-unavailable errors",
+          "Determine whether the key is imported material or Cloud EKM"
+        ],
+        "containment": [
+          "Restore the key version with gcloud kms keys versions restore before destruction completes",
+          "Re-enable the key version with gcloud kms keys versions enable",
+          "Remove unauthorized IAM bindings from the key"
+        ],
+        "eradication": [
+          "Revoke the caller's cloudkms.admin role and investigate its compromise",
+          "Remove other destroy or disable requests the attacker scheduled",
+          "Check other key rings in the project for similar changes"
+        ],
+        "recovery": [
+          "Confirm CMEK-protected resources can read data again",
+          "Verify automatic rotation settings on the key are unchanged",
+          "Document which data would have been lost if destruction completed"
+        ],
+        "lessons": [
+          "Separate KMS admin from key usage roles so no one holds both",
+          "Add a detection for DestroyCryptoKeyVersion on any key",
+          "Review the minimum destroy-scheduled duration org policy"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Key version destroy, disable, and IAM changes",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.serviceName=cloudkms.googleapis.com data.protoPayload.methodName IN (DestroyCryptoKeyVersion, UpdateCryptoKeyVersion, UpdateCryptoKeyPrimaryVersion, SetIamPolicy, RestoreCryptoKeyVersion) | table _time data.protoPayload.methodName data.protoPayload.resourceName data.protoPayload.request.cryptoKeyVersion.state data.protoPayload.authenticationInfo.principalEmail data.protoPayload.requestMetadata.callerIp"
+        },
+        {
+          "title": "Failures from unavailable keys",
+          "phase": "recovery",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.serviceName=cloudkms.googleapis.com data.protoPayload.methodName IN (Decrypt, Encrypt) data.protoPayload.status.code=9 | timechart span=15m count by data.protoPayload.resourceName"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-workload-identity-federation-abuse",
+      "name": "Workload identity federation abused by an external identity",
+      "summary": "Use when a workload identity pool provider accepts tokens from an unexpected repository, tenant, or issuer, letting an external identity impersonate a GCP service account.",
+      "tags": [
+        "gcp",
+        "workload-identity",
+        "oidc",
+        "cicd",
+        "iam"
+      ],
+      "attack": [
+        "T1078.004",
+        "T1550.001",
+        "T1199"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Set an attribute condition on every provider restricting repository, ref, or tenant",
+          "Bind workloadIdentityUser to specific principal:// subjects rather than whole pools",
+          "Enable Data Access logs for sts.googleapis.com and iamcredentials.googleapis.com"
+        ],
+        "identification": [
+          "Review sts.googleapis.com ExchangeToken events for the provider and mapped subject",
+          "Compare the subject and attributes with the approved repositories or tenants",
+          "Check for CreateWorkloadIdentityPoolProvider or UpdateWorkloadIdentityPoolProvider changes",
+          "Follow the federated token to GenerateAccessToken on target service accounts",
+          "List actions taken by the impersonated service account during the session"
+        ],
+        "containment": [
+          "Disable the workload identity pool provider",
+          "Remove principalSet bindings that grant the whole pool access to service accounts",
+          "Revert the provider's issuer or attribute condition to the approved values"
+        ],
+        "eradication": [
+          "Undo resource and IAM changes made by the impersonated service account",
+          "Remove rogue pools or providers created by the attacker",
+          "Rotate secrets the service account could read"
+        ],
+        "recovery": [
+          "Re-enable the provider with a strict attribute condition and test the approved pipeline",
+          "Confirm no ExchangeToken events from unapproved subjects",
+          "Document the approved subject list in the provider's description"
+        ],
+        "lessons": [
+          "Audit every provider for missing attribute conditions",
+          "Add a detection for ExchangeToken from unknown subjects",
+          "Review who can modify workload identity pools"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Federated token exchanges by subject",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.serviceName=sts.googleapis.com data.protoPayload.methodName=google.identity.sts.v1.SecurityTokenService.ExchangeToken | stats count min(_time) as first by data.protoPayload.authenticationInfo.principalSubject, data.protoPayload.request.audience, data.protoPayload.requestMetadata.callerIp | convert ctime(first)"
+        },
+        {
+          "title": "Pool and provider configuration changes",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.methodName IN (*CreateWorkloadIdentityPool, *CreateWorkloadIdentityPoolProvider, *UpdateWorkloadIdentityPoolProvider, *UndeleteWorkloadIdentityPoolProvider) | table _time data.protoPayload.methodName data.protoPayload.resourceName data.protoPayload.authenticationInfo.principalEmail"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-billing-anomaly",
+      "name": "GCP billing anomaly from unexpected services or regions",
+      "summary": "Use when a budget alert or cost anomaly shows sudden spend on Compute, GPUs, Vertex AI, or egress in projects or regions that do not normally incur it.",
+      "tags": [
+        "gcp",
+        "billing",
+        "resource-hijacking",
+        "cost"
+      ],
+      "attack": [
+        "T1496"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Export Cloud Billing data to BigQuery for daily per-SKU analysis",
+          "Set budgets with Pub/Sub notifications on every billing account and key project",
+          "Restrict resource locations with the gcp.resourceLocations org policy"
+        ],
+        "identification": [
+          "Query the billing export grouped by project, service, SKU, and location for the spike",
+          "Correlate the top SKUs with resource creation calls in audit logs",
+          "Check for Vertex AI or Generative AI API usage from unknown principals",
+          "Check for large internet egress SKUs that could signal data exfiltration",
+          "Identify the principals and credentials behind the costly resources"
+        ],
+        "containment": [
+          "Disable the principals creating the costly resources",
+          "Stop or delete the resources driving the spend after capturing metadata",
+          "Disable abused APIs in the project with gcloud services disable"
+        ],
+        "eradication": [
+          "Remove persistence such as instance templates or scheduled jobs that recreate resources",
+          "Rotate API keys and service account keys used in the abuse",
+          "Restrict quotas for the abused services"
+        ],
+        "recovery": [
+          "Open a billing support case with the incident timeline",
+          "Confirm daily spend returns to baseline in the billing export",
+          "Re-enable APIs needed by legitimate workloads"
+        ],
+        "lessons": [
+          "Add budget alerts at lower thresholds for projects with stable spend",
+          "Restrict API key usage with application and API restrictions",
+          "Measure cost between first anomalous charge and containment"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Resource creation by service in the anomalous project",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.resource.labels.project_id=<project_id> (data.protoPayload.methodName=*insert OR data.protoPayload.methodName=*Create* OR data.protoPayload.methodName=*Deploy*) | stats count by data.protoPayload.serviceName, data.protoPayload.methodName, data.protoPayload.authenticationInfo.principalEmail | sort - count"
+        },
+        {
+          "title": "Budget alert notifications",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.budgetDisplayName=* | eval pct=round('data.costAmount'/'data.budgetAmount'*100,1) | table _time data.budgetDisplayName data.costAmount data.budgetAmount pct data.alertThresholdExceeded"
+        }
+      ]
+    },
+    {
+      "id": "lib-gcp-artifact-registry-poisoned-image",
+      "name": "Poisoned container image pushed to Artifact Registry",
+      "summary": "Use when an Artifact Registry image tag or package is overwritten by an unexpected principal, or a repository grants public or external write access.",
+      "tags": [
+        "gcp",
+        "artifact-registry",
+        "containers",
+        "supply-chain"
+      ],
+      "attack": [
+        "T1525",
+        "T1195.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable immutable tags on production Artifact Registry repositories",
+          "Enforce Binary Authorization attestations for GKE and Cloud Run deployments",
+          "Restrict artifactregistry.writer to the Cloud Build service account"
+        ],
+        "identification": [
+          "List docker push or UploadArtifact calls on the repository by principal and IP",
+          "Compare the tag's current digest with the digest attested at the last release",
+          "Pull the suspect digest in an isolated environment and diff its layers",
+          "Check repository IAM for allUsers readers or external writers",
+          "Find GKE and Cloud Run workloads running the suspect digest"
+        ],
+        "containment": [
+          "Pin workloads to the last attested digest and redeploy",
+          "Remove the pushing principal's writer role",
+          "Remove external or public bindings from the repository"
+        ],
+        "eradication": [
+          "Delete the poisoned version after preserving a copy as evidence",
+          "Investigate workloads that ran the poisoned image for credential access",
+          "Rotate secrets mounted into those workloads"
+        ],
+        "recovery": [
+          "Rebuild the image from source in Cloud Build and attest it",
+          "Confirm Binary Authorization blocks the poisoned digest",
+          "Run Artifact Analysis vulnerability scanning on the rebuilt image"
+        ],
+        "lessons": [
+          "Move Binary Authorization from dry-run to enforce mode",
+          "Add a detection for pushes by principals other than Cloud Build",
+          "Record how many workloads ran the poisoned digest"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Artifact pushes and repository IAM changes",
+          "phase": "identification",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message data.protoPayload.serviceName=artifactregistry.googleapis.com data.protoPayload.methodName IN (Docker-PutManifest, Docker-StartUpload, Docker-FinishUpload, google.devtools.artifactregistry.v1.ArtifactRegistry.UpdateTag, google.devtools.artifactregistry.v1.ArtifactRegistry.CreateTag, google.devtools.artifactregistry.v1.ArtifactRegistry.SetIamPolicy) | table _time data.protoPayload.methodName data.protoPayload.resourceName data.protoPayload.authenticationInfo.principalEmail data.protoPayload.requestMetadata.callerIp"
+        },
+        {
+          "title": "Binary Authorization denials and breakglass deploys",
+          "phase": "recovery",
+          "spl": "index=gcp sourcetype=google:gcp:pubsub:message (data.protoPayload.response.status.message=*binaryauthorization* OR data.labels.imagepolicywebhook.image.k8s.io/break-glass=*) | table _time data.resource.labels.cluster_name data.protoPayload.resourceName data.protoPayload.response.status.message"
+        }
+      ]
+    }
+  ]
+}

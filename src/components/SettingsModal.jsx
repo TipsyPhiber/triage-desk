@@ -7,14 +7,18 @@ import { parseBackup, serializeBackup } from '../state/workspace.js';
 import { downloadFile, reportFilename } from '../lib/exportReport.js';
 import { Settings as HeaderIcon } from 'lucide-react';
 import { Modal, ProBadge, btn, inputCls } from './Modal.jsx';
+import { ThemeToggle } from './ThemeToggle.jsx';
+import { SplunkSettings } from './SplunkSettings.jsx';
 
 const TABS = [
   { id: 'reports', label: 'Reports' },
   { id: 'license', label: 'License' },
+  { id: 'splunk', label: 'Splunk' },
+  { id: 'appearance', label: 'Appearance' },
   { id: 'data', label: 'Data' },
 ];
 
-export function SettingsModal({ initialTab = 'reports', workspace, licenseStatus, onSettings, onLicense, onRestore, onClose }) {
+export function SettingsModal({ initialTab = 'reports', workspace, licenseStatus, ent, onSettings, onLicense, onRestore, onClose, onNotify }) {
   const [tab, setTab] = useState(initialTab);
   return (
     <Modal title="Settings" icon={HeaderIcon} onClose={onClose}>
@@ -31,6 +35,14 @@ export function SettingsModal({ initialTab = 'reports', workspace, licenseStatus
       </div>
       {tab === 'reports' && <ReportSettings settings={workspace.settings} onChange={onSettings} />}
       {tab === 'license' && <LicensePanel token={workspace.license} status={licenseStatus} onLicense={onLicense} />}
+      {tab === 'splunk' && <SplunkSettings ent={ent} onNotify={onNotify} />}
+      {tab === 'appearance' && (
+        <div className="space-y-3">
+          <div className="text-sm text-ink">Theme</div>
+          <ThemeToggle />
+          <p className="text-xs text-ink-3">Saved in this browser only. “System” follows your operating system.</p>
+        </div>
+      )}
       {tab === 'data' && <DataPanel workspace={workspace} onRestore={onRestore} />}
     </Modal>
   );
@@ -79,10 +91,11 @@ function LicensePanel({ token, status, onLicense }) {
     <div className="space-y-4">
       {status.status === 'valid' ? (
         <div className="rounded-lg border border-pro/40 bg-pro/10 p-4">
-          <div className="flex items-center gap-2 mb-2"><ProBadge /><span className="text-sm font-semibold text-ink">Triage Desk Pro is active</span></div>
+          <div className="flex items-center gap-2 mb-2"><ProBadge /><span className="text-sm font-semibold text-ink">{lic.plan === 'connected' ? 'Triage Desk Connected is active' : 'Triage Desk Pro is active'}</span></div>
           <dl className="text-xs text-ink-2 grid grid-cols-[110px_1fr] gap-y-1">
             <dt className="text-ink-3">Licensed to</dt><dd>{lic.name}</dd>
             <dt className="text-ink-3">Email</dt><dd>{lic.email}</dd>
+            <dt className="text-ink-3">Plan</dt><dd>{lic.plan === 'connected' ? 'Connected (Pro + live Splunk)' : 'Pro'}</dd>
             <dt className="text-ink-3">Seats</dt><dd>{lic.seats}</dd>
             <dt className="text-ink-3">License ID</dt><dd className="font-mono">{lic.lid}</dd>
             <dt className="text-ink-3">Updates until</dt><dd>{lic.updatesUntil ?? 'Lifetime'}</dd>
@@ -105,7 +118,7 @@ function LicensePanel({ token, status, onLicense }) {
       )}
 
       {token && status.status !== 'valid' && status.reason && (
-        <div className="text-sm text-amber-300 border border-amber-500/30 bg-amber-500/10 rounded px-3 py-2">{status.reason}</div>
+        <div className="text-sm text-warn border border-warn/30 bg-warn/10 rounded px-3 py-2">{status.reason}</div>
       )}
 
       <div>
@@ -118,7 +131,7 @@ function LicensePanel({ token, status, onLicense }) {
           spellCheck={false}
           className={`${inputCls} mt-1 font-mono text-xs break-all`}
         />
-        {error && <div className="text-xs text-rose-400 mt-1">{error}</div>}
+        {error && <div className="text-xs text-danger mt-1">{error}</div>}
         <div className="flex gap-2 mt-2">
           <button className={btn.primary} onClick={activate} disabled={!input.trim()}>Activate</button>
           {token && (
@@ -177,7 +190,7 @@ function DataPanel({ workspace, onRestore }) {
           <button className={btn.secondary} onClick={() => fileRef.current?.click()}>Restore from backup…</button>
           <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={restore} />
         </div>
-        {msg && <div className={`text-xs mt-2 ${msg.ok ? 'text-emerald-400' : 'text-rose-400'}`}>{msg.text}</div>}
+        {msg && <div className={`text-xs mt-2 ${msg.ok ? 'text-ok' : 'text-danger'}`}>{msg.text}</div>}
       </div>
       <p className="text-xs text-ink-3">
         Backups contain your license key and all incident notes. Treat them with the same handling as the incident's TLP marking.

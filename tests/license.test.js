@@ -67,6 +67,19 @@ describe('entitlements', () => {
     expect(canUsePlaybook({ builtIn: false }, free)).toBe(false);
   });
 
+  it('accepts a Connected plan key, which includes Pro', () => {
+    const token = signLicense({ ...base, plan: 'connected' }, secret);
+    const res = verifyLicense(token, { publicKeyHex, now: NOW });
+    expect(res.status).toBe('valid');
+    expect(res.license.plan).toBe('connected');
+    const ent = entitlementsFor(res);
+    expect(ent.pro).toBe(true);
+    expect(ent.plan).toBe('connected');
+    // Live Splunk also needs the Connected build; unit tests run the offline one.
+    expect(ent.connected).toBe(false);
+    expect(() => signLicense({ ...base, plan: 'enterprise' }, secret)).toThrow();
+  });
+
   it('does not grant pro for an expired or uncovered key', () => {
     expect(entitlementsFor({ status: 'expired' }).pro).toBe(false);
     expect(entitlementsFor({ status: 'not-covered' }).pro).toBe(false);

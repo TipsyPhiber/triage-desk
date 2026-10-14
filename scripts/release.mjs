@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Build a customer-ready release into release/triage-desk-v<version>/:
 //
-//   triage-desk.html     single-file app (double-click to run, air-gap friendly)
-//   web/                 static build for hosting on an internal web server
-//   EULA.md, CUSTOMER-README.md
+//   triage-desk.html             Offline edition, single file (air-gap friendly)
+//   web/                         Offline edition, static build for internal hosting
+//   connected/triage-desk-connected.html, connected/web/
+//                                Connected edition (live Splunk; needs a Connected license)
+//   EULA.md, CUSTOMER-README.md, SPLUNK.md
 //
 // Refuses to run if the license public key isn't configured, since such a
 // build could never unlock Pro.
@@ -33,13 +35,17 @@ if (/SUPPORT_EMAIL = ''/.test(config)) console.warn('warning: SUPPORT_EMAIL is e
 run('npm test');
 run('npm run build');
 run('npm run build:single');
+run('npm run build:connected');
 
 const out = join(ROOT, 'release', `triage-desk-v${pkg.version}`);
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 cpSync(join(ROOT, 'dist-single/triage-desk.html'), join(out, 'triage-desk.html'));
 cpSync(join(ROOT, 'dist'), join(out, 'web'), { recursive: true });
-for (const f of ['EULA.md', 'docs/CUSTOMER-README.md']) {
+mkdirSync(join(out, 'connected'), { recursive: true });
+cpSync(join(ROOT, 'dist-connected-single/triage-desk-connected.html'), join(out, 'connected/triage-desk-connected.html'));
+cpSync(join(ROOT, 'dist-connected'), join(out, 'connected/web'), { recursive: true });
+for (const f of ['EULA.md', 'docs/CUSTOMER-README.md', 'docs/SPLUNK.md']) {
   if (existsSync(join(ROOT, f))) cpSync(join(ROOT, f), join(out, f.split('/').pop()));
 }
 

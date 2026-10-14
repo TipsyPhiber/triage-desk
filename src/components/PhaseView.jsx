@@ -2,12 +2,13 @@ import { useState } from 'react';
 import { Check, CornerDownLeft, Info, NotebookPen } from 'lucide-react';
 import { formatClock, formatElapsed } from '../lib/time.js';
 import { IocExtractor } from './IocExtractor.jsx';
+import { SplunkSearches } from './SplunkSearches.jsx';
 import { Kbd, labelCls } from './Modal.jsx';
 
 export function PhaseView({
   phase, index, count, checks, checkedAt, note, startTime,
   onToggle, onNoteChange, onAppendNote, onQuickNote, onIocsExtracted,
-  sev, phaseStatus, advisory, running,
+  sev, phaseStatus, advisory, running, searches, onCopied, onRunSearch,
 }) {
   const done = (checks || []).filter(Boolean).length;
   const total = phase.tasks.length;
@@ -65,7 +66,7 @@ export function PhaseView({
                     className={`mt-[1px] w-[18px] h-[18px] rounded-[5px] border flex items-center justify-center shrink-0 transition ${isChecked ? 'border-transparent' : 'border-line-2 group-hover:border-ink-3'}`}
                     style={isChecked ? { background: sev.hex } : undefined}
                   >
-                    {isChecked && <Check size={13} strokeWidth={3} className="text-canvas" />}
+                    {isChecked && <Check size={13} strokeWidth={3} className="text-white" />}
                   </span>
                   <span className={`flex-1 text-[14px] leading-relaxed ${isChecked ? 'text-ink-3 line-through decoration-ink-4' : 'text-ink'}`}>
                     {task}
@@ -83,6 +84,8 @@ export function PhaseView({
           {total === 0 && <li className="px-4 py-6 text-sm text-ink-3 text-center">This playbook has no tasks for this phase.</li>}
         </ul>
       </section>
+
+      <SplunkSearches searches={searches} onCopied={onCopied} onRun={onRunSearch} />
 
       {phase.stage !== 'pre-incident' && (
         <IocExtractor sev={sev} onAppend={onAppendNote} onExtracted={onIocsExtracted} />
@@ -105,7 +108,7 @@ export function PhaseView({
               onChange={(e) => setQuick(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') submitQuick(); }}
               placeholder="One-line observation (e.g. user confirmed the email landed in spam)"
-              className="w-full bg-surface border border-line-2 rounded-lg pl-9 pr-3 py-2.5 text-sm text-ink placeholder-ink-4 outline-none focus:border-ink-3 transition"
+              className="w-full bg-surface border border-line-2 rounded-lg pl-9 pr-3 py-2.5 text-sm text-ink placeholder-ink-4 outline-none focus:border-signal transition"
             />
           </div>
           <button
@@ -127,7 +130,7 @@ export function PhaseView({
           aria-label={`${phase.name} notes`}
           placeholder={`Observations, decisions, and evidence for ${phase.name.toLowerCase()}…`}
           rows={9}
-          className="w-full bg-surface border border-line-2 rounded-xl p-4 text-[13px] leading-relaxed text-ink placeholder-ink-4 outline-none focus:border-ink-3 resize-y font-mono transition"
+          className="w-full bg-surface border border-line-2 rounded-xl p-4 text-[13px] leading-relaxed text-ink placeholder-ink-4 outline-none focus:border-signal resize-y font-mono transition"
         />
       </section>
     </div>

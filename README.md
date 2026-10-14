@@ -2,25 +2,31 @@
 
 An offline incident response workspace for SOC analysts and on-call engineers. Walk every incident through the six NIST SP 800-61 phases (**Preparation → Identification → Containment → Eradication → Recovery → Lessons Learned**) with lifecycle-aware checklists, an auto-recorded timeline, IOC extraction, and reports you can hand to leadership.
 
-Nothing leaves the machine. No accounts, no telemetry, no server. Triage Desk ships as a single HTML file that runs from disk, even on an air-gapped analyst workstation, and a strict Content-Security-Policy forbids every outbound connection.
+It ships with **525 hand-written scenario playbooks** (ransomware to Kubernetes to OT), each with ATT&CK mappings and ready-to-run **Splunk** searches. Analysts describe what's happening in plain words and get the closest plan.
+
+Nothing leaves the machine. No accounts, no telemetry, no server. Triage Desk ships as a single HTML file that runs from disk, even on an air-gapped analyst workstation, and a strict Content-Security-Policy forbids every outbound connection. The separate **Connected** edition can also talk to the customer's own Splunk (search, notables, HEC); see [`docs/SPLUNK.md`](docs/SPLUNK.md).
 
 > **Selling Triage Desk?** See [`docs/SELLING.md`](docs/SELLING.md) for the launch runbook: keypair setup, issuing license keys, building a release, and storefront setup.
 
 ## Editions
 
-| | Free | Pro |
-| --- | :-: | :-: |
-| Six-phase lifecycle with phase locking | ✓ | ✓ |
-| Auto-recorded incident timeline | ✓ | ✓ |
-| Rust/WASM IOC extractor (refangs `hxxp`, `[.]`, `[at]`) | ✓ | ✓ |
-| TLP 2.0 markings | ✓ | ✓ |
-| Plain-text report | ✓ | ✓ |
-| Workspace backup / restore | ✓ | ✓ |
-| General Incident playbook | ✓ | ✓ |
-| Incidents in workspace | 1 | Unlimited |
-| Ransomware, Phishing, BEC, and Cloud Credential playbooks | | ✓ |
-| Custom playbooks + JSON import/export | | ✓ |
-| Markdown and print-ready HTML/PDF reports with org branding | | ✓ |
+| | Free | Pro | Connected |
+| --- | :-: | :-: | :-: |
+| Six-phase lifecycle with phase locking | ✓ | ✓ | ✓ |
+| Auto-recorded incident timeline | ✓ | ✓ | ✓ |
+| Rust/WASM IOC extractor (refangs `hxxp`, `[.]`, `[at]`) | ✓ | ✓ | ✓ |
+| TLP 2.0 markings, plain-text report, backup / restore | ✓ | ✓ | ✓ |
+| Playbook finder, command palette, light/dark themes | ✓ | ✓ | ✓ |
+| Splunk alert import, IOC hunting SPL, lookup + HEC exports | ✓ | ✓ | ✓ |
+| General Incident playbook | ✓ | ✓ | ✓ |
+| Incidents in workspace | 1 | Unlimited | Unlimited |
+| 520 scenario playbooks with Splunk searches | Browse | ✓ | ✓ |
+| Custom playbooks + JSON import/export | | ✓ | ✓ |
+| Markdown and print-ready HTML/PDF reports with org branding | | ✓ | ✓ |
+| Run searches, pull notables, send timeline to Splunk | | | ✓ |
+| Network access | none | none | your Splunk only |
+
+Connected is a separate build (`npm run build:connected`) and needs a license issued with `--plan connected`.
 
 Backup/restore is deliberately free: customers' incident data is never held hostage. If a Pro license lapses, existing incidents stay fully readable and editable; only new Pro actions are gated.
 
@@ -56,6 +62,8 @@ npm test
 | `npm run test:e2e` | Browser tests against both distributions (add `-- --project=chromium` to pick one browser) |
 | `npm run build` | Static build to `dist/` (for hosting on an internal web server) |
 | `npm run build:single` | One self-contained `dist-single/triage-desk.html` |
+| `npm run build:connected` | Connected edition: `dist-connected/` and `dist-connected-single/triage-desk-connected.html` |
+| `npm run library:check` | Validate the scenario playbook library (see [`docs/PLAYBOOK-SPEC.md`](docs/PLAYBOOK-SPEC.md)) |
 | `npm run build:wasm` | Rebuild the IOC extractor (needs Rust + [`wasm-pack`](https://rustwasm.github.io/wasm-pack/installer/)) |
 | `npm run license:keygen` | Create your license signing keypair (one time) |
 | `npm run license:issue -- --name … --email …` | Mint a license key |
@@ -83,7 +91,9 @@ src/
   App.jsx                 composition + workspace state
   config.js               storefront URL, support email
   data.js                 fixed phase definitions, severities, TLP levels
-  playbooks/builtins.js   built-in playbook content
+  playbooks/builtins.js   the five essential playbooks
+  playbooks/library/      520 scenario playbooks, one JSON file per category
+  playbooks/library.js    loads the library; validateLibrary.js is its quality gate
   license/
     license.js            key format, sign/verify
     entitlements.js       Free vs Pro rules
@@ -95,6 +105,10 @@ src/
     iocIndex.js           IOC merge + cross-phase aggregate
   lib/
     exportReport.js       text / Markdown / HTML report renderers
+    playbookSearch.js     plain-language playbook search
+    splunk.js             offline Splunk tools: SPL, alert import, CSV/HEC export
+    splunkClient.js       Connected edition: REST search + HEC
+    theme.js              light / dark / system
     phaseActivity.js      lifecycle gating rules
   components/             UI
 scripts/

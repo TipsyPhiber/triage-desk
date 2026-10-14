@@ -1,0 +1,1627 @@
+{
+  "category": {
+    "id": "data-exfiltration",
+    "name": "Data exfiltration & DLP",
+    "description": "Data leaving the organization: DLP alerts, cloud and USB exfiltration, leaked or exposed datasets, and accidental disclosure."
+  },
+  "playbooks": [
+    {
+      "id": "lib-data-exfiltration-dlp-pii-emailed-externally",
+      "name": "DLP alert: PII emailed to an external address",
+      "summary": "Use when a DLP policy fires on an outbound email carrying personal data (SSNs, national IDs, customer records) to a recipient outside the organization.",
+      "tags": [
+        "dlp",
+        "email",
+        "pii",
+        "data-loss"
+      ],
+      "attack": [
+        "T1048.003",
+        "T1114"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Confirm DLP policies for SSN, national ID and customer-record patterns are enforced on the mail gateway, not audit-only",
+          "Keep DLP incident retention long enough to retrieve the matched attachment and message headers",
+          "Agree with Legal and Privacy who decides whether a DLP hit becomes a reportable breach",
+          "Maintain a list of sanctioned external partners and domains allowed to receive PII"
+        ],
+        "identification": [
+          "Pull the DLP incident: matched rule, match count, sender, recipients, subject and attachment names",
+          "Open the quarantined or delivered attachment in a sandboxed viewer and count the data subjects exposed",
+          "Check whether the recipient domain is a contracted partner, a personal webmail, or an unknown domain",
+          "Run message trace for the sender's other outbound mail to the same recipient in the last 90 days",
+          "Interview the sender's manager on whether the send had a legitimate business purpose"
+        ],
+        "containment": [
+          "Recall or purge the message from internal copies with a compliance search and purge action",
+          "Ask the external recipient in writing to delete the message and confirm deletion",
+          "Add a transport rule blocking further PII sends from the sender to that recipient domain",
+          "Switch the triggering DLP rule from notify to block for the sender's department while triage continues"
+        ],
+        "eradication": [
+          "Revoke any shared-mailbox or delegate access that let the sender reach the exported records",
+          "Remove local copies of the source export from the sender's endpoint and OneDrive",
+          "Delete the CRM or HR report export job the sender used to generate the attachment"
+        ],
+        "recovery": [
+          "Restore normal mail flow for the sender once the business-purpose review is closed",
+          "Record the data-subject count and data types in the privacy breach register",
+          "Hand the case to Privacy for the notification decision with the evidence package attached"
+        ],
+        "lessons": [
+          "Measure time from DLP alert to recall and set a target for the next review",
+          "Decide whether to require secure-mail encryption for any message matching PII rules",
+          "Tune false positives from the rule so analysts trust high-confidence PII hits"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Outbound email with PII DLP matches by sender",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Workload=Exchange Operation=DLPRuleMatch | spath ExchangeMetaData.From output=sender | spath ExchangeMetaData.To{} output=rcpt | search sender=\"<suspect_user>\" | stats count values(rcpt) as recipients values(PolicyDetails{}.PolicyName) as policy by sender"
+        },
+        {
+          "title": "Message trace: sender's external mail to recipient domain",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(All_Email.subject) as subjects values(All_Email.file_name) as files from datamodel=Email where All_Email.src_user=\"<suspect_user>\" All_Email.recipient=\"*@<recipient_domain>\" by All_Email.recipient _time span=1d"
+        },
+        {
+          "title": "Other users sending PII to the same external domain",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation=DLPRuleMatch | spath ExchangeMetaData.To{} output=rcpt | search rcpt=\"*@<recipient_domain>\" | stats dc(UserId) as senders count by rcpt"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-bulk-upload-personal-cloud",
+      "name": "Bulk upload of company files to personal cloud storage",
+      "summary": "Use when proxy, CASB or endpoint telemetry shows a user uploading a large volume of work files to a personal Dropbox, Google Drive, OneDrive or similar account.",
+      "tags": [
+        "cloud-storage",
+        "casb",
+        "exfiltration",
+        "proxy"
+      ],
+      "attack": [
+        "T1567.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable CASB or proxy instance awareness to tell corporate from personal tenants of the same cloud service",
+          "Log upload byte counts per destination on the secure web gateway",
+          "Define an upload-volume baseline per user so anomalies can be scored"
+        ],
+        "identification": [
+          "Identify the personal account or tenant ID used, from CASB instance data or proxy request headers",
+          "Total bytes uploaded and file count per destination for the user over the last 30 days",
+          "Map uploaded file names against SharePoint and file-share access logs to find the source repositories",
+          "Check HR systems for resignation, PIP or recent disciplinary action on the user",
+          "Determine whether the device is managed and whether the sync client or browser did the upload"
+        ],
+        "containment": [
+          "Block uploads to the personal instance via CASB inline policy for the user",
+          "Suspend the user's VPN and remote access pending interview if HR concurs",
+          "Preserve proxy, CASB and endpoint logs for the upload window under legal hold"
+        ],
+        "eradication": [
+          "Request through Legal that the user delete the files and sign a certification of deletion",
+          "Remove personal cloud sync clients from the managed endpoint",
+          "Revoke OAuth grants the personal cloud app holds against the corporate tenant"
+        ],
+        "recovery": [
+          "Restore the user's access in a reduced role if employment continues",
+          "Re-classify any uploaded documents found unlabelled so DLP covers them next time",
+          "Confirm the CASB block policy is not breaking sanctioned corporate tenant use"
+        ],
+        "lessons": [
+          "Add a detection for personal-instance uploads above the user's 95th percentile volume",
+          "Review whether personal cloud storage should be blocked by default on managed devices",
+          "Track how many days the uploads ran before detection"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Upload volume to cloud storage categories by user",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(Web.bytes_out) as bytes_out count from datamodel=Web where Web.http_method IN (\"POST\",\"PUT\") Web.category IN (\"online-storage*\",\"file-sharing*\") Web.user=\"<suspect_user>\" by Web.dest Web.user _time span=1h | eval MB=round(bytes_out/1024/1024,1) | sort - MB"
+        },
+        {
+          "title": "SharePoint and OneDrive downloads before the uploads",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation IN (\"FileDownloaded\",\"FileSyncDownloadedFull\") UserId=\"<suspect_user>\" | stats count dc(ObjectId) as files values(SiteUrl) as sites by UserId"
+        },
+        {
+          "title": "Users exceeding normal cloud upload volume",
+          "phase": "lessons",
+          "spl": "| tstats summariesonly=false sum(Web.bytes_out) as bytes from datamodel=Web where Web.category=\"online-storage*\" by Web.user _time span=1d | eventstats avg(bytes) as avg stdev(bytes) as sd by Web.user | where bytes > avg + 3*sd AND bytes > 500000000"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-usb-mass-copy",
+      "name": "Mass copy of files to a USB removable drive",
+      "summary": "Use when endpoint DLP or EDR records a user writing a large number of files to a USB mass storage device, especially from sensitive shares or shortly before departure.",
+      "tags": [
+        "usb",
+        "removable-media",
+        "endpoint",
+        "dlp"
+      ],
+      "attack": [
+        "T1052.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable removable-storage audit events (Event ID 4663 on removable volumes, 6416 device install) via GPO",
+          "Configure endpoint DLP to log file names and hashes written to removable media",
+          "Maintain an allowlist of approved encrypted USB device serials"
+        ],
+        "identification": [
+          "Pull the USB device vendor, product and serial from EDR or Event ID 6416 on the host",
+          "List files written to the removable volume with paths, sizes and timestamps",
+          "Trace the source directories of the copied files to classify the data exposed",
+          "Check whether the device serial is on the approved encrypted-USB allowlist",
+          "Correlate the copy window with badge records to place the user at the device"
+        ],
+        "containment": [
+          "Push a device-control policy blocking write access to removable storage on the host",
+          "Request physical recovery of the USB device through HR and Security with chain-of-custody form",
+          "Isolate the endpoint from the network if the copy is ongoing and the user is unreachable"
+        ],
+        "eradication": [
+          "Forensically image the recovered USB device before wiping it",
+          "Confirm no further copies exist on other personal media through the user interview",
+          "Remove any portable archive or copy tools found staged on the endpoint"
+        ],
+        "recovery": [
+          "Re-enable removable storage only for approved encrypted devices on the user's host",
+          "Return the wiped device or destroy it per the media-sanitization standard",
+          "Update the data-loss case with the final list of files and classification"
+        ],
+        "lessons": [
+          "Decide whether read-only USB should be the default for all non-engineering roles",
+          "Add an alert for more than 500 files written to removable media in one hour",
+          "Review how many hosts still lack removable-storage auditing"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Files written to removable volumes by host",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"WinEventLog:Security\" EventCode=4663 host=\"<host>\" Object_Type=File Accesses=\"*WriteData*\" | rex field=Object_Name \"^(?<drive>[A-Z]:)\" | search drive!=\"C:\" | stats count dc(Object_Name) as files values(drive) as drives by Account_Name host"
+        },
+        {
+          "title": "USB mass storage devices connected",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"WinEventLog:Security\" EventCode=6416 Class=DiskDrive | stats earliest(_time) as first latest(_time) as last values(Device_Description) as device by host Device_ID | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Hosts with large removable-media writes",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=\"WinEventLog:Security\" EventCode=4663 Accesses=\"*WriteData*\" Object_Name!=\"C:*\" | bin _time span=1h | stats dc(Object_Name) as files by host Account_Name _time | where files > 500"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-source-code-personal-github",
+      "name": "Source code pushed to a personal GitHub repository",
+      "summary": "Use when a developer pushes proprietary source code to a personal GitHub or GitLab account, or a public scan finds company code in a repo the organization does not own.",
+      "tags": [
+        "source-code",
+        "github",
+        "intellectual-property",
+        "developer"
+      ],
+      "attack": [
+        "T1567.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Run a secrets and code-fingerprint scanner against public GitHub for unique internal strings and package names",
+          "Enforce SSO and enterprise-managed users on the corporate GitHub organization",
+          "Log git push destinations at the proxy so pushes to non-corporate remotes are visible"
+        ],
+        "identification": [
+          "Identify the external repository URL, owner account, visibility and first commit date",
+          "Diff the external repo against internal repositories to determine which codebases were copied",
+          "Scan the external repo history for secrets, API keys and customer data in fixtures",
+          "Check proxy logs for git push traffic from the developer's host to github.com outside the corporate org",
+          "Confirm whether the external account owner is the employee, a former employee or unknown"
+        ],
+        "containment": [
+          "File a DMCA takedown with the hosting provider through Legal if the repo is public",
+          "Ask the employee to delete or transfer the repository and confirm in writing",
+          "Rotate every credential found in the exposed code history"
+        ],
+        "eradication": [
+          "Remove the personal git remote from the developer's local clones",
+          "Revoke personal access tokens or SSH keys the employee used against corporate repos if misused",
+          "Purge cached forks and mirrors found through code search"
+        ],
+        "recovery": [
+          "Confirm the external repo and forks return 404 after takedown",
+          "Re-run the secret scanner on internal repos to verify rotated keys are no longer referenced",
+          "Brief engineering leadership on any trade secrets exposed for competitive risk review"
+        ],
+        "lessons": [
+          "Add a push-protection rule or proxy block for git pushes to non-corporate GitHub accounts",
+          "Remind developers of the acceptable-use policy for personal repos and side projects",
+          "Measure how long the code was public before discovery"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Git push traffic from developer host to GitHub",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(Web.bytes_out) as bytes_out count from datamodel=Web where Web.dest IN (\"github.com\",\"gitlab.com\",\"bitbucket.org\") Web.url=\"*git-receive-pack*\" Web.src=\"<host>\" by Web.user Web.url _time span=1h"
+        },
+        {
+          "title": "Corporate GitHub audit: clones and archive downloads by user",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"github:enterprise:audit\" actor=\"<suspect_user>\" action IN (\"git.clone\",\"repo.download_zip\",\"git.fetch\") | stats count values(repo) as repos by actor action"
+        },
+        {
+          "title": "Push to non-corporate remotes across developers",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=\"pan:threat\" OR sourcetype=\"pan:traffic\" app=\"git-base\" dest_zone=untrust | stats sum(bytes_out) as bytes by src_user dest_ip | where bytes > 10000000"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-database-dump-detected",
+      "name": "Unexpected full database dump or export detected",
+      "summary": "Use when database audit logs or EDR show a full export (mysqldump, pg_dump, bcp, Data Pump, large SELECT *) from a production database by an unexpected account or host.",
+      "tags": [
+        "database",
+        "data-dump",
+        "production",
+        "exfiltration"
+      ],
+      "attack": [
+        "T1005",
+        "T1213"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable database audit logging for bulk SELECT, export utilities and privilege changes on production",
+          "Maintain an inventory of service accounts that legitimately run backups and ETL exports",
+          "Alert on dump utilities (mysqldump, pg_dump, bcp, expdp) executed outside backup hosts"
+        ],
+        "identification": [
+          "Identify the database, schemas and tables exported, and the row counts returned",
+          "Determine the account, client host and tool used for the export from DB audit and EDR",
+          "Locate the dump file on disk and record its path, size and hash",
+          "Check network flows from the client host for transfer of the dump file off the network",
+          "Verify with the DBA team whether a change ticket covers the export"
+        ],
+        "containment": [
+          "Disable the database login used for the export and kill its active sessions",
+          "Isolate the client host that ran the dump via EDR",
+          "Block egress from the host at the firewall if transfer of the dump is suspected"
+        ],
+        "eradication": [
+          "Securely delete the staged dump files after forensic copies are preserved",
+          "Rotate database credentials stored on the client host and in its config files",
+          "Remove excessive SELECT grants that allowed a non-ETL account to read the full schema"
+        ],
+        "recovery": [
+          "Reissue a least-privilege database login for the legitimate owner",
+          "Verify backup and ETL jobs still run with the restricted grants",
+          "Provide Privacy the table list and record counts for breach assessment"
+        ],
+        "lessons": [
+          "Add row-count thresholds to database activity monitoring for interactive sessions",
+          "Restrict dump utilities to designated backup hosts by application control",
+          "Review whether sensitive columns should be encrypted or tokenized at rest"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Dump utility executions outside backup hosts",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Processes.process) as cmd from datamodel=Endpoint.Processes where Processes.process_name IN (\"mysqldump*\",\"pg_dump*\",\"bcp.exe\",\"expdp*\",\"mongodump*\") NOT Processes.dest IN (\"<backup_host>\") by Processes.dest Processes.user _time span=1h"
+        },
+        {
+          "title": "Large result sets in database audit log",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"mssql:audit\" OR sourcetype=\"mysql:audit\" (statement=\"SELECT *\" OR action_id=SL) | stats sum(affected_rows) as rows dc(object_name) as tables by server_principal_name client_ip database_name | where rows > 100000"
+        },
+        {
+          "title": "Outbound transfer from the dump host after export",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false sum(All_Traffic.bytes_out) as bytes_out from datamodel=Network_Traffic where All_Traffic.src=\"<host>\" by All_Traffic.dest All_Traffic.dest_port _time span=15m | where bytes_out > 50000000"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-rclone-mega-exfil",
+      "name": "Exfiltration with rclone or MEGA client",
+      "summary": "Use when rclone, MEGAsync, megacmd or a similar sync tool runs on a server or workstation and pushes data to MEGA or another cloud remote, a common pre-ransomware exfil pattern.",
+      "tags": [
+        "rclone",
+        "mega",
+        "ransomware",
+        "exfiltration",
+        "edr"
+      ],
+      "attack": [
+        "T1567.002",
+        "T1048",
+        "T1119"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Create EDR detections for rclone.exe, renamed rclone binaries and rclone command-line flags like --config and copy",
+          "Block mega.nz, mega.io and userstorage.mega.co.nz at the proxy for server subnets",
+          "Ensure firewall logs capture bytes out per session from file servers"
+        ],
+        "identification": [
+          "Locate the rclone.conf file and record the configured remote type, endpoint and account",
+          "Extract the full rclone command line to see which share paths were copied",
+          "Hunt for renamed rclone binaries by hash and by the rclone-specific user-agent in proxy logs",
+          "Total bytes sent to MEGA or the remote endpoint and the time window of transfer",
+          "Look for preceding lateral movement and credential dumping on the host, which signals a ransomware operator"
+        ],
+        "containment": [
+          "Isolate the host running rclone via EDR immediately",
+          "Block the remote endpoint IPs and domains at the perimeter firewall",
+          "Disable the account that launched rclone and reset its password",
+          "Escalate to the ransomware playbook and check for encryption staging on file servers"
+        ],
+        "eradication": [
+          "Delete rclone binaries and config files from every host found in the hunt",
+          "Remove scheduled tasks or services that launch the sync tool",
+          "Rotate credentials for service accounts with access to the copied shares"
+        ],
+        "recovery": [
+          "Return isolated hosts to the network only after a clean EDR scan and rebuild if tampering is found",
+          "Build the list of exfiltrated directories for legal and extortion response planning",
+          "Engage counsel on whether to request the cloud provider to suspend the attacker account"
+        ],
+        "lessons": [
+          "Add application control blocking unsigned sync tools on servers",
+          "Alert on any server sending more than 1 GB to a cloud storage category in an hour",
+          "Review how the operator gained the access used to run rclone"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "rclone and MEGA client process execution",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Processes.process) as cmd from datamodel=Endpoint.Processes where (Processes.process_name IN (\"rclone.exe\",\"MEGAsync.exe\",\"mega-cmd*\") OR Processes.process IN (\"*--config*rclone*\",\"* copy *:*\",\"*mega:*\")) by Processes.dest Processes.user Processes.process_name"
+        },
+        {
+          "title": "Traffic to MEGA infrastructure by source",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(Web.bytes_out) as bytes_out from datamodel=Web where (Web.dest=\"*mega.nz\" OR Web.dest=\"*mega.co.nz\" OR Web.dest=\"*mega.io\" OR Web.http_user_agent=\"rclone/*\") by Web.src Web.user Web.dest _time span=1h | eval GB=round(bytes_out/1073741824,2)"
+        },
+        {
+          "title": "Sysmon file creation of rclone.conf",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode=11 TargetFilename=\"*rclone.conf\" | stats values(TargetFilename) as conf values(Image) as image by host User"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-archive-ftp-exfil",
+      "name": "Data staged in archives and sent out over FTP",
+      "summary": "Use when a host creates large 7-Zip, RAR or ZIP archives of business data and then opens FTP or FTPS sessions to an external server.",
+      "tags": [
+        "ftp",
+        "archive",
+        "staging",
+        "exfiltration"
+      ],
+      "attack": [
+        "T1560.001",
+        "T1048.003",
+        "T1074.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Deny outbound FTP (TCP 20/21) by default at the firewall except to approved partner hosts",
+          "Log archiver command lines (7z, rar, makecab, tar) via Sysmon or EDR",
+          "Keep a register of approved FTP partners with destination IPs"
+        ],
+        "identification": [
+          "Collect archiver command lines to find source paths, archive names and any password switch",
+          "Find the staging directory and record archive sizes and creation times",
+          "Identify the FTP destination IP, login username and transferred file names from firewall or IDS logs",
+          "Check the destination against the approved FTP partner register and threat intel",
+          "Determine whether the archives were split into volumes to stay under size alerts"
+        ],
+        "containment": [
+          "Block the FTP destination IP at the perimeter and on host firewalls",
+          "Isolate the staging host via EDR",
+          "Disable the account that created the archives pending review"
+        ],
+        "eradication": [
+          "Preserve and then remove the staged archives from the host",
+          "Remove FTP clients or scripts found on the host such as WinSCP portable or ftp.exe batch files",
+          "Hunt for the same archive naming pattern on other hosts"
+        ],
+        "recovery": [
+          "Reconnect the host after confirming no persistence remains",
+          "Inventory the contents of the archives from source paths to scope data exposure",
+          "Notify data owners of the directories that were archived"
+        ],
+        "lessons": [
+          "Add a correlation alert for archive creation followed by external FTP within two hours",
+          "Review why outbound FTP was permitted from this subnet",
+          "Measure total data volume sent before detection"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Archiver executions with source paths",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Processes.process) as cmd from datamodel=Endpoint.Processes where Processes.process_name IN (\"7z.exe\",\"7za.exe\",\"rar.exe\",\"winrar.exe\",\"makecab.exe\") Processes.dest=\"<host>\" by Processes.user Processes.process_name _time span=10m"
+        },
+        {
+          "title": "Outbound FTP sessions and volume",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"pan:traffic\" app IN (\"ftp\",\"ftps\") dest_zone=untrust | stats sum(bytes_sent) as bytes_out earliest(_time) as first latest(_time) as last by src_ip src_user dest_ip | eval MB=round(bytes_out/1048576,1) | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Archive creation followed by FTP from same host",
+          "phase": "lessons",
+          "spl": "index=* (sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode=1 Image IN (\"*\\\\7z.exe\",\"*\\\\rar.exe\")) OR (sourcetype=\"pan:traffic\" app=ftp) | eval h=coalesce(host,src_ip) | transaction h maxspan=2h startswith=EventCode=1 endswith=app=ftp | table h duration eventcount"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-print-based-exfil",
+      "name": "Sensitive documents printed in bulk",
+      "summary": "Use when print server or managed-print logs show a user printing unusually many pages of classified, customer or HR documents, possibly to remove them physically.",
+      "tags": [
+        "print",
+        "physical",
+        "dlp",
+        "insider"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Enable PrintService Operational log Event ID 307 on print servers with document names",
+          "Turn on secure pull printing so jobs release only at the device with a badge",
+          "Apply sensitivity labels that endpoint DLP can use to block or audit printing"
+        ],
+        "identification": [
+          "Pull print jobs for the user with document names, page counts, printer and timestamps",
+          "Compare page volume with the user's 90-day printing baseline",
+          "Classify the printed documents by opening their source files from the recorded paths",
+          "Check badge logs to confirm who released jobs at the printer",
+          "Review CCTV for the printer area if policy and Legal allow"
+        ],
+        "containment": [
+          "Restrict the user's print rights to non-sensitive queues while the review runs",
+          "Ask HR to arrange recovery of printed material from the user's desk or bag per policy",
+          "Enable DLP block-on-print for the affected labels"
+        ],
+        "eradication": [
+          "Shred recovered printouts under witnessed secure destruction",
+          "Purge retained jobs from the printer's internal storage",
+          "Remove the user's access to the source folders if not needed for their role"
+        ],
+        "recovery": [
+          "Restore standard print access once HR closes the matter",
+          "Document recovered versus unrecovered pages for the data-loss record",
+          "Confirm printer hard drives are encrypted and wiped on schedule"
+        ],
+        "lessons": [
+          "Add a weekly report of top printers of labelled documents",
+          "Evaluate watermarking printed sensitive documents with user and time",
+          "Review whether printing is necessary for the affected role"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Print jobs by user with page counts",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"WinEventLog:Microsoft-Windows-PrintService/Operational\" EventCode=307 user=\"<suspect_user>\" | rex field=Message \"Document \\d+, (?<doc>.+?) owned by\" | rex field=Message \"Pages printed: (?<pages>\\d+)\" | stats sum(pages) as pages values(doc) as docs by user printer"
+        },
+        {
+          "title": "Users printing far above their baseline",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"WinEventLog:Microsoft-Windows-PrintService/Operational\" EventCode=307 | rex field=Message \"Pages printed: (?<pages>\\d+)\" | bin _time span=1d | stats sum(pages) as pages by user _time | eventstats avg(pages) as avg by user | where pages > avg*5 AND pages > 200"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-screenshot-screen-recording",
+      "name": "Screenshots or screen recording of sensitive data",
+      "summary": "Use when EDR, DLP or VDI telemetry shows repeated screen capture or recording tools running while a user views confidential systems, or captured images appear in uploads.",
+      "tags": [
+        "screen-capture",
+        "endpoint",
+        "vdi",
+        "dlp"
+      ],
+      "attack": [
+        "T1113"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Inventory approved screen capture tools and log execution of unapproved ones via EDR",
+          "Enable screen-capture protection or watermarking on VDI sessions to sensitive apps",
+          "Configure DLP OCR scanning for images uploaded or emailed externally"
+        ],
+        "identification": [
+          "List screen capture or recording processes (Snipping Tool, OBS, ShareX, PrintScreen hooks) and their run times",
+          "Find image or video files created in the capture window and their storage locations",
+          "Correlate capture times with which sensitive application windows were in the foreground",
+          "Check whether captured files were uploaded, emailed or synced afterwards",
+          "Determine whether a phone camera was used if CCTV or witness reports exist"
+        ],
+        "containment": [
+          "Block the unapproved recording tool hash via application control",
+          "Quarantine the captured image and video files in place",
+          "Suspend the user's access to the sensitive application pending review"
+        ],
+        "eradication": [
+          "Delete captured files from the endpoint, cloud sync folders and recycle bin after preservation",
+          "Uninstall the recording software from the endpoint",
+          "Revoke the browser extension if a screenshot extension was used"
+        ],
+        "recovery": [
+          "Restore application access with watermarking enabled for the user",
+          "Confirm OCR DLP catches a test screenshot of the same screen",
+          "Record what data appeared in the captures for the privacy assessment"
+        ],
+        "lessons": [
+          "Decide whether VDI screen-capture blocking should apply to all regulated apps",
+          "Add detection for screen recorders launched on hosts with access to HR or finance systems",
+          "Review user awareness training on recording confidential screens"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Screen capture and recording tool execution",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count earliest(_time) as first latest(_time) as last from datamodel=Endpoint.Processes where Processes.process_name IN (\"obs64.exe\",\"ShareX.exe\",\"SnippingTool.exe\",\"ScreenClippingHost.exe\",\"Camtasia*.exe\",\"bdcam.exe\") Processes.user=\"<suspect_user>\" by Processes.dest Processes.process_name | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Image and video files created on host",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode=11 host=\"<host>\" TargetFilename IN (\"*.png\",\"*.jpg\",\"*.mp4\",\"*.mkv\") | stats count values(TargetFilename) as files by Image"
+        },
+        {
+          "title": "Images sent externally after capture",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=\"<suspect_user>\" All_Email.file_name IN (\"*.png\",\"*.jpg\",\"*.mp4\") by All_Email.recipient All_Email.file_name"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-departing-salesperson-customer-list",
+      "name": "Customer list exported by a departing salesperson",
+      "summary": "Use when a salesperson who has resigned or is joining a competitor exports CRM contacts, pipeline or pricing data. Covers the data side; pair with the insider departure playbook.",
+      "tags": [
+        "crm",
+        "departing-employee",
+        "customer-data",
+        "sales"
+      ],
+      "attack": [
+        "T1213",
+        "T1567"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable CRM report export and API audit logging, including Salesforce event monitoring for ReportExport",
+          "Have HR notify Security the day a resignation to a competitor is received",
+          "Restrict CRM bulk export permission to sales operations roles"
+        ],
+        "identification": [
+          "Pull CRM export, report run and API query events for the user over the 60 days before resignation",
+          "Identify which objects were exported: accounts, contacts, opportunities, price books",
+          "Check whether exported files were emailed to personal addresses or uploaded to personal cloud",
+          "Look for mobile CRM app sync to an unmanaged device",
+          "Compare export volume with peers in the same territory"
+        ],
+        "containment": [
+          "Remove the user's CRM export and report permissions immediately",
+          "Revoke CRM mobile app sessions and connected app tokens for the user",
+          "Preserve CRM event logs and the user's mailbox under legal hold"
+        ],
+        "eradication": [
+          "Have Legal send a reminder of confidentiality and non-solicitation obligations with return-of-data request",
+          "Obtain written certification that personal copies of exports have been deleted",
+          "Revoke third-party CRM integrations the user authorized, such as contact sync apps"
+        ],
+        "recovery": [
+          "Reassign the user's accounts and opportunities to other reps",
+          "Alert account managers to watch for solicitation of the exported customers",
+          "Provide Legal a timeline of exports for any trade secret claim"
+        ],
+        "lessons": [
+          "Automate CRM permission reduction when HR records a resignation",
+          "Alert on report exports over 1,000 rows by non-operations users",
+          "Review whether the export data was needed for the role"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Salesforce report exports and bulk API by user",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"sfdc:logfile\" EVENT_TYPE IN (\"ReportExport\",\"BulkApi\",\"API\") USER_ID=\"<suspect_user_id>\" | stats count sum(ROWS_PROCESSED) as rows values(REPORT_ID_DERIVED) as reports by EVENT_TYPE"
+        },
+        {
+          "title": "Exported CSV or XLSX mailed to personal domains",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=\"<suspect_user>\" All_Email.recipient IN (\"*@gmail.com\",\"*@outlook.com\",\"*@yahoo.com\",\"*@icloud.com\") All_Email.file_name IN (\"*.csv\",\"*.xlsx\") by All_Email.recipient All_Email.file_name _time"
+        },
+        {
+          "title": "Peers comparison of CRM export volume",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=\"sfdc:logfile\" EVENT_TYPE=ReportExport | stats sum(ROWS_PROCESSED) as rows by USER_ID | eventstats median(rows) as med | where rows > med*10"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-pan-found-in-logs",
+      "name": "Credit card numbers (PAN) found in application logs",
+      "summary": "Use when full primary account numbers are discovered in application, web server, debug or SIEM logs, putting those systems into PCI scope and risking exposure.",
+      "tags": [
+        "pci",
+        "pan",
+        "logging",
+        "cardholder-data"
+      ],
+      "attack": [],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Run scheduled PAN discovery scans with Luhn validation across log stores and file shares",
+          "Mask or drop PAN patterns at the log shipper before indexing",
+          "Document which teams own each application that handles card data"
+        ],
+        "identification": [
+          "Confirm matches are valid PANs by Luhn check and BIN range rather than test card numbers",
+          "Identify the application, log file, code path and release that started writing PANs",
+          "Count unique PANs and the date range they appear in the logs",
+          "List every downstream copy: SIEM indexes, log archives, backups and developer laptops",
+          "Determine who had read access to the affected log stores during the window"
+        ],
+        "containment": [
+          "Hot-fix or roll back the application release so it stops logging PANs",
+          "Restrict access to the affected log indexes to the incident team",
+          "Pause log forwarding of the affected source to third-party tools"
+        ],
+        "eradication": [
+          "Delete or mask PANs in Splunk using delete-capable role and document the search used",
+          "Purge PANs from log archives, S3 buckets and backup copies within retention constraints",
+          "Remove debug logging flags that captured request bodies"
+        ],
+        "recovery": [
+          "Re-run PAN discovery to confirm zero valid PANs remain in all copies",
+          "Re-enable log forwarding with masking rules active",
+          "Brief the PCI QSA or internal assessor on the scope change and remediation"
+        ],
+        "lessons": [
+          "Add a CI test that fails builds when card fields are passed to the logger",
+          "Add a Splunk alert for Luhn-valid 16-digit strings in any non-PCI index",
+          "Review whether tokenization can remove raw PAN from the application entirely"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Candidate PAN patterns in application indexes",
+          "phase": "identification",
+          "spl": "index=<app_index> earliest=-30d | regex _raw=\"\\b(?:4\\d{3}|5[1-5]\\d{2}|3[47]\\d{2}|6011)[ -]?\\d{4}[ -]?\\d{4}[ -]?\\d{1,4}\\b\" | stats count earliest(_time) as first latest(_time) as last by sourcetype source host | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Who searched the affected index",
+          "phase": "identification",
+          "spl": "index=_audit action=search info=granted search=\"*<app_index>*\" | stats count earliest(_time) as first latest(_time) as last by user | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Verify PANs no longer arriving after the fix",
+          "phase": "recovery",
+          "spl": "index=<app_index> earliest=-24h | regex _raw=\"\\b(?:4\\d{3}|5[1-5]\\d{2})\\d{12}\\b\" | timechart span=1h count"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-data-on-paste-site",
+      "name": "Company data posted on a paste site",
+      "summary": "Use when monitoring or a tip shows internal data, credentials, config files or customer records posted to Pastebin, GitHub Gist, Ghostbin or a similar paste service.",
+      "tags": [
+        "paste-site",
+        "leak",
+        "threat-intel",
+        "takedown"
+      ],
+      "attack": [
+        "T1567"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Subscribe to a paste-site monitoring feed keyed on company domains, IP ranges and unique internal strings",
+          "Keep takedown contacts and abuse forms for the main paste services on file",
+          "Pre-approve with Legal who may download and handle leaked data"
+        ],
+        "identification": [
+          "Capture the paste URL, author handle, post time and full content to evidence storage",
+          "Classify the content: credentials, source code, customer PII, network configs or internal docs",
+          "Trace the content to its internal source system by unique field names or record IDs",
+          "Check whether the paste author has posted other company data under the same handle",
+          "Determine whether credentials in the paste are valid and recently used"
+        ],
+        "containment": [
+          "Submit a takedown request to the paste service with the evidence reference",
+          "Reset every credential or API key that appears in the paste",
+          "Block the source of the data if an active compromise path is identified"
+        ],
+        "eradication": [
+          "Close the access path that produced the leaked data, such as an exposed endpoint or compromised account",
+          "Search for mirrors of the paste on other paste sites and request their removal",
+          "Remove the leaked data from the internal location it was copied from if it was overshared"
+        ],
+        "recovery": [
+          "Confirm the paste and mirrors are removed",
+          "Monitor for reuse of the leaked credentials in authentication logs for 30 days",
+          "Pass the record count and data types to Privacy for notification analysis"
+        ],
+        "lessons": [
+          "Add the paste's unique strings to the monitoring keyword list",
+          "Measure time from paste publication to detection and takedown",
+          "Review why the leaked data was accessible to whoever posted it"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Use of leaked credentials after paste publication",
+          "phase": "recovery",
+          "spl": "| tstats summariesonly=false count values(Authentication.src) as src from datamodel=Authentication where Authentication.user IN (\"<leaked_user1>\",\"<leaked_user2>\") by Authentication.user Authentication.action Authentication.app _time span=1h"
+        },
+        {
+          "title": "Internal visits to the paste URL",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count earliest(_time) as first from datamodel=Web where Web.url=\"*<paste_id>*\" by Web.user Web.src Web.http_method | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-leak-site-advertised",
+      "name": "Stolen company data advertised on a forum or leak site",
+      "summary": "Use when threat intel reports company data offered for sale on a criminal forum or listed on a ransomware leak site, with or without a known intrusion.",
+      "tags": [
+        "leak-site",
+        "dark-web",
+        "extortion",
+        "threat-intel"
+      ],
+      "attack": [
+        "T1657"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Contract a threat intel provider that monitors leak sites and forums for the company name and brands",
+          "Pre-agree an executive decision group for extortion and leak response",
+          "Retain outside counsel and a breach coach who can engage with law enforcement"
+        ],
+        "identification": [
+          "Collect the listing screenshots, claimed data volume, sample files and asking price via the intel provider",
+          "Validate sample records against internal systems to confirm the data is genuine and current",
+          "Identify which system or third party the sample most likely came from by field layout and record IDs",
+          "Check whether the listing reuses data from an older known breach or a vendor breach",
+          "Search EDR and firewall logs for exfiltration indicators matching the claimed date range"
+        ],
+        "containment": [
+          "Launch the intrusion investigation for the identified source system if not already open",
+          "Reset credentials for any accounts shown in the samples",
+          "Avoid any direct contact with the seller except through counsel and approved negotiators"
+        ],
+        "eradication": [
+          "Close the confirmed access path such as a vulnerable appliance or compromised vendor account",
+          "Hunt for persistence on the source systems identified in the investigation",
+          "Rotate secrets and keys the dataset would let an attacker reuse"
+        ],
+        "recovery": [
+          "Prepare customer, regulator and press statements with counsel ahead of any public dump",
+          "Track the listing for status changes such as price drops or full publication",
+          "Offer credit monitoring or identity protection where data subjects are affected"
+        ],
+        "lessons": [
+          "Record how the company learned of the listing and how much earlier internal telemetry could have shown it",
+          "Add detections for the exfil method confirmed in the investigation",
+          "Review third-party data sharing if the source turned out to be a vendor"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Large outbound transfers in the claimed exfil window",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(All_Traffic.bytes_out) as bytes_out from datamodel=Network_Traffic where All_Traffic.direction=outbound earliest=<start> latest=<end> by All_Traffic.src All_Traffic.dest | where bytes_out > 1073741824 | sort - bytes_out"
+        },
+        {
+          "title": "Access to the suspected source system by unusual accounts",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count earliest(_time) as first from datamodel=Authentication where Authentication.dest=\"<source_system>\" Authentication.action=success by Authentication.user Authentication.src | convert ctime(first) | sort first"
+        },
+        {
+          "title": "Logins by accounts shown in the leak samples",
+          "phase": "containment",
+          "spl": "index=* sourcetype=\"azure:aad:signin\" userPrincipalName IN (\"<sample_user1>\",\"<sample_user2>\") | stats count values(ipAddress) as ips values(location.countryOrRegion) as countries by userPrincipalName status.errorCode"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-exposed-misconfigured-backup",
+      "name": "Data found exposed in a misconfigured backup",
+      "summary": "Use when a researcher or scan finds company backups exposed to the internet: a public S3 bucket, open NAS share, unauthenticated Elasticsearch snapshot or similar.",
+      "tags": [
+        "misconfiguration",
+        "backup",
+        "exposure",
+        "cloud-storage"
+      ],
+      "attack": [
+        "T1530"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Run continuous external attack-surface scans for open storage buckets, NAS and database ports",
+          "Enable access logging on backup buckets and storage accounts",
+          "Publish a security.txt contact so researchers can report exposures"
+        ],
+        "identification": [
+          "Confirm the exposed location, its owner, and when it became publicly reachable from config change history",
+          "Inventory the backup contents: databases, VM images, file shares and their data classes",
+          "Review storage access logs for downloads by unknown IPs during the exposure window",
+          "Establish whether the reporter downloaded data and what they retained",
+          "Check search engines like Shodan-style indexes for the exposure being catalogued"
+        ],
+        "containment": [
+          "Remove public access: block public ACLs, disable anonymous listing or close the firewall rule",
+          "Preserve the storage access logs and config history before further changes",
+          "Rotate credentials, keys and secrets contained in the backup files"
+        ],
+        "eradication": [
+          "Correct the infrastructure-as-code or template that set the public setting",
+          "Enable account-level public access blocks for all backup storage",
+          "Delete stale backup copies that should have been purged by retention"
+        ],
+        "recovery": [
+          "Verify from an external host that the location is no longer reachable",
+          "Confirm backup jobs still write and restore correctly with the new access policy",
+          "Provide Privacy with access-log evidence of whether third parties downloaded data"
+        ],
+        "lessons": [
+          "Add a policy-as-code check rejecting public storage on backup resources",
+          "Track exposure duration and whether internal tooling or an outsider found it",
+          "Thank and if applicable reward the researcher under the disclosure program"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "S3 access to the exposed bucket by external principals",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"aws:s3:accesslogs\" bucket_name=\"<bucket>\" operation IN (\"REST.GET.OBJECT\",\"REST.GET.BUCKET\") | where NOT cidrmatch(\"10.0.0.0/8\", remote_ip) | stats count sum(bytes_sent) as bytes dc(key) as objects by remote_ip requester"
+        },
+        {
+          "title": "When the bucket policy or ACL became public",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"aws:cloudtrail\" eventName IN (\"PutBucketAcl\",\"PutBucketPolicy\",\"DeletePublicAccessBlock\",\"PutBucketPublicAccessBlock\") requestParameters.bucketName=\"<bucket>\" | table _time userIdentity.arn eventName sourceIPAddress"
+        },
+        {
+          "title": "Remaining public storage resources",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=\"aws:config:notification\" resourceType=\"AWS::S3::Bucket\" configRuleName=\"s3-bucket-public-read-prohibited\" complianceType=NON_COMPLIANT | stats latest(_time) as last by resourceId awsAccountId"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-email-wrong-recipient",
+      "name": "Sensitive data sent to the wrong recipient by mistake",
+      "summary": "Use when an employee reports, or a recipient tells you, that an email or file containing personal or confidential data was sent to an unintended person, often via autocomplete.",
+      "tags": [
+        "misdirected-email",
+        "accidental",
+        "privacy",
+        "email"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Give staff a one-click way to report misdirected email to the privacy team",
+          "Enable external-recipient warnings and delayed send for mail with attachments",
+          "Prepare a template deletion-confirmation letter for unintended recipients"
+        ],
+        "identification": [
+          "Get the message ID, recipients, attachments and send time from message trace",
+          "Determine whether the unintended recipient is internal, a known partner or a member of the public",
+          "Catalogue the personal data in the message: number of individuals and data categories",
+          "Check whether the recipient opened or forwarded the message if read receipts or partner cooperation allow"
+        ],
+        "containment": [
+          "Recall the message if the recipient is in the same tenant and it is unread",
+          "Contact the unintended recipient by phone and request deletion and non-disclosure",
+          "Obtain a signed or emailed confirmation of deletion from the recipient",
+          "Expire any shared links included in the message"
+        ],
+        "eradication": [
+          "Disable the autocomplete entry that caused the misaddress in the sender's mailbox",
+          "Confirm the recipient has also emptied deleted-items and any mobile copies",
+          "Remove the misdirected attachment from the sender Sent Items if retention policy permits"
+        ],
+        "recovery": [
+          "Resend the content to the correct recipient using encrypted mail",
+          "Log the event in the privacy incident register with risk rating",
+          "Route to the notification-decision workflow if the risk to individuals is not low"
+        ],
+        "lessons": [
+          "Track misdirected-email volume by department to target coaching",
+          "Evaluate add-ins that confirm external recipients before sending attachments",
+          "Review whether the data should have been sent by email at all"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Message trace for the misdirected email",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(All_Email.recipient) as recipients values(All_Email.file_name) as files from datamodel=Email where All_Email.src_user=\"<sender>\" All_Email.subject=\"*<subject_fragment>*\" by All_Email.message_id _time"
+        },
+        {
+          "title": "Recall and purge actions taken",
+          "phase": "containment",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation IN (\"MessageRecall\",\"SoftDelete\",\"HardDelete\",\"New-ComplianceSearchAction\") | search \"<message_id>\" OR Parameters{}.Value=\"*<subject_fragment>*\" | table _time UserId Operation ResultStatus"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-public-sharing-link",
+      "name": "Sensitive file shared publicly with an anyone-with-the-link URL",
+      "summary": "Use when a confidential document in SharePoint, OneDrive, Google Drive or Box is found shared via an anonymous link, and you need to know who accessed it and close it.",
+      "tags": [
+        "sharing-link",
+        "sharepoint",
+        "google-drive",
+        "oversharing"
+      ],
+      "attack": [
+        "T1530"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Set tenant default sharing to specific people and require expiry on anonymous links",
+          "Log AnonymousLinkCreated and AnonymousLinkUsed events into the SIEM",
+          "Label confidential libraries so DLP blocks anonymous links on them"
+        ],
+        "identification": [
+          "Identify the file, owner, link creation time and link type from the sharing audit log",
+          "List every anonymous link access event with source IP and user agent",
+          "Check whether the link was posted somewhere public by searching for the link token externally",
+          "Determine the data classification and number of individuals affected by the file contents"
+        ],
+        "containment": [
+          "Delete the anonymous link and any other external links on the file",
+          "Move the file to a restricted library if the owner overshared the parent folder",
+          "Block anonymous link creation for the owner's site until the review closes"
+        ],
+        "eradication": [
+          "Review other files the same owner shared anonymously and revoke unnecessary links",
+          "Remove external guest accounts added to the site that do not need access",
+          "Apply a sensitivity label that prevents external sharing on the file"
+        ],
+        "recovery": [
+          "Re-share the file with named external recipients if there is a business need",
+          "Confirm the old link returns an access error",
+          "Record external access counts for the privacy assessment"
+        ],
+        "lessons": [
+          "Report monthly on anonymous links to labelled content",
+          "Enforce a maximum anonymous link lifetime tenant-wide",
+          "Coach the owner's team on secure external collaboration options"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Anonymous link creation and use for the file",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation IN (\"AnonymousLinkCreated\",\"AnonymousLinkUsed\",\"SharingSet\") ObjectId=\"*<file_name>*\" | table _time Operation UserId ClientIP UserAgent ObjectId"
+        },
+        {
+          "title": "Google Drive files visible to anyone with the link",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=\"gws:reports:drive\" event.name=change_visibility event.parameters.visibility IN (\"people_with_link\",\"public_on_the_web\") actor.email=\"<owner>\" | stats latest(_time) as changed values(event.parameters.doc_title) as docs by actor.email"
+        },
+        {
+          "title": "Owners with many anonymous links",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation=AnonymousLinkCreated earliest=-30d | stats count dc(ObjectId) as files by UserId | sort - files | head 25"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-dns-exfil-data-loss",
+      "name": "Data loss through DNS tunnelling: scoping what left",
+      "summary": "Use after DNS tunnelling is detected to estimate how much data was encoded in queries, which host and files were involved, and what must be treated as lost.",
+      "tags": [
+        "dns",
+        "tunnelling",
+        "exfiltration",
+        "network"
+      ],
+      "attack": [
+        "T1048.003",
+        "T1071.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Retain full DNS query logs from resolvers for at least 90 days",
+          "Force all endpoints to use internal resolvers and block outbound UDP and TCP 53 elsewhere",
+          "Record baseline query length and entropy per domain for comparison"
+        ],
+        "identification": [
+          "Isolate the tunnelling domain and sum total query name bytes per day to estimate data volume",
+          "Decode a sample of subdomain labels to determine encoding (base32, base64, hex) and content type",
+          "Identify the process on the source host that generated the queries from Sysmon Event ID 22",
+          "Correlate with file reads on the host just before query bursts to name the files exfiltrated",
+          "Check TXT and NULL record responses for inbound command or file transfer"
+        ],
+        "containment": [
+          "Sinkhole the tunnelling domain on internal resolvers",
+          "Isolate the source host via EDR",
+          "Block direct DNS to external resolvers at the firewall if any bypass was used"
+        ],
+        "eradication": [
+          "Remove the tunnelling client or implant and its persistence from the host",
+          "Hunt for the same domain or encoding pattern across all resolver logs",
+          "Rotate credentials cached on the host"
+        ],
+        "recovery": [
+          "Restore the host from a clean image after evidence collection",
+          "Document the estimated bytes exfiltrated and the files mapped to them",
+          "Provide the data scope to Privacy and data owners"
+        ],
+        "lessons": [
+          "Add a detection on average subdomain length above 40 characters per domain",
+          "Evaluate a protective DNS service that blocks tunnelling patterns",
+          "Measure how long tunnelling ran before detection"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Estimated bytes encoded in queries per domain",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"stream:dns\" query=\"*.<tunnel_domain>\" | eval sub=replace(query, \"\\.<tunnel_domain>$\", \"\") | eval qlen=len(sub) | bin _time span=1d | stats sum(qlen) as encoded_bytes count dc(sub) as uniq by src_ip _time"
+        },
+        {
+          "title": "Process issuing the tunnelling queries",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode=22 QueryName=\"*.<tunnel_domain>\" | stats count values(Image) as image by host User"
+        },
+        {
+          "title": "Domains with long high-entropy subdomains",
+          "phase": "lessons",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Resolution where DNS.message_type=QUERY by DNS.query DNS.src | eval label=mvindex(split('DNS.query',\".\"),0) | eval l=len(label) | where l>40 | rex field=DNS.query \"(?<domain>[^.]+\\.[^.]+)$\" | stats count dc(DNS.query) as uniq avg(l) as avg_len by domain DNS.src"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-steganography-suspicion",
+      "name": "Suspected data hidden in images (steganography)",
+      "summary": "Use when images leaving the network are suspiciously large for their dimensions, a stego tool is found on a host, or intel suggests data is being smuggled inside media files.",
+      "tags": [
+        "steganography",
+        "images",
+        "covert-channel",
+        "forensics"
+      ],
+      "attack": [
+        "T1027.003",
+        "T1001.002"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Maintain EDR detections for known stego tools such as steghide, OpenStego and outguess",
+          "Retain copies of outbound email attachments for at least 30 days for forensic review",
+          "Have a forensic workstation with stegdetect, binwalk and exiftool ready"
+        ],
+        "identification": [
+          "Collect the suspect image files and their sender, destination and timestamps",
+          "Compare file size against expected size for the image dimensions and format",
+          "Run binwalk and stegdetect to look for appended archives or embedded payloads",
+          "Check the sender's host for stego tool execution and recently accessed source files",
+          "Look for a pattern of repeated images sent to the same external recipient"
+        ],
+        "containment": [
+          "Hold further outbound images from the sender to the recipient at the mail gateway",
+          "Block the stego tool hash with application control",
+          "Preserve the original images with hashes before any analysis modifies them"
+        ],
+        "eradication": [
+          "Remove stego tools and staged carrier images from the host",
+          "Revoke access to the source data the extracted payload came from",
+          "Strip metadata and re-encode images at the gateway if the channel was image upload"
+        ],
+        "recovery": [
+          "Release held legitimate images after review",
+          "Document extracted payload content for data-loss scope",
+          "Close the case as unfounded if analysis finds no hidden content, recording the reasons"
+        ],
+        "lessons": [
+          "Add a detection for image attachments whose size-to-pixel ratio is an outlier",
+          "Decide whether content disarm and reconstruction should apply to outbound images",
+          "Review the time spent and false-positive rate of stego investigations"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Stego tool execution on endpoints",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Processes.process) as cmd from datamodel=Endpoint.Processes where Processes.process_name IN (\"steghide*\",\"openstego*\",\"outguess*\",\"snow.exe\",\"stegano*\") by Processes.dest Processes.user"
+        },
+        {
+          "title": "Large image attachments sent to a recurring external recipient",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count sum(All_Email.file_size) as total from datamodel=Email where All_Email.file_name IN (\"*.png\",\"*.jpg\",\"*.bmp\") All_Email.src_user=\"<suspect_user>\" by All_Email.recipient | where count > 10"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-ai-chatbot-confidential-paste",
+      "name": "Confidential data pasted into a public AI chatbot",
+      "summary": "Use when DLP, browser telemetry or a self-report shows an employee pasted source code, customer data or confidential documents into a public generative AI service.",
+      "tags": [
+        "generative-ai",
+        "shadow-it",
+        "dlp",
+        "browser"
+      ],
+      "attack": [
+        "T1567"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Publish an AI acceptable-use policy naming approved enterprise AI tools",
+          "Deploy browser or endpoint DLP that inspects paste and upload events to AI domains",
+          "Keep a list of AI providers' data-retention and deletion request procedures"
+        ],
+        "identification": [
+          "Retrieve the DLP or browser event showing the AI domain, content snippet and data match",
+          "Ask the user which conversation contained the data and whether a personal or enterprise account was used",
+          "Classify the pasted content: source code, secrets, customer PII, financials or legal documents",
+          "Check whether the AI service account had history or training opt-out enabled",
+          "Determine whether other users pasted similar data to the same service"
+        ],
+        "containment": [
+          "Have the user delete the conversation and history in the AI service",
+          "Submit a data deletion request to the AI provider where the account terms allow",
+          "Rotate any secrets or API keys included in the paste"
+        ],
+        "eradication": [
+          "Block the unapproved AI domain at the proxy or apply paste-blocking for labelled content",
+          "Remove unapproved AI browser extensions from the user's browser profile",
+          "Redirect the user to the approved enterprise AI tool"
+        ],
+        "recovery": [
+          "Confirm with the user that the conversation no longer appears in history",
+          "Record the incident and data types in the privacy register",
+          "Escalate to Privacy if customer personal data was included"
+        ],
+        "lessons": [
+          "Measure AI-domain DLP hits monthly to track adoption of approved tools",
+          "Include AI paste risks with real examples in security awareness training",
+          "Review whether the approved AI tool meets the business need that drove shadow use"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Uploads and posts to generative AI domains",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count sum(Web.bytes_out) as bytes_out from datamodel=Web where Web.http_method=POST Web.dest IN (\"chat.openai.com\",\"chatgpt.com\",\"gemini.google.com\",\"claude.ai\",\"copilot.microsoft.com\",\"*.perplexity.ai\") by Web.user Web.dest _time span=1h | where bytes_out > 20000"
+        },
+        {
+          "title": "Endpoint DLP paste-to-browser matches",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Workload=EndpointDlp Operation IN (\"DLPRuleMatch\") EnforcementMode=* | spath TargetDomain output=domain | search domain IN (\"*openai*\",\"*gemini*\",\"*claude*\",\"*copilot*\") | stats count values(PolicyMatchInfo.RuleName) as rule by UserId domain"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-phi-emailed-unencrypted",
+      "name": "Protected health information emailed without encryption",
+      "summary": "Use when PHI such as patient records, lab results or claims data is sent by unencrypted email to an external party, triggering a HIPAA breach risk assessment.",
+      "tags": [
+        "phi",
+        "hipaa",
+        "email",
+        "healthcare"
+      ],
+      "attack": [],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Configure the mail gateway to force TLS or portal encryption for messages matching PHI patterns",
+          "Train clinical and billing staff on the encrypt keyword or button for outbound PHI",
+          "Name the HIPAA Privacy Officer as the owner of PHI disclosure cases"
+        ],
+        "identification": [
+          "Confirm whether the message was sent over enforced TLS, opportunistic TLS or in clear text",
+          "Identify the recipient and whether they are a covered entity, business associate or individual",
+          "Count patients and PHI elements: names, MRNs, diagnoses, insurance IDs",
+          "Check if the recipient was the patient themselves requesting their own records"
+        ],
+        "containment": [
+          "Request deletion from the recipient and obtain written attestation",
+          "Turn on forced encryption for the sender's department for PHI matches",
+          "Preserve the message and gateway logs as part of the HIPAA incident file"
+        ],
+        "eradication": [
+          "Remove the PHI extract from the sender's local drive and shared folders after preservation",
+          "Correct the workflow that relied on emailing PHI, such as a referral process",
+          "Remove the external address from distribution lists if it was added in error"
+        ],
+        "recovery": [
+          "Hand the four-factor risk assessment inputs to the Privacy Officer",
+          "Log the disclosure in the HIPAA accounting of disclosures if required",
+          "Confirm the department's next PHI sends are encrypted"
+        ],
+        "lessons": [
+          "Count unencrypted PHI sends caught per quarter",
+          "Move recurring PHI exchanges to a secure portal or Direct messaging",
+          "Review whether TLS enforcement lists cover all regular healthcare partners"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Outbound messages with PHI matches and TLS status",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"cisco:esa:textmail\" OR sourcetype=\"MSExchange:*:MessageTracking\" dlp_policy=\"*HIPAA*\" | stats count values(tls_status) as tls values(recipient) as rcpt by sender message_id"
+        },
+        {
+          "title": "PHI DLP matches by department sender",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation=DLPRuleMatch PolicyDetails{}.PolicyName=\"*HIPAA*\" | spath ExchangeMetaData.To{} output=rcpt | where NOT like(rcpt, \"%@<org_domain>\") | stats count by UserId"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-encrypted-archive-new-domain",
+      "name": "Password-protected archive sent to a newly registered domain",
+      "summary": "Use when a password-protected ZIP, 7z or RAR that DLP cannot inspect is emailed or uploaded to a domain registered in the last few weeks or never seen before in your traffic.",
+      "tags": [
+        "encrypted-archive",
+        "newly-registered-domain",
+        "dlp-evasion",
+        "email"
+      ],
+      "attack": [
+        "T1560.001",
+        "T1048"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enrich proxy and mail logs with domain registration age from WHOIS or a threat intel feed",
+          "Flag or quarantine encrypted archives at the mail gateway when recipients are first-seen domains",
+          "Track first-seen domains per user in a lookup table"
+        ],
+        "identification": [
+          "Record the archive name, size, hash and whether the gateway marked it as encrypted",
+          "Look up the destination domain's registration date, registrar and hosting",
+          "Check whether anyone else in the organization has ever communicated with the domain",
+          "Locate the archive creation event on the sender's host to find the files it contains",
+          "Ask the sender's manager whether the recipient is a legitimate new partner"
+        ],
+        "containment": [
+          "Quarantine further encrypted archives from the sender pending review",
+          "Block the new domain at the mail gateway and proxy",
+          "Retrieve the archive password from the user or host artifacts to inspect contents"
+        ],
+        "eradication": [
+          "Remove staged archives from the sender's host",
+          "Disable the account if the sender is unknown or the account appears compromised",
+          "Revoke mailbox forwarding rules to the new domain if present"
+        ],
+        "recovery": [
+          "Unblock the domain if it is confirmed as a legitimate partner and add to the partner list",
+          "Catalog the archive's contents for data-loss scoping",
+          "Notify data owners if confidential content was sent"
+        ],
+        "lessons": [
+          "Add a detection for encrypted attachments to domains younger than 30 days",
+          "Require sanctioned file-transfer tools for sending encrypted data externally",
+          "Review the false-positive rate of first-seen domain alerts"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Encrypted archive attachments to external recipients",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.file_name IN (\"*.zip\",\"*.7z\",\"*.rar\") All_Email.recipient=\"*@<new_domain>\" by All_Email.src_user All_Email.file_name All_Email.file_hash _time"
+        },
+        {
+          "title": "First-seen recipient domains for the organization",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false earliest(_time) as first count from datamodel=Email where All_Email.recipient=\"*@*\" by All_Email.recipient | rex field=All_Email.recipient \"@(?<domain>.+)$\" | stats min(first) as first sum(count) as msgs by domain | where first > relative_time(now(), \"-7d\")"
+        },
+        {
+          "title": "Uploads to the new domain via web",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false sum(Web.bytes_out) as bytes_out from datamodel=Web where Web.dest=\"*<new_domain>\" by Web.user Web.src Web.url"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-sync-client-unmanaged-device",
+      "name": "Corporate files synced to an unmanaged device",
+      "summary": "Use when OneDrive, Google Drive or Box sync clients on a personal, non-enrolled computer are downloading corporate libraries outside device management and DLP controls.",
+      "tags": [
+        "unmanaged-device",
+        "byod",
+        "sync-client",
+        "conditional-access"
+      ],
+      "attack": [
+        "T1530",
+        "T1078"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Require compliant or hybrid-joined devices for sync clients through conditional access",
+          "Restrict OneDrive sync to domain-joined machines using the tenant GUID allowlist",
+          "Log device ID and compliance state on every file sync event"
+        ],
+        "identification": [
+          "List file sync events where the device ID is not in the MDM or Entra device inventory",
+          "Identify the user, device name, OS and the libraries being synced",
+          "Count files and total size synced to the unmanaged device",
+          "Determine whether the user has an approved BYOD exception",
+          "Check whether the account was signed in from an unusual location at the same time"
+        ],
+        "containment": [
+          "Revoke the user's refresh tokens to stop the unmanaged sync session",
+          "Apply a conditional access policy blocking sync from non-compliant devices for the user",
+          "Remove the device from the user's registered devices in Entra ID"
+        ],
+        "eradication": [
+          "Ask the user to unlink the sync client and delete local copies, with written confirmation",
+          "Issue a remote selective wipe if the device was enrolled with app protection only",
+          "Reset the password if the device or sign-in could be attacker controlled"
+        ],
+        "recovery": [
+          "Provide the user a managed device or web-only access for remote work",
+          "Verify the block policy has not broken sync on managed devices",
+          "Record the synced libraries and data classes in the case"
+        ],
+        "lessons": [
+          "Track how many unmanaged sync sessions occur per month tenant-wide",
+          "Close gaps where conditional access excluded sync client app IDs",
+          "Review the BYOD exception process for clarity"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "File sync events from unmanaged devices",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation IN (\"FileSyncDownloadedFull\",\"FileSyncDownloadedPartial\",\"FileDownloaded\") IsManagedDevice=false | stats count dc(ObjectId) as files values(SiteUrl) as sites by UserId DeviceDisplayName ClientIP"
+        },
+        {
+          "title": "Sign-ins from non-compliant devices for sync app",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"azure:aad:signin\" appDisplayName=\"*OneDrive*\" deviceDetail.isCompliant=false | stats count values(ipAddress) as ips values(deviceDetail.displayName) as devices by userPrincipalName"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-mobile-app-sync",
+      "name": "Corporate data synced by a mobile app to personal storage",
+      "summary": "Use when a mobile email, contacts or file app on an employee phone copies corporate mail, contacts or files out of the managed container into personal apps or cloud backup.",
+      "tags": [
+        "mobile",
+        "mdm",
+        "app-protection",
+        "contacts"
+      ],
+      "attack": [
+        "T1636",
+        "T1530"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Apply mobile app protection policies blocking save-as and copy to unmanaged apps",
+          "Block legacy ActiveSync clients that cannot enforce app protection",
+          "Disable contact sync from managed Outlook to native contacts where not needed"
+        ],
+        "identification": [
+          "Identify the mobile app, device model and OS from mailbox device partnership records",
+          "Check whether the app is a third-party mail client that stores credentials or mail on vendor servers",
+          "Review MDM and app protection logs for blocked or allowed data transfers",
+          "Determine whether contacts or calendar data were synced to a personal iCloud or Google account",
+          "Confirm whether the device is enrolled and compliant"
+        ],
+        "containment": [
+          "Block the third-party app's ActiveSync device ID or user agent for the mailbox",
+          "Issue a selective wipe of corporate data on the device through MDM",
+          "Revoke the app's OAuth consent if it uses Graph or IMAP tokens"
+        ],
+        "eradication": [
+          "Remove the unapproved app's access tenant-wide if it syncs mail to vendor cloud",
+          "Have the user delete synced corporate contacts from the personal account",
+          "Reset the mailbox password if credentials were stored by the third-party service"
+        ],
+        "recovery": [
+          "Re-enroll the device with the approved managed mail app",
+          "Verify app protection blocks save-to-personal-storage on a test device",
+          "Record data types synced for the privacy log"
+        ],
+        "lessons": [
+          "Inventory third-party mobile mail clients still connecting to the tenant",
+          "Add an alert for new device partnerships using unapproved user agents",
+          "Review whether contact sync exposure of customer data warrants a policy change"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Mailbox device partnerships by app and user agent",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation IN (\"Set-CASMailbox\",\"New-MobileDevice\",\"MailItemsAccessed\") ClientInfoString=\"*ActiveSync*\" | stats count values(ClientInfoString) as clients latest(_time) as last by UserId"
+        },
+        {
+          "title": "Sign-ins from mobile clients without app protection",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"azure:aad:signin\" clientAppUsed IN (\"Exchange ActiveSync\",\"Mobile Apps and Desktop clients\") deviceDetail.operatingSystem IN (\"iOS*\",\"Android*\") NOT appDisplayName=\"Microsoft Outlook\" | stats count values(appDisplayName) as apps by userPrincipalName"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-egress-cost-spike",
+      "name": "Unexplained spike in cloud egress charges",
+      "summary": "Use when cloud billing or cost anomaly alerts show a sudden rise in data transfer out charges that no team can explain, which can indicate bulk data exfiltration or abused resources.",
+      "tags": [
+        "cloud-cost",
+        "egress",
+        "aws",
+        "anomaly"
+      ],
+      "attack": [
+        "T1537",
+        "T1048"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable cost anomaly detection on data transfer line items per account and service",
+          "Enable VPC flow logs and S3 server access logs on data stores",
+          "Tag resources with an owner so cost anomalies can be routed"
+        ],
+        "identification": [
+          "Break down the egress charge by account, region, service and resource ID in Cost Explorer",
+          "Map the top resources to owners using tags and ask whether a migration or release explains it",
+          "Pull VPC flow logs for the top resources to find destination IPs and byte counts",
+          "Check S3 access logs and CloudTrail for large GetObject or snapshot sharing activity",
+          "Check for cross-account snapshot or AMI shares to unknown accounts"
+        ],
+        "containment": [
+          "Restrict security groups or bucket policies on the top egress resource to known destinations",
+          "Revoke cross-account snapshot or AMI permissions to unknown accounts",
+          "Disable access keys tied to the transfer activity"
+        ],
+        "eradication": [
+          "Terminate unauthorized instances or functions generating the traffic",
+          "Remove unknown IAM principals or roles created during the period",
+          "Close public endpoints that should not exist on the resource"
+        ],
+        "recovery": [
+          "Confirm egress returns to baseline in the next billing hour",
+          "Open a billing case with the provider if charges result from confirmed abuse",
+          "Document data stores that were the source of egress for the privacy review"
+        ],
+        "lessons": [
+          "Set per-account budgets with alerts on data transfer spend",
+          "Add egress volume thresholds to security alerting, not only finance reports",
+          "Review why owner tags were missing on resources involved"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Top egress talkers from VPC flow logs",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"aws:cloudwatchlogs:vpcflow\" action=ACCEPT | where NOT cidrmatch(\"10.0.0.0/8\", dest_ip) AND NOT cidrmatch(\"172.16.0.0/12\", dest_ip) | stats sum(bytes) as bytes by src_ip dest_ip interface_id | eval GB=round(bytes/1073741824,2) | sort - GB | head 20"
+        },
+        {
+          "title": "Snapshot and AMI sharing changes",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"aws:cloudtrail\" eventName IN (\"ModifySnapshotAttribute\",\"ModifyImageAttribute\",\"ModifyDBSnapshotAttribute\") | spath requestParameters | table _time userIdentity.arn eventName requestParameters awsRegion"
+        },
+        {
+          "title": "Large S3 GetObject volume by requester",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"aws:s3:accesslogs\" operation=\"REST.GET.OBJECT\" | stats sum(bytes_sent) as bytes dc(key) as objects by bucket_name requester remote_ip | where bytes > 10737418240"
+        }
+      ]
+    },
+    {
+      "id": "lib-data-exfiltration-partner-sftp-abuse",
+      "name": "Partner SFTP account used to pull unexpected data",
+      "summary": "Use when a partner's SFTP or managed file transfer account downloads files outside its normal folders, volume or schedule, or connects from new IPs.",
+      "tags": [
+        "sftp",
+        "third-party",
+        "file-transfer",
+        "partner"
+      ],
+      "attack": [
+        "T1078",
+        "T1048"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Restrict each partner SFTP account to a chrooted folder and source IP allowlist",
+          "Forward MFT and SFTP server logs including file paths and byte counts to the SIEM",
+          "Keep partner security contacts and contract data-handling clauses on file"
+        ],
+        "identification": [
+          "List the account's sessions, source IPs, files downloaded and byte counts for 30 days",
+          "Compare the folders accessed against the account's documented integration scope",
+          "Check source IPs against the partner's registered ranges",
+          "Determine whether a permission or chroot change widened the account's view",
+          "Contact the partner security team to confirm whether the activity was theirs"
+        ],
+        "containment": [
+          "Disable the partner account or rotate its SSH key and password",
+          "Tighten the IP allowlist to the partner's confirmed ranges",
+          "Move sensitive folders out of the account's reachable path"
+        ],
+        "eradication": [
+          "Revert any permission change that exposed additional folders",
+          "Have the partner investigate their side for compromised credentials or hosts",
+          "Remove stale SFTP accounts belonging to ended integrations"
+        ],
+        "recovery": [
+          "Issue new key-based credentials to the partner after their investigation",
+          "Monitor the restored account for out-of-scope paths for two weeks",
+          "Document files taken and their data classes for contractual and privacy follow-up"
+        ],
+        "lessons": [
+          "Add alerts for partner downloads outside their designated directory",
+          "Require key-based auth and disable passwords on all partner accounts",
+          "Review contract terms for breach notification from partners"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Partner SFTP downloads by path and source IP",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"linux_secure\" OR sourcetype=\"mft:audit\" user=\"<partner_account>\" (action=download OR \"open\" \"flags READ\") | rex \"open \\\"(?<path>[^\\\"]+)\\\"\" | stats count dc(path) as files values(path) as paths by src_ip user"
+        },
+        {
+          "title": "Partner account logins from unregistered IPs",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count earliest(_time) as first from datamodel=Authentication where Authentication.user=\"<partner_account>\" Authentication.app=sshd by Authentication.src Authentication.action | lookup partner_ranges.csv ip as Authentication.src OUTPUT partner | where isnull(partner)"
+        },
+        {
+          "title": "Outbound bytes from MFT server per session",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false sum(All_Traffic.bytes_out) as bytes_out from datamodel=Network_Traffic where All_Traffic.src=\"<mft_server>\" All_Traffic.dest_port=22 by All_Traffic.dest _time span=1h"
+        }
+      ]
+    }
+  ]
+}

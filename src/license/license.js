@@ -9,7 +9,7 @@
 //   lid          license id (opaque, for your records / revocation lists)
 //   name         licensee (person or organization)
 //   email        purchaser email
-//   plan         'pro'
+//   plan         'pro' | 'connected' (Connected = Pro + live Splunk)
 //   seats        number of analysts covered
 //   issued       YYYY-MM-DD
 //   updatesUntil YYYY-MM-DD | null — perpetual license covering builds
@@ -25,7 +25,7 @@ import { sha512 } from '@noble/hashes/sha2.js';
 ed.hashes.sha512 = sha512;
 
 export const LICENSE_PREFIX = 'TD1';
-const PLANS = new Set(['pro']);
+const PLANS = new Set(['pro', 'connected']);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function b64urlEncode(bytes) {

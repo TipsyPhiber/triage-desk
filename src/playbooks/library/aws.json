@@ -1,0 +1,1915 @@
+{
+  "category": {
+    "id": "aws",
+    "name": "AWS",
+    "description": "Incidents in Amazon Web Services accounts: IAM, S3, EC2, Lambda, KMS, networking, and organization-level abuse."
+  },
+  "playbooks": [
+    {
+      "id": "lib-aws-leaked-access-key-github",
+      "name": "AWS access key leaked in a public GitHub repository",
+      "summary": "Use when GitHub secret scanning, AWS Health (AWSCompromisedKeyQuarantine), or a researcher reports an AWS access key ID and secret committed to a public repository.",
+      "tags": [
+        "aws",
+        "iam",
+        "credential-leak",
+        "github",
+        "secrets"
+      ],
+      "attack": [
+        "T1552.001",
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable GitHub secret scanning and push protection on every org repository",
+          "Subscribe the SOC mailbox to AWS Health events for AWSCompromisedKeyQuarantine notices",
+          "Keep an inventory mapping every IAM user access key to an owner and purpose",
+          "Confirm CloudTrail management events are delivered to Splunk from all regions"
+        ],
+        "identification": [
+          "Record the leaked key ID, commit SHA, repository URL, and time the commit became public",
+          "Run aws iam get-access-key-last-used on the key ID to confirm whether it was ever used",
+          "Search CloudTrail by userIdentity.accessKeyId for every API call since the commit time",
+          "Check whether AWS attached the AWSCompromisedKeyQuarantineV2 policy to the owning user",
+          "List any CreateUser, CreateAccessKey, or CreateLoginProfile calls made with the leaked key"
+        ],
+        "containment": [
+          "Set the leaked access key to Inactive with aws iam update-access-key",
+          "Attach an explicit deny-all inline policy to the owning IAM user while scoping",
+          "Revoke any IAM users, keys, or login profiles the leaked key created",
+          "Ask the repository owner to make the repo private while the secret is purged"
+        ],
+        "eradication": [
+          "Delete the leaked access key after confirming the workload has a replacement",
+          "Rewrite repository history with git filter-repo and force-push to remove the secret",
+          "Search all org repositories and forks for other copies of the same key ID",
+          "Remove EC2 instances, Lambda functions, or roles created by the attacker in any region"
+        ],
+        "recovery": [
+          "Move the workload from a static IAM user key to an IAM role or OIDC federation",
+          "Detach the quarantine policy only after the replacement credential is verified",
+          "Monitor CloudTrail for the old key ID for 30 days to catch retry attempts"
+        ],
+        "lessons": [
+          "Measure minutes from public commit to key deactivation and set a target",
+          "Decide whether long-lived IAM user keys should be banned by SCP for this account",
+          "Add a pre-commit secret scanning hook to the developer workstation baseline"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "All API calls made with the leaked access key",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail userIdentity.accessKeyId=<leaked_key_id> | stats count min(_time) as first max(_time) as last values(eventName) as actions values(awsRegion) as regions by sourceIPAddress, userAgent | convert ctime(first) ctime(last) | sort - count"
+        },
+        {
+          "title": "Persistence created by the leaked key",
+          "phase": "containment",
+          "spl": "index=aws sourcetype=aws:cloudtrail userIdentity.accessKeyId=<leaked_key_id> eventName IN (CreateUser, CreateAccessKey, CreateLoginProfile, AttachUserPolicy, PutUserPolicy, CreateRole, RunInstances) | table _time eventName awsRegion sourceIPAddress requestParameters.userName requestParameters.roleName errorCode"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-access-key-unknown-ip",
+      "name": "AWS access key used from an unknown IP address",
+      "summary": "Use when an IAM user or role access key makes API calls from an IP, ASN, or country never seen for that identity, such as a GuardDuty UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration or anomalous behavior finding.",
+      "tags": [
+        "aws",
+        "iam",
+        "anomalous-access",
+        "credential-theft"
+      ],
+      "attack": [
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Maintain a list of corporate egress IPs, VPN ranges, and CI runner NAT addresses",
+          "Baseline normal source IPs and user agents for each IAM user with programmatic keys",
+          "Enable GuardDuty in every region so anomalous API findings are generated"
+        ],
+        "identification": [
+          "Look up the source IP's ASN and geolocation and compare with the identity's baseline",
+          "Compare the userAgent string on suspicious calls with the identity's usual SDK or CLI",
+          "Check whether the first call from the new IP was sts:GetCallerIdentity reconnaissance",
+          "Enumerate read calls such as ListBuckets, DescribeInstances, and GetSecretValue from the IP",
+          "Ask the key owner whether they travelled, used a new laptop, or ran a new pipeline"
+        ],
+        "containment": [
+          "Deactivate the access key used from the unknown IP",
+          "Add an aws:SourceIp deny condition to the user's policies for the unknown IP range",
+          "Revoke active sessions for any role the key assumed using the Revoke active sessions action"
+        ],
+        "eradication": [
+          "Find how the key left its intended host: workstation, CI variable, or config file",
+          "Rotate any secrets the attacker read via Secrets Manager or SSM Parameter Store",
+          "Delete resources created from the unknown IP after preserving their metadata"
+        ],
+        "recovery": [
+          "Issue a new access key to the legitimate owner and update the dependent service",
+          "Confirm the service runs normally with the new key and no errors in CloudTrail",
+          "Add the identity to a watchlist for new source IPs for two weeks"
+        ],
+        "lessons": [
+          "Evaluate an IP-restricted condition on programmatic users that only run from known hosts",
+          "Tune a detection for first-seen source ASN per IAM principal",
+          "Record where the key was stored and remove that storage pattern org-wide"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "First-seen source IPs per IAM principal in the last day",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail userIdentity.type IN (IAMUser, AssumedRole) earliest=-30d | stats min(_time) as first_seen count by userIdentity.arn, sourceIPAddress | where first_seen > relative_time(now(), \"-1d\") | convert ctime(first_seen) | sort - count"
+        },
+        {
+          "title": "Activity from the unknown IP across all identities",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail sourceIPAddress=<ioc_ip> | stats count values(eventName) as actions values(errorCode) as errors by userIdentity.arn, userIdentity.accessKeyId, userAgent, awsRegion"
+        },
+        {
+          "title": "GuardDuty credential anomaly findings",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudwatch:guardduty (detail.type=\"UnauthorizedAccess:IAMUser/*\" OR detail.type=\"*AnomalousBehavior*\") | table _time detail.type detail.severity detail.resource.accessKeyDetails.userName detail.service.action.awsApiCallAction.remoteIpDetails.ipAddressV4"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-root-account-login",
+      "name": "AWS root account console sign-in",
+      "summary": "Use when CloudTrail shows a ConsoleLogin or API call by the root user of any account, which should almost never happen outside break-glass procedures.",
+      "tags": [
+        "aws",
+        "root-account",
+        "console",
+        "privileged-access"
+      ],
+      "attack": [
+        "T1078.004"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Store root credentials and hardware MFA in a sealed break-glass process with named custodians",
+          "Set root email addresses to monitored distribution lists, not individual mailboxes",
+          "Alert in real time on any CloudTrail event where userIdentity.type is Root",
+          "Document which accounts in the organization still have root credentials versus centralized root access"
+        ],
+        "identification": [
+          "Confirm the ConsoleLogin result, MFAUsed value, and source IP for the root sign-in",
+          "Check the break-glass log for an approved root access request at that time",
+          "List every action the root session performed after sign-in, including billing and IAM changes",
+          "Check for a recent PasswordRecoveryRequested or root email change before the sign-in"
+        ],
+        "containment": [
+          "Reset the root password from the custodian's sealed process if the sign-in was unapproved",
+          "Deregister and re-enroll root MFA devices, keeping only custodian-held hardware tokens",
+          "Delete any root access keys created during the session",
+          "Secure the root email mailbox and check it for forwarding rules"
+        ],
+        "eradication": [
+          "Revert account settings changed by root, such as contact info, alternate contacts, or support plan",
+          "Remove IAM users, roles, or policies created by the root session",
+          "Close the gap that allowed sign-in, such as a shared root password in a vault"
+        ],
+        "recovery": [
+          "Verify the account's billing and contact settings match the organization records",
+          "Use Organizations centralized root access to remove root credentials from member accounts",
+          "Confirm root activity alerts fire by testing them during the next break-glass drill"
+        ],
+        "lessons": [
+          "Review who knew the root password and reduce the custodian list",
+          "Record whether the alert reached a human within five minutes of sign-in",
+          "Decide whether this account should have root credentials at all"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Root user sign-ins and API calls",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail userIdentity.type=Root | eval mfa='additionalEventData.MFAUsed' | table _time recipientAccountId eventName sourceIPAddress userAgent mfa responseElements.ConsoleLogin errorMessage"
+        },
+        {
+          "title": "Changes made by root after sign-in",
+          "phase": "eradication",
+          "spl": "index=aws sourcetype=aws:cloudtrail userIdentity.type=Root readOnly=false | stats count values(eventName) as changes by recipientAccountId, eventSource | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-iam-user-created-admin",
+      "name": "New IAM user created with AdministratorAccess",
+      "summary": "Use when CloudTrail shows CreateUser followed by AttachUserPolicy with AdministratorAccess or an inline Action * policy, outside the normal infrastructure-as-code pipeline.",
+      "tags": [
+        "aws",
+        "iam",
+        "persistence",
+        "privilege-escalation"
+      ],
+      "attack": [
+        "T1136.003",
+        "T1098.003"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Ensure IAM users are only created by the Terraform or CloudFormation pipeline role",
+          "Alert on AttachUserPolicy where policyArn ends in AdministratorAccess",
+          "Keep an IAM credential report export from each account for comparison"
+        ],
+        "identification": [
+          "Identify the principal that called CreateUser and AttachUserPolicy and its source IP",
+          "Check whether the new user name matches any approved change ticket or IaC commit",
+          "Find whether CreateAccessKey or CreateLoginProfile was called for the new user",
+          "Search for activity performed by the new user since creation",
+          "Look for other IAM users created by the same principal in other accounts"
+        ],
+        "containment": [
+          "Deactivate the new user's access keys and delete its login profile",
+          "Attach an explicit deny-all policy to the new user to stop further use",
+          "Restrict the creating principal if it is not the approved IaC role"
+        ],
+        "eradication": [
+          "Detach AdministratorAccess and delete the rogue IAM user after evidence capture",
+          "Investigate how the creating principal was compromised and remediate that credential",
+          "Remove any resources or roles provisioned by the rogue user"
+        ],
+        "recovery": [
+          "Compare the current IAM credential report with the pre-incident export",
+          "Run IAM Access Analyzer to confirm no unexpected admin principals remain",
+          "Notify the account owner of the final IAM state"
+        ],
+        "lessons": [
+          "Add an SCP denying iam:CreateUser to every principal except the IaC role",
+          "Measure time from CreateUser to detection and alert routing",
+          "Consider requiring a permissions boundary on all newly created IAM users"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Users created and granted admin",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName IN (CreateUser, AttachUserPolicy, PutUserPolicy, AddUserToGroup) | eval target=coalesce('requestParameters.userName', 'requestParameters.groupName') | stats values(eventName) as actions values(requestParameters.policyArn) as policies min(_time) as first by target, userIdentity.arn, sourceIPAddress | search policies=*AdministratorAccess* OR actions=PutUserPolicy"
+        },
+        {
+          "title": "Activity by the new IAM user",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail userIdentity.userName=<new_user> | stats count values(eventName) as actions by sourceIPAddress, awsRegion, userAgent"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-cloudtrail-disabled",
+      "name": "CloudTrail trail stopped, deleted, or modified",
+      "summary": "Use when CloudTrail StopLogging, DeleteTrail, UpdateTrail, or PutEventSelectors removes audit coverage, which often precedes further attacker activity.",
+      "tags": [
+        "aws",
+        "cloudtrail",
+        "defense-evasion",
+        "logging"
+      ],
+      "attack": [
+        "T1562.008"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Use an organization trail owned by the management account that member accounts cannot modify",
+          "Deliver CloudTrail to a dedicated log archive account with S3 Object Lock",
+          "Alert when an expected trail stops sending events to Splunk for more than 30 minutes"
+        ],
+        "identification": [
+          "Identify who called StopLogging, DeleteTrail, UpdateTrail, or PutEventSelectors and from where",
+          "Determine the exact gap window in CloudTrail delivery for each affected region",
+          "Check whether the change removed data events, management events, or a whole region",
+          "Use CloudTrail Lake or the 90-day Event history to recover events during the gap",
+          "Review what the same principal did immediately before and after the logging change"
+        ],
+        "containment": [
+          "Restart logging with aws cloudtrail start-logging on the affected trail",
+          "Revoke the principal's sessions and deactivate its access keys",
+          "Recreate a deleted trail with the original S3 bucket, KMS key, and event selectors"
+        ],
+        "eradication": [
+          "Investigate actions taken during the gap using Event history and service-specific logs",
+          "Remove any changes the attacker made while logging was disabled",
+          "Check the trail's S3 bucket policy and KMS key policy for tampering"
+        ],
+        "recovery": [
+          "Confirm new events from every region arrive in Splunk after the restart",
+          "Validate log file integrity with aws cloudtrail validate-logs for the affected period",
+          "Document the unrecoverable gap in the incident record"
+        ],
+        "lessons": [
+          "Add an SCP denying cloudtrail:StopLogging and DeleteTrail outside the security account",
+          "Track how long the logging gap went unnoticed",
+          "Add a delivery-latency health check for each trail"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Trail tampering events",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=cloudtrail.amazonaws.com eventName IN (StopLogging, DeleteTrail, UpdateTrail, PutEventSelectors, PutInsightSelectors) | table _time recipientAccountId awsRegion eventName userIdentity.arn sourceIPAddress requestParameters.name errorCode"
+        },
+        {
+          "title": "CloudTrail delivery gaps by account and region",
+          "phase": "recovery",
+          "spl": "| tstats count where index=aws sourcetype=aws:cloudtrail by _time span=10m, recipientAccountId, awsRegion | where count=0 OR isnull(count) | stats count as empty_buckets by recipientAccountId, awsRegion"
+        },
+        {
+          "title": "Actions by the tampering principal around the change",
+          "phase": "eradication",
+          "spl": "index=aws sourcetype=aws:cloudtrail userIdentity.arn=<suspect_arn> earliest=-24h | stats count values(eventName) as actions by eventSource, awsRegion | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-guardduty-disabled",
+      "name": "GuardDuty detector disabled or findings suppressed",
+      "summary": "Use when GuardDuty is disabled, deleted, has its member accounts disassociated, or gains a new suppression rule or trusted IP list that hides findings.",
+      "tags": [
+        "aws",
+        "guardduty",
+        "defense-evasion",
+        "detection"
+      ],
+      "attack": [
+        "T1562.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Use a delegated GuardDuty administrator account with auto-enable for all members",
+          "Alert on GuardDuty DeleteDetector, UpdateDetector, and CreateFilter events",
+          "Export a baseline of each region's detector settings, filters, and IP sets"
+        ],
+        "identification": [
+          "Identify the principal that called DeleteDetector, UpdateDetector, or DisassociateFromMasterAccount",
+          "List any new suppression filters with CreateFilter and inspect their criteria",
+          "Check for CreateIPSet or UpdateIPSet adding a trusted IP list that suppresses findings",
+          "Determine which regions and accounts lost GuardDuty coverage and for how long"
+        ],
+        "containment": [
+          "Re-enable the detector in each affected region from the delegated admin account",
+          "Revoke the sessions of the principal that disabled GuardDuty",
+          "Delete unauthorized suppression filters and trusted IP sets"
+        ],
+        "eradication": [
+          "Review findings archived by the rogue filter to see what the attacker hid",
+          "Hunt CloudTrail for activity the hidden findings would have flagged",
+          "Remediate the access path that allowed the principal to modify GuardDuty"
+        ],
+        "recovery": [
+          "Confirm findings are flowing to Security Hub and Splunk from every region",
+          "Generate sample findings with CreateSampleFindings to validate the pipeline",
+          "Reconcile detector settings against the saved baseline"
+        ],
+        "lessons": [
+          "Add an SCP denying guardduty:DeleteDetector and DisassociateFromAdministratorAccount",
+          "Require change approval for any new GuardDuty filter",
+          "Measure detection time for loss of a security service"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "GuardDuty configuration changes",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=guardduty.amazonaws.com eventName IN (DeleteDetector, UpdateDetector, CreateFilter, UpdateFilter, CreateIPSet, UpdateIPSet, DisassociateFromMasterAccount, DisassociateFromAdministratorAccount, StopMonitoringMembers) | table _time recipientAccountId awsRegion eventName userIdentity.arn sourceIPAddress requestParameters"
+        },
+        {
+          "title": "Regions that stopped sending GuardDuty findings",
+          "phase": "recovery",
+          "spl": "index=aws sourcetype=aws:cloudwatch:guardduty earliest=-14d | stats max(_time) as last_finding by detail.accountId, detail.region | where last_finding < relative_time(now(), \"-2d\") | convert ctime(last_finding)"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-s3-bucket-made-public",
+      "name": "S3 bucket made public through ACL or bucket policy",
+      "summary": "Use when an S3 bucket's Block Public Access is removed, a policy grants Principal *, or an ACL grants AllUsers, exposing objects to the internet.",
+      "tags": [
+        "aws",
+        "s3",
+        "data-exposure",
+        "misconfiguration"
+      ],
+      "attack": [
+        "T1530"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable account-level S3 Block Public Access in every account by default",
+          "Classify buckets by data sensitivity with tags such as data-class",
+          "Enable S3 server access logging or CloudTrail data events on sensitive buckets"
+        ],
+        "identification": [
+          "Find the PutBucketPolicy, PutBucketAcl, or DeletePublicAccessBlock call and its caller",
+          "Read the resulting bucket policy and confirm which actions Principal * received",
+          "Determine the data classification of objects in the exposed bucket",
+          "Query S3 access logs for anonymous GetObject requests during the exposure window",
+          "Check whether IAM Access Analyzer raised a public access finding for the bucket"
+        ],
+        "containment": [
+          "Re-enable Block Public Access on the bucket with put-public-access-block",
+          "Remove the public statement from the bucket policy and reset ACLs to private",
+          "Disable ACLs by setting Object Ownership to BucketOwnerEnforced"
+        ],
+        "eradication": [
+          "Confirm whether the change was a mistake or a compromised principal and handle accordingly",
+          "Rotate any credentials or keys stored as objects in the exposed bucket",
+          "Remove any public objects uploaded by anonymous users if write access was granted"
+        ],
+        "recovery": [
+          "Move intentionally public content to CloudFront with origin access control",
+          "Re-run Access Analyzer to confirm the bucket has no public findings",
+          "Engage privacy or legal if regulated data was downloaded anonymously"
+        ],
+        "lessons": [
+          "Add an SCP denying s3:PutAccountPublicAccessBlock changes by non-security roles",
+          "Track the exposure window from policy change to remediation",
+          "Add a Config rule for s3-bucket-public-read-prohibited with auto-remediation"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Bucket permission changes that may grant public access",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=s3.amazonaws.com eventName IN (PutBucketPolicy, PutBucketAcl, DeleteBucketPublicAccessBlock, PutBucketPublicAccessBlock, PutObjectAcl) | table _time requestParameters.bucketName eventName userIdentity.arn sourceIPAddress requestParameters.bucketPolicy"
+        },
+        {
+          "title": "Anonymous reads from the exposed bucket",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:s3:accesslogs bucket_name=<bucket> operation=REST.GET.OBJECT requester=\"-\" | stats count sum(bytes_sent) as bytes dc(key) as objects by remote_ip | sort - bytes"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-s3-mass-download",
+      "name": "Mass data download from an S3 bucket",
+      "summary": "Use when a principal downloads an unusual volume or number of S3 objects, such as a GuardDuty Exfiltration:S3/AnomalousBehavior finding or a sudden spike in GetObject bytes.",
+      "tags": [
+        "aws",
+        "s3",
+        "exfiltration",
+        "data-loss"
+      ],
+      "attack": [
+        "T1530",
+        "T1537"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable CloudTrail S3 data events for buckets tagged as sensitive",
+          "Enable GuardDuty S3 Protection in every account",
+          "Baseline daily GetObject volume per principal for sensitive buckets"
+        ],
+        "identification": [
+          "Quantify objects, bytes, and prefixes read by the principal during the spike",
+          "Identify the source IPs and whether they belong to a VPC endpoint or the internet",
+          "Check whether the principal also called ListObjectsV2 across many prefixes beforehand",
+          "Determine whether the principal is a human, application role, or replication job",
+          "Look for CopyObject or replication configuration sending data to another account"
+        ],
+        "containment": [
+          "Revoke the principal's active sessions or deactivate its access key",
+          "Add a bucket policy deny for the principal ARN on s3:GetObject",
+          "Restrict bucket access to the VPC endpoint with an aws:SourceVpce condition"
+        ],
+        "eradication": [
+          "Identify and remediate how the principal's credentials were obtained",
+          "Remove replication rules or batch operations jobs created by the attacker",
+          "Rotate secrets or keys contained in the downloaded objects"
+        ],
+        "recovery": [
+          "Restore normal access for legitimate workloads with least-privilege prefixes",
+          "Produce a list of downloaded object keys for the data owner and legal review",
+          "Keep GuardDuty S3 Protection alerts for the bucket at high priority for 30 days"
+        ],
+        "lessons": [
+          "Decide whether sensitive buckets should be reachable only through VPC endpoints",
+          "Add a volume threshold detection on bytes_sent per principal per hour",
+          "Review whether the principal needed read access to the whole bucket"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Top S3 readers by bytes from access logs",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:s3:accesslogs operation=REST.GET.OBJECT bucket_name=<bucket> | stats sum(bytes_sent) as bytes dc(key) as objects by requester, remote_ip | eval GB=round(bytes/1024/1024/1024,2) | sort - bytes"
+        },
+        {
+          "title": "GetObject data events by principal per hour",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=s3.amazonaws.com eventName=GetObject requestParameters.bucketName=<bucket> | timechart span=1h count by userIdentity.arn limit=10"
+        },
+        {
+          "title": "S3 exfiltration GuardDuty findings",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudwatch:guardduty detail.type=\"Exfiltration:S3/*\" | table _time detail.type detail.severity detail.resource.s3BucketDetails{}.name detail.resource.accessKeyDetails.principalId"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-s3-ransom-deletion",
+      "name": "S3 ransom: objects deleted or encrypted and ransom note left",
+      "summary": "Use when S3 objects are mass-deleted, overwritten, or re-encrypted with an attacker KMS key and a ransom note object appears in the bucket.",
+      "tags": [
+        "aws",
+        "s3",
+        "ransomware",
+        "extortion",
+        "data-destruction"
+      ],
+      "attack": [
+        "T1485",
+        "T1486",
+        "T1490"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable S3 Versioning and Object Lock on buckets holding critical data",
+          "Back up critical buckets with AWS Backup to a separate account with a vault lock",
+          "Enable CloudTrail data events for DeleteObject and PutObject on critical buckets"
+        ],
+        "identification": [
+          "Retrieve the ransom note object and record its key, contents, and uploader",
+          "Count DeleteObject, DeleteObjects, and PutObject calls by principal during the event",
+          "Check whether versioning was suspended with PutBucketVersioning before deletion",
+          "Determine whether objects were re-encrypted with SSE-C or an external KMS key",
+          "Check for PutBucketLifecycleConfiguration rules that expire noncurrent versions"
+        ],
+        "containment": [
+          "Revoke the principal's credentials and attach a deny-all policy to it",
+          "Add a bucket policy deny on s3:DeleteObject and s3:PutLifecycleConfiguration for all but the security role",
+          "Delete attacker lifecycle rules immediately to stop expiry of old versions",
+          "Do not contact the extortion address; route communications through legal"
+        ],
+        "eradication": [
+          "Remove the attacker's access path, such as a leaked key or compromised role",
+          "Delete the ransom note object after preserving a copy as evidence",
+          "Remove any attacker-added KMS grants or cross-account bucket permissions"
+        ],
+        "recovery": [
+          "Restore prior object versions by removing delete markers with a batch job",
+          "Restore from AWS Backup where versions were permanently deleted",
+          "Validate restored object counts and checksums against inventory reports",
+          "Re-enable versioning and confirm Object Lock retention on the bucket"
+        ],
+        "lessons": [
+          "Report which buckets lacked versioning or backup and fix them",
+          "Add an alert on PutBucketVersioning with status Suspended",
+          "Measure recovery time objective achieved versus target"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Mass deletions and overwrites by principal",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=s3.amazonaws.com eventName IN (DeleteObject, DeleteObjects, PutObject, CopyObject) requestParameters.bucketName=<bucket> | timechart span=5m count by eventName"
+        },
+        {
+          "title": "Versioning, lifecycle, and encryption tampering",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=s3.amazonaws.com eventName IN (PutBucketVersioning, PutBucketLifecycle, PutBucketLifecycleConfiguration, PutBucketEncryption, PutBucketReplication) | table _time requestParameters.bucketName eventName userIdentity.arn sourceIPAddress requestParameters"
+        },
+        {
+          "title": "Ransom note uploads",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:s3:accesslogs operation=REST.PUT.OBJECT (key=*README* OR key=*RECOVER* OR key=*ransom* OR key=*.txt) | table _time bucket_name key requester remote_ip"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-ec2-cryptomining",
+      "name": "EC2 instances launched for cryptocurrency mining",
+      "summary": "Use when GuardDuty reports CryptoCurrency:EC2/BitcoinTool or many large GPU or compute instances are launched unexpectedly, often in unused regions.",
+      "tags": [
+        "aws",
+        "ec2",
+        "cryptomining",
+        "resource-hijacking"
+      ],
+      "attack": [
+        "T1496",
+        "T1578.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Set EC2 service quotas for GPU instance families low in accounts that do not use them",
+          "Configure AWS Budgets alerts on daily EC2 spend per account",
+          "Restrict usable regions with an SCP on aws:RequestedRegion"
+        ],
+        "identification": [
+          "List RunInstances calls by instance type, region, and calling principal",
+          "Retrieve the user data from the launched instances to see the miner bootstrap script",
+          "Check VPC flow logs for outbound connections to mining pool ports such as 3333 and 4444",
+          "Check whether new key pairs or security groups were created alongside the instances",
+          "Determine whether the instances came from a compromised key or an existing instance's role"
+        ],
+        "containment": [
+          "Stop the mining instances after capturing EBS snapshots for evidence",
+          "Revoke the credentials that called RunInstances",
+          "Block mining pool destinations at the network firewall or via NACL"
+        ],
+        "eradication": [
+          "Terminate the instances and delete attacker key pairs, security groups, and AMIs",
+          "Cancel spot fleet requests and launch templates created by the attacker",
+          "Sweep every region for remaining attacker resources with a tag or creator search"
+        ],
+        "recovery": [
+          "Open an AWS Support case to request review of fraudulent charges",
+          "Restore service quotas to the reduced baseline",
+          "Confirm daily spend has returned to normal in Cost Explorer"
+        ],
+        "lessons": [
+          "Record which unused regions were abused and deny them by SCP",
+          "Add a detection on RunInstances for GPU families such as p3, p4, and g5",
+          "Measure cost incurred before detection"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Instance launches by type and region",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName=RunInstances NOT errorCode=* | stats count sum(requestParameters.instancesSet.items{}.maxCount) as requested values(requestParameters.instanceType) as types by awsRegion, userIdentity.arn, sourceIPAddress | sort - count"
+        },
+        {
+          "title": "Outbound traffic to common mining pool ports",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudwatchlogs:vpcflow dest_port IN (3333, 4444, 5555, 7777, 14444, 45700) action=ACCEPT | stats sum(bytes) as bytes dc(dest_ip) as pools by src_ip, dest_port | sort - bytes"
+        },
+        {
+          "title": "Cryptocurrency GuardDuty findings",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudwatch:guardduty detail.type=\"CryptoCurrency:*\" | table _time detail.region detail.type detail.resource.instanceDetails.instanceId detail.resource.instanceDetails.instanceType"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-imds-ssrf-credential-theft",
+      "name": "EC2 instance role credentials stolen via SSRF to IMDS",
+      "summary": "Use when a web application's SSRF flaw is used to read instance role credentials from 169.254.169.254, and those credentials are then used from outside the instance.",
+      "tags": [
+        "aws",
+        "ec2",
+        "imds",
+        "ssrf",
+        "credential-theft"
+      ],
+      "attack": [
+        "T1552.005",
+        "T1190",
+        "T1078.004"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enforce IMDSv2 with HttpTokens required on all instances and launch templates",
+          "Log web application requests including full URL parameters to Splunk",
+          "Enable GuardDuty findings for InstanceCredentialExfiltration.OutsideAWS"
+        ],
+        "identification": [
+          "Search web logs for request parameters containing 169.254.169.254 or metadata paths",
+          "Confirm whether the instance still allowed IMDSv1 at the time of the request",
+          "Find CloudTrail calls by the instance role session made from IPs that are not the instance",
+          "List the APIs the stolen role session called and resources it touched",
+          "Identify the vulnerable application endpoint and parameter used for SSRF"
+        ],
+        "containment": [
+          "Revoke active sessions on the instance role with an aws:TokenIssueTime deny policy",
+          "Set HttpTokens to required on the instance with modify-instance-metadata-options",
+          "Block the SSRF endpoint at the WAF or load balancer while a fix is prepared"
+        ],
+        "eradication": [
+          "Patch the application to validate and allowlist outbound URLs",
+          "Reduce the instance role's permissions to what the application actually needs",
+          "Remove resources or persistence created with the stolen role credentials"
+        ],
+        "recovery": [
+          "Redeploy the patched application and confirm SSRF test payloads are rejected",
+          "Confirm no further role usage from external IPs in CloudTrail",
+          "Set the account default IMDS setting to IMDSv2 only"
+        ],
+        "lessons": [
+          "Add a detection for instance role credentials used from non-EC2 source IPs",
+          "Add SSRF test cases to the application security test suite",
+          "Count instances still allowing IMDSv1 and set a deadline to remove them"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Web requests containing metadata service addresses",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where (Web.url=\"*169.254.169.254*\" OR Web.url=\"*latest/meta-data*\" OR Web.url=\"*iam/security-credentials*\") by Web.src, Web.dest, Web.url | sort - count"
+        },
+        {
+          "title": "Instance role sessions used from outside the instance",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail userIdentity.type=AssumedRole userIdentity.principalId=*:i-* | rex field=userIdentity.principalId \":(?<instance_id>i-[0-9a-f]+)\" | stats values(sourceIPAddress) as src values(eventName) as actions by instance_id, userIdentity.sessionContext.sessionIssuer.arn | where mvcount(src)>1"
+        },
+        {
+          "title": "GuardDuty instance credential exfiltration",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudwatch:guardduty detail.type=\"UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration*\" | table _time detail.type detail.resource.accessKeyDetails.userName detail.service.action.awsApiCallAction.api detail.service.action.awsApiCallAction.remoteIpDetails.ipAddressV4"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-lambda-backdoor",
+      "name": "Lambda function backdoored or created for persistence",
+      "summary": "Use when a Lambda function's code, layers, environment, or resource policy is changed unexpectedly, or a new function with a public function URL or EventBridge trigger appears.",
+      "tags": [
+        "aws",
+        "lambda",
+        "persistence",
+        "serverless"
+      ],
+      "attack": [
+        "T1525",
+        "T1546",
+        "T1098"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Require Lambda code signing for production functions",
+          "Deploy functions only through a CI pipeline role and alert on other UpdateFunctionCode callers",
+          "Keep function code hashes from each release for comparison"
+        ],
+        "identification": [
+          "List UpdateFunctionCode, UpdateFunctionConfiguration, and CreateFunction calls by principal",
+          "Compare the current CodeSha256 with the hash from the last pipeline deployment",
+          "Download the function package and review it for outbound callbacks or credential dumping",
+          "Check AddPermission and CreateFunctionUrlConfig for public or cross-account invoke grants",
+          "Inspect new layers and EventBridge rules attached to the function"
+        ],
+        "containment": [
+          "Set reserved concurrency to zero on the backdoored function to stop executions",
+          "Remove the public function URL and any attacker-added resource policy statements",
+          "Disable EventBridge rules or event source mappings created by the attacker"
+        ],
+        "eradication": [
+          "Redeploy the function from the last known-good pipeline artifact",
+          "Delete attacker-created functions, layers, and their execution roles",
+          "Rotate secrets the function's environment variables or role could read"
+        ],
+        "recovery": [
+          "Restore reserved concurrency and confirm the function works through normal triggers",
+          "Verify CodeSha256 matches the pipeline artifact after redeployment",
+          "Review CloudWatch Logs for the function to confirm no further suspicious invocations"
+        ],
+        "lessons": [
+          "Enforce code signing configuration with an SCP or Config rule",
+          "Add detection for lambda:AddPermission with Principal *",
+          "Review which humans can update production function code"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Lambda code, config, and permission changes",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=lambda.amazonaws.com (eventName=UpdateFunctionCode* OR eventName=UpdateFunctionConfiguration* OR eventName=CreateFunction* OR eventName=AddPermission* OR eventName=CreateFunctionUrlConfig* OR eventName=PublishLayerVersion*) | table _time awsRegion eventName requestParameters.functionName userIdentity.arn sourceIPAddress"
+        },
+        {
+          "title": "Event triggers wired to functions",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName IN (PutRule, PutTargets, CreateEventSourceMapping20150331) | table _time eventName requestParameters.name requestParameters.targets{}.arn requestParameters.functionName userIdentity.arn"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-ssm-run-command-abuse",
+      "name": "SSM Run Command or Session Manager used to execute on instances",
+      "summary": "Use when SendCommand, StartSession, or new SSM documents are used by an unexpected principal to run scripts on managed EC2 instances or hybrid nodes.",
+      "tags": [
+        "aws",
+        "ssm",
+        "lateral-movement",
+        "execution"
+      ],
+      "attack": [
+        "T1651",
+        "T1021.007"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Send SSM Run Command output and Session Manager logs to S3 and CloudWatch",
+          "Restrict ssm:SendCommand to approved roles and specific documents",
+          "Keep an allowlist of SSM documents used by operations automation"
+        ],
+        "identification": [
+          "List SendCommand and StartSession calls by principal, document, and target instances",
+          "Retrieve command parameters and output for each suspicious invocation",
+          "Check for CreateDocument calls that defined a custom document with shell commands",
+          "Review Session Manager transcripts for interactive sessions by the principal",
+          "Identify which instances ran the commands and what roles they hold"
+        ],
+        "containment": [
+          "Revoke the principal's credentials and sessions",
+          "Terminate active Session Manager sessions with terminate-session",
+          "Cancel pending commands with cancel-command on the affected instances"
+        ],
+        "eradication": [
+          "Delete attacker-created SSM documents and State Manager associations",
+          "Investigate target instances for persistence such as cron jobs, users, or SSH keys",
+          "Rebuild instances where commands installed tooling or altered binaries"
+        ],
+        "recovery": [
+          "Restore operations automation permissions with document-scoped policies",
+          "Confirm SSM Agent and logging configuration on rebuilt instances",
+          "Verify no further SendCommand from the principal in CloudTrail"
+        ],
+        "lessons": [
+          "Add detection for SendCommand using AWS-RunShellScript by non-automation principals",
+          "Decide whether Session Manager requires an approval workflow",
+          "Track how many instances were reachable from the abused principal"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Run Command and session activity by principal",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=ssm.amazonaws.com eventName IN (SendCommand, StartSession, CreateDocument, CreateAssociation, ResumeSession) | stats count values(requestParameters.documentName) as docs values(requestParameters.instanceIds{}) as instances values(requestParameters.target) as session_targets by userIdentity.arn, sourceIPAddress"
+        },
+        {
+          "title": "Shell commands passed to Run Command",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName=SendCommand requestParameters.documentName IN (AWS-RunShellScript, AWS-RunPowerShellScript) | table _time userIdentity.arn requestParameters.instanceIds{} requestParameters.parameters.commands{}"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-ebs-snapshot-shared-externally",
+      "name": "EBS snapshot or AMI shared with an external account",
+      "summary": "Use when ModifySnapshotAttribute or ModifyImageAttribute adds createVolumePermission or launchPermission for an unknown account or makes a snapshot public.",
+      "tags": [
+        "aws",
+        "ebs",
+        "exfiltration",
+        "snapshot"
+      ],
+      "attack": [
+        "T1537"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable EBS Block Public Access for snapshots in every region",
+          "Maintain a list of AWS account IDs owned by the organization",
+          "Alert on ModifySnapshotAttribute with createVolumePermission add"
+        ],
+        "identification": [
+          "Identify the snapshot IDs, target account IDs, and caller of ModifySnapshotAttribute",
+          "Check the target account IDs against the organization account list",
+          "Determine which volume and instance each snapshot came from and its data",
+          "Look for CreateSnapshot or CopySnapshot calls by the same principal just before sharing",
+          "Check whether snapshots were shared publicly with group all"
+        ],
+        "containment": [
+          "Remove the external createVolumePermission with modify-snapshot-attribute remove",
+          "Remove launchPermission from any AMIs shared to the same accounts",
+          "Revoke the sharing principal's credentials"
+        ],
+        "eradication": [
+          "Delete attacker-created snapshot copies in the account",
+          "Rotate credentials, keys, or database passwords stored on the shared volumes",
+          "Remediate the compromised principal's access path"
+        ],
+        "recovery": [
+          "Encrypt sensitive volumes with customer managed KMS keys that cannot be shared externally",
+          "Confirm DescribeSnapshotAttribute shows no external permissions",
+          "Brief data owners on what was on the shared volumes"
+        ],
+        "lessons": [
+          "Add an SCP condition limiting ec2:ModifySnapshotAttribute to organization accounts",
+          "Count unencrypted snapshots and plan encryption",
+          "Measure how long the share existed before removal"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Snapshot and AMI sharing changes",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName IN (ModifySnapshotAttribute, ModifyImageAttribute, DisableSnapshotBlockPublicAccess) | spath path=requestParameters.createVolumePermission.add.items{}.userId output=shared_to | spath path=requestParameters.launchPermission.add.items{}.userId output=ami_shared_to | table _time eventName requestParameters.snapshotId requestParameters.imageId shared_to ami_shared_to userIdentity.arn sourceIPAddress"
+        },
+        {
+          "title": "Snapshots created shortly before sharing",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName IN (CreateSnapshot, CopySnapshot, CreateSnapshots) userIdentity.arn=<suspect_arn> | table _time awsRegion eventName requestParameters.volumeId responseElements.snapshotId"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-rds-snapshot-exfil",
+      "name": "RDS snapshot exfiltrated by sharing or export",
+      "summary": "Use when an RDS or Aurora snapshot is shared with an outside account, made public, restored to an attacker instance, or exported to S3 by an unexpected principal.",
+      "tags": [
+        "aws",
+        "rds",
+        "database",
+        "exfiltration"
+      ],
+      "attack": [
+        "T1537",
+        "T1530"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Encrypt RDS instances with customer managed KMS keys whose policy blocks external use",
+          "Alert on ModifyDBSnapshotAttribute and StartExportTask",
+          "Tag databases with their data classification and owner"
+        ],
+        "identification": [
+          "Find ModifyDBSnapshotAttribute or ModifyDBClusterSnapshotAttribute calls with restore permissions",
+          "Check the valuesToAdd account IDs against the organization account list",
+          "Look for RestoreDBInstanceFromDBSnapshot with PubliclyAccessible true",
+          "Check StartExportTask calls and their destination S3 bucket",
+          "Identify which tables and data classes the snapshot contains"
+        ],
+        "containment": [
+          "Remove the external restore attribute from the snapshot",
+          "Cancel running export tasks with cancel-export-task",
+          "Delete or isolate attacker-restored DB instances after capturing their identifiers"
+        ],
+        "eradication": [
+          "Revoke the principal's credentials and remove its RDS permissions",
+          "Delete manual snapshots created by the attacker",
+          "Rotate the database master password and application credentials"
+        ],
+        "recovery": [
+          "Confirm no snapshots in the account have external or public restore attributes",
+          "Review database audit logs for direct queries during the same window",
+          "Hand the data inventory to privacy for breach assessment"
+        ],
+        "lessons": [
+          "Add an SCP denying rds:ModifyDBSnapshotAttribute for non-backup roles",
+          "Check whether default AWS-managed keys allowed the share to work",
+          "Add an AWS Config rule for rds-snapshots-public-prohibited"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "RDS snapshot sharing, restore, and export",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=rds.amazonaws.com eventName IN (ModifyDBSnapshotAttribute, ModifyDBClusterSnapshotAttribute, StartExportTask, RestoreDBInstanceFromDBSnapshot, CopyDBSnapshot, CreateDBSnapshot) | table _time eventName requestParameters.dBSnapshotIdentifier requestParameters.valuesToAdd{} requestParameters.s3BucketName requestParameters.publiclyAccessible userIdentity.arn sourceIPAddress"
+        },
+        {
+          "title": "Snapshot copies into other accounts",
+          "phase": "eradication",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=rds.amazonaws.com eventName=CopyDBSnapshot | where recipientAccountId!='userIdentity.accountId' | table _time recipientAccountId userIdentity.accountId requestParameters.sourceDBSnapshotIdentifier"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-kms-key-policy-deletion",
+      "name": "KMS key policy changed or key scheduled for deletion",
+      "summary": "Use when PutKeyPolicy grants an unknown principal, CreateGrant gives external access, or ScheduleKeyDeletion or DisableKey threatens data encrypted under a customer managed key.",
+      "tags": [
+        "aws",
+        "kms",
+        "encryption",
+        "data-destruction"
+      ],
+      "attack": [
+        "T1485",
+        "T1222"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Inventory customer managed keys and which services and data each key protects",
+          "Alert on ScheduleKeyDeletion, DisableKey, and PutKeyPolicy for every key",
+          "Set the maximum 30-day pending window as the organization default for key deletion"
+        ],
+        "identification": [
+          "Identify the key ID, caller, and pending deletion date from the ScheduleKeyDeletion event",
+          "Diff the new key policy against the last approved version from IaC",
+          "List grants on the key with list-grants and flag grantee principals outside the organization",
+          "Determine which S3 buckets, EBS volumes, RDS instances, and secrets use the key",
+          "Check whether the key was disabled and whether workloads are now failing to decrypt"
+        ],
+        "containment": [
+          "Run cancel-key-deletion on the key immediately",
+          "Re-enable the key with enable-key if it was disabled",
+          "Restore the approved key policy with put-key-policy",
+          "Revoke unauthorized grants with revoke-grant"
+        ],
+        "eradication": [
+          "Revoke the credentials of the principal that changed the key",
+          "Remove kms:ScheduleKeyDeletion and kms:PutKeyPolicy from roles that do not need them",
+          "Check for imported key material that the attacker could delete with DeleteImportedKeyMaterial"
+        ],
+        "recovery": [
+          "Confirm dependent services can encrypt and decrypt with the restored key",
+          "Verify key rotation is still enabled on the key",
+          "Document which data would have been unrecoverable if deletion had completed"
+        ],
+        "lessons": [
+          "Add an SCP restricting kms:ScheduleKeyDeletion to a break-glass role",
+          "Add a detection for KMS key policy statements with external principals",
+          "Review whether multi-Region replica keys are needed for critical data"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Destructive and permission changes on KMS keys",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=kms.amazonaws.com eventName IN (ScheduleKeyDeletion, DisableKey, PutKeyPolicy, CreateGrant, DeleteImportedKeyMaterial, DisableKeyRotation) | table _time awsRegion eventName requestParameters.keyId requestParameters.pendingWindowInDays requestParameters.granteePrincipal userIdentity.arn sourceIPAddress"
+        },
+        {
+          "title": "Decrypt failures after key change",
+          "phase": "recovery",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=kms.amazonaws.com eventName IN (Decrypt, GenerateDataKey) errorCode IN (DisabledException, KMSInvalidStateException, AccessDeniedException) | timechart span=15m count by errorCode"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-organizations-scp-removed",
+      "name": "AWS Organizations SCP detached or weakened",
+      "summary": "Use when a service control policy is detached from the root or an OU, updated to remove deny statements, or an account is moved out of a restricted OU.",
+      "tags": [
+        "aws",
+        "organizations",
+        "scp",
+        "defense-evasion"
+      ],
+      "attack": [
+        "T1484.002",
+        "T1562"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Store all SCPs in version control and deploy them through a single pipeline",
+          "Limit access to the management account to a small, MFA-protected group",
+          "Alert on DetachPolicy, UpdatePolicy, DeletePolicy, and MoveAccount in Organizations"
+        ],
+        "identification": [
+          "Identify which SCP changed, the target root, OU, or account, and the caller",
+          "Diff the current SCP content against the version in source control",
+          "Check whether an account was moved out of a guardrail OU with MoveAccount",
+          "List actions taken in member accounts that the removed SCP would have denied",
+          "Confirm whether the caller used the management account or a delegated admin"
+        ],
+        "containment": [
+          "Reattach the SCP to the original target from the pipeline",
+          "Move the account back to its guardrail OU",
+          "Revoke the management account session that made the change"
+        ],
+        "eradication": [
+          "Reverse member-account actions that the SCP should have blocked, such as region use or trail changes",
+          "Reset credentials for the management account principal involved",
+          "Remove any new delegated administrator registrations made by the attacker"
+        ],
+        "recovery": [
+          "Run the SCP pipeline to reconcile every policy and attachment with source control",
+          "Validate guardrails by testing a denied action from a member account",
+          "Report final organization state to the cloud platform owner"
+        ],
+        "lessons": [
+          "Decide whether management account access needs two-person approval",
+          "Add drift detection comparing live SCPs with the repository daily",
+          "Measure time from SCP change to alert"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Organizations policy and structure changes",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=organizations.amazonaws.com eventName IN (DetachPolicy, UpdatePolicy, DeletePolicy, MoveAccount, DisablePolicyType, RegisterDelegatedAdministrator, LeaveOrganization, RemoveAccountFromOrganization) | table _time eventName requestParameters.policyId requestParameters.targetId requestParameters.accountId requestParameters.destinationParentId userIdentity.arn sourceIPAddress"
+        },
+        {
+          "title": "Member account activity after the guardrail was removed",
+          "phase": "eradication",
+          "spl": "index=aws sourcetype=aws:cloudtrail recipientAccountId=<account_id> readOnly=false earliest=<scp_change_time> | stats count values(eventName) as actions by userIdentity.arn, awsRegion | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-cross-account-role-trust",
+      "name": "Cross-account trust added to an IAM role",
+      "summary": "Use when UpdateAssumeRolePolicy or CreateRole adds a trust relationship to an unknown AWS account, a wildcard principal, or a new OIDC or SAML provider.",
+      "tags": [
+        "aws",
+        "iam",
+        "persistence",
+        "cross-account"
+      ],
+      "attack": [
+        "T1098.003",
+        "T1484.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Use IAM Access Analyzer with the organization as the zone of trust",
+          "Keep a register of approved third-party accounts and their external IDs",
+          "Alert on UpdateAssumeRolePolicy and CreateOpenIDConnectProvider"
+        ],
+        "identification": [
+          "Extract the new trust policy and list every principal it allows to assume the role",
+          "Check the trusted account ID against the organization and vendor register",
+          "Determine whether the trust requires sts:ExternalId or MFA conditions",
+          "Search CloudTrail for AssumeRole into the role from the new principal",
+          "Review the permissions attached to the role to understand exposure"
+        ],
+        "containment": [
+          "Restore the previous trust policy with update-assume-role-policy",
+          "Revoke active sessions for the role with a token issue time deny",
+          "Delete any rogue OIDC or SAML identity providers added alongside"
+        ],
+        "eradication": [
+          "Investigate and remediate the principal that changed the trust policy",
+          "Undo actions taken by sessions that assumed the role from the external account",
+          "Search all accounts for other roles trusting the same external account"
+        ],
+        "recovery": [
+          "Confirm Access Analyzer has no active external access findings for roles",
+          "Validate that approved vendors can still assume their roles",
+          "Keep a watch on AssumeRole events from the external account ID"
+        ],
+        "lessons": [
+          "Require external ID on all third-party trust policies",
+          "Add an SCP condition preventing trust policy edits outside the IaC role",
+          "Review why Access Analyzer findings were not triaged sooner"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Role trust policy changes",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName IN (UpdateAssumeRolePolicy, CreateRole, CreateOpenIDConnectProvider, CreateSAMLProvider) | table _time eventName requestParameters.roleName requestParameters.policyDocument requestParameters.assumeRolePolicyDocument userIdentity.arn sourceIPAddress"
+        },
+        {
+          "title": "Assumptions of the role by external accounts",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName=AssumeRole requestParameters.roleArn=*<role_name>* | where 'userIdentity.accountId'!=recipientAccountId | stats count min(_time) as first by userIdentity.accountId, userIdentity.arn, sourceIPAddress | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-secrets-manager-mass-read",
+      "name": "Mass read of Secrets Manager secrets or SSM parameters",
+      "summary": "Use when one principal calls GetSecretValue or GetParameters with decryption on many secrets in a short window, suggesting credential harvesting.",
+      "tags": [
+        "aws",
+        "secrets-manager",
+        "ssm",
+        "credential-access"
+      ],
+      "attack": [
+        "T1555.006",
+        "T1552"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Scope secretsmanager:GetSecretValue in policies to specific secret ARNs per workload",
+          "Tag each secret with the owning application and rotation contact",
+          "Baseline how many distinct secrets each role reads per day"
+        ],
+        "identification": [
+          "Count distinct secret ARNs read by the principal and compare with its baseline",
+          "Check whether ListSecrets or DescribeParameters enumeration preceded the reads",
+          "Identify the source IP and whether the principal normally runs inside a VPC",
+          "List which systems each read secret grants access to, such as databases or SaaS APIs",
+          "Check for denied reads that show the principal probing secrets outside its scope"
+        ],
+        "containment": [
+          "Revoke the principal's sessions and deactivate any access keys",
+          "Add a resource policy deny on the most sensitive secrets for the principal",
+          "Disable or rotate the downstream credentials the read secrets represent"
+        ],
+        "eradication": [
+          "Rotate every secret the principal read, starting with production database and admin credentials",
+          "Find how the principal was compromised and close that path",
+          "Check downstream systems for logins with the harvested credentials"
+        ],
+        "recovery": [
+          "Confirm applications pick up rotated secrets without outages",
+          "Enable automatic rotation on secrets that were rotated manually",
+          "Monitor for use of the old secret values in downstream audit logs"
+        ],
+        "lessons": [
+          "Tighten wildcard secret ARNs in role policies",
+          "Add a detection on distinct GetSecretValue count per principal per hour",
+          "Measure time to rotate all exposed secrets"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Principals reading many distinct secrets",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName IN (GetSecretValue, BatchGetSecretValue, GetParameter, GetParameters, GetParametersByPath) | eval target=coalesce('requestParameters.secretId', 'requestParameters.name', 'requestParameters.path') | bin _time span=1h | stats dc(target) as distinct_secrets count by _time, userIdentity.arn, sourceIPAddress | where distinct_secrets > 10 | sort - distinct_secrets"
+        },
+        {
+          "title": "Secrets read by the suspect principal",
+          "phase": "eradication",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource IN (secretsmanager.amazonaws.com, ssm.amazonaws.com) userIdentity.arn=<suspect_arn> eventName IN (GetSecretValue, BatchGetSecretValue, GetParameter, GetParameters, GetParametersByPath) | stats count by requestParameters.secretId, requestParameters.name, errorCode"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-cognito-abuse",
+      "name": "Amazon Cognito user pool or identity pool abused",
+      "summary": "Use when attackers self-register in a Cognito user pool, abuse unauthenticated identity pool roles, or alter user attributes to gain elevated application or AWS access.",
+      "tags": [
+        "aws",
+        "cognito",
+        "identity",
+        "privilege-escalation"
+      ],
+      "attack": [
+        "T1078.004",
+        "T1136.003",
+        "T1098"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Document whether each user pool allows self sign-up and which attributes are writable",
+          "Review the unauthenticated role on each identity pool for minimal permissions",
+          "Enable Cognito advanced security features and send events to Splunk"
+        ],
+        "identification": [
+          "Count SignUp events by source IP and email domain in the user pool",
+          "Check for UpdateUserAttributes calls changing attributes used for authorization, such as custom:role",
+          "List AWS API calls made by the identity pool's unauthenticated role",
+          "Check whether GetCredentialsForIdentity was called at high volume from few IPs",
+          "Determine whether the app trusts client-writable attributes for access decisions"
+        ],
+        "containment": [
+          "Disable self sign-up on the user pool while investigating",
+          "Disable or delete the attacker-created user accounts",
+          "Remove permissions from the unauthenticated identity pool role"
+        ],
+        "eradication": [
+          "Mark authorization attributes as read-only for the app client",
+          "Revoke refresh tokens for affected users with admin-user-global-sign-out",
+          "Remove data or resources the abused role created"
+        ],
+        "recovery": [
+          "Re-enable sign-up with email verification and WAF rate limiting",
+          "Confirm legitimate users can sign in and keep correct roles",
+          "Monitor sign-up volume for a week after re-enabling"
+        ],
+        "lessons": [
+          "Move role assignment to server-side groups instead of user attributes",
+          "Add a detection for spikes in SignUp per source IP",
+          "Review identity pool roles in the next cloud permission audit"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Cognito sign-ups and attribute changes",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource IN (cognito-idp.amazonaws.com) eventName IN (SignUp, ConfirmSignUp, UpdateUserAttributes, AdminUpdateUserAttributes, AdminAddUserToGroup) | stats count values(eventName) as actions by sourceIPAddress, additionalEventData.userPoolId | sort - count"
+        },
+        {
+          "title": "Unauthenticated identity pool credential issuance",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=cognito-identity.amazonaws.com eventName IN (GetId, GetCredentialsForIdentity, GetOpenIdToken) | timechart span=15m count by sourceIPAddress limit=10"
+        },
+        {
+          "title": "AWS calls by the unauthenticated role",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail userIdentity.type=WebIdentityUser OR userIdentity.sessionContext.sessionIssuer.userName=*Unauth* | stats count values(eventName) as actions by userIdentity.arn, sourceIPAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-ecr-image-tampered",
+      "name": "ECR container image tag overwritten with a tampered image",
+      "summary": "Use when an ECR image tag used by production is pushed by an unexpected principal, a digest changes outside a release, or a repository policy opens pull or push access externally.",
+      "tags": [
+        "aws",
+        "ecr",
+        "containers",
+        "supply-chain"
+      ],
+      "attack": [
+        "T1525",
+        "T1195.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable tag immutability on production ECR repositories",
+          "Sign images in CI and verify signatures at deploy time",
+          "Record the expected image digest for each production release"
+        ],
+        "identification": [
+          "Find PutImage and CompleteLayerUpload calls on the repository by principal and source IP",
+          "Compare the current tag's digest with the digest recorded at the last release",
+          "Pull the suspect image by digest into an isolated sandbox and diff its layers",
+          "Check SetRepositoryPolicy for statements granting push to unknown principals",
+          "List ECS services, EKS pods, or Lambda functions that pulled the suspect digest"
+        ],
+        "containment": [
+          "Pin running services to the last known-good image digest and redeploy",
+          "Revoke the pushing principal's credentials",
+          "Remove external statements from the repository policy"
+        ],
+        "eradication": [
+          "Delete the tampered image digest with batch-delete-image after preserving a copy",
+          "Investigate containers that ran the tampered image for credential theft or callbacks",
+          "Rotate secrets available to tasks or pods that ran the tampered image"
+        ],
+        "recovery": [
+          "Rebuild the image from source in CI and push with a new signed tag",
+          "Turn on tag immutability and confirm pushes to existing tags fail",
+          "Run ECR enhanced scanning on the rebuilt image"
+        ],
+        "lessons": [
+          "Enforce signature verification with an admission controller or ECS deploy check",
+          "Limit ecr:PutImage to the CI role by repository policy",
+          "Track how many workloads ran the tampered digest and for how long"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Image pushes by principal",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=ecr.amazonaws.com eventName IN (PutImage, CompleteLayerUpload, InitiateLayerUpload, BatchDeleteImage, SetRepositoryPolicy, PutImageTagMutability) | table _time eventName requestParameters.repositoryName requestParameters.imageTag responseElements.image.imageId.imageDigest userIdentity.arn sourceIPAddress"
+        },
+        {
+          "title": "Who pulled the suspect digest",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource=ecr.amazonaws.com eventName IN (BatchGetImage, GetDownloadUrlForLayer) requestParameters.repositoryName=<repo> | stats count min(_time) as first by userIdentity.arn, sourceIPAddress | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-route53-hijack",
+      "name": "Route 53 DNS records or domain hijacked",
+      "summary": "Use when Route 53 record sets are changed to attacker IPs, a hosted zone's delegation changes, or a registered domain is transferred or has its name servers altered.",
+      "tags": [
+        "aws",
+        "route53",
+        "dns",
+        "hijacking"
+      ],
+      "attack": [
+        "T1584.002"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable transfer lock on every domain registered with Route 53 Domains",
+          "Export all hosted zone record sets daily for comparison",
+          "Enable Route 53 query logging for public hosted zones"
+        ],
+        "identification": [
+          "List ChangeResourceRecordSets calls and the records each one changed",
+          "Diff current record sets against the last daily export",
+          "Check route53domains events for UpdateDomainNameservers, TransferDomain, or DisableDomainTransferLock",
+          "Resolve the changed records from an external resolver to confirm public impact",
+          "Look for dangling CNAMEs that point to deprovisioned S3 buckets or Elastic Beanstalk names"
+        ],
+        "containment": [
+          "Revert changed record sets from the export with change-resource-record-sets",
+          "Re-enable domain transfer lock and restore the correct name servers",
+          "Revoke the principal's sessions that changed DNS"
+        ],
+        "eradication": [
+          "Remove dangling records pointing to resources no longer owned",
+          "Revoke TLS certificates issued to the attacker for the hijacked names",
+          "Check for CAA records and add one limiting issuance to approved CAs"
+        ],
+        "recovery": [
+          "Monitor resolution of critical names from multiple regions until TTLs expire",
+          "Notify users if traffic was redirected to an attacker endpoint",
+          "Check certificate transparency logs for further unexpected certificates"
+        ],
+        "lessons": [
+          "Restrict route53:ChangeResourceRecordSets on production zones to the DNS pipeline role",
+          "Add a detection for name server or delegation changes",
+          "Schedule a recurring dangling DNS review"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "DNS record and domain changes",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource IN (route53.amazonaws.com, route53domains.amazonaws.com) eventName IN (ChangeResourceRecordSets, DeleteHostedZone, CreateHostedZone, UpdateDomainNameservers, TransferDomain, TransferDomainToAnotherAwsAccount, DisableDomainTransferLock) | table _time eventName requestParameters.hostedZoneId requestParameters.changeBatch.changes{}.resourceRecordSet.name requestParameters.domainName userIdentity.arn sourceIPAddress"
+        },
+        {
+          "title": "Changed records detail",
+          "phase": "containment",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName=ChangeResourceRecordSets requestParameters.hostedZoneId=<zone_id> | spath path=requestParameters.changeBatch.changes{} output=change | mvexpand change | spath input=change | table _time action resourceRecordSet.name resourceRecordSet.type resourceRecordSet.resourceRecords{}.value userIdentity.arn"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-security-group-open-ssh-rdp",
+      "name": "Security group opened to 0.0.0.0/0 on SSH or RDP",
+      "summary": "Use when AuthorizeSecurityGroupIngress allows 0.0.0.0/0 or ::/0 on port 22 or 3389, exposing instances to internet brute force and exploitation.",
+      "tags": [
+        "aws",
+        "ec2",
+        "security-group",
+        "exposure",
+        "misconfiguration"
+      ],
+      "attack": [
+        "T1562.007",
+        "T1133"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Provide Session Manager or EC2 Instance Connect Endpoint so SSH and RDP are not needed",
+          "Deploy a Config rule for restricted-ssh and restricted-common-ports",
+          "Enable VPC flow logs on VPCs with internet gateways"
+        ],
+        "identification": [
+          "Identify the security group, rule, and caller of AuthorizeSecurityGroupIngress",
+          "List instances and ENIs attached to the security group that have public IPs",
+          "Query VPC flow logs for accepted inbound connections on 22 or 3389 from the internet",
+          "Check instance auth logs for successful logins from external IPs during exposure",
+          "Ask the caller whether the rule was a temporary troubleshooting change"
+        ],
+        "containment": [
+          "Revoke the 0.0.0.0/0 rule with revoke-security-group-ingress",
+          "Replace it with the corporate egress range if remote access is still required",
+          "Isolate any instance with signs of successful external login"
+        ],
+        "eradication": [
+          "Investigate compromised instances for new users, keys, or services",
+          "Rebuild compromised instances from a clean AMI",
+          "Rotate SSH keys and local passwords on exposed instances"
+        ],
+        "recovery": [
+          "Move administrative access to Session Manager for the affected team",
+          "Confirm the Config rule reports compliant for the security group",
+          "Monitor flow logs for continued inbound attempts after the fix"
+        ],
+        "lessons": [
+          "Add Config auto-remediation that removes open SSH and RDP rules",
+          "Record the exposure duration and number of inbound attempts",
+          "Train engineers on the Session Manager access path"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Ingress rules opened to the internet on admin ports",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName IN (AuthorizeSecurityGroupIngress, ModifySecurityGroupRules) | spath path=requestParameters.ipPermissions.items{} output=perm | mvexpand perm | spath input=perm | search (ipRanges.items{}.cidrIp=\"0.0.0.0/0\" OR ipv6Ranges.items{}.cidrIpv6=\"::/0\") (fromPort<=22 toPort>=22 OR fromPort<=3389 toPort>=3389 OR ipProtocol=-1) | table _time requestParameters.groupId fromPort toPort userIdentity.arn sourceIPAddress"
+        },
+        {
+          "title": "Accepted inbound SSH and RDP from the internet",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudwatchlogs:vpcflow dest_port IN (22, 3389) action=ACCEPT NOT (src_ip=10.0.0.0/8 OR src_ip=172.16.0.0/12 OR src_ip=192.168.0.0/16) | stats count dc(src_ip) as sources by dest_ip, dest_port | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-vpc-flow-logs-disabled",
+      "name": "VPC flow logs deleted or disabled",
+      "summary": "Use when DeleteFlowLogs removes network visibility from a VPC, subnet, or ENI, or the flow log destination is changed, often to hide lateral movement or exfiltration.",
+      "tags": [
+        "aws",
+        "vpc",
+        "flow-logs",
+        "defense-evasion"
+      ],
+      "attack": [
+        "T1562.008"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Create flow logs centrally with a Config rule vpc-flow-logs-enabled",
+          "Alert when a VPC stops sending flow records to Splunk for over an hour",
+          "Restrict ec2:DeleteFlowLogs to the network security role"
+        ],
+        "identification": [
+          "Identify the flow log IDs deleted and the VPCs or ENIs they covered",
+          "Identify the caller and source IP of DeleteFlowLogs",
+          "Determine the time window with missing flow data for each VPC",
+          "Review CloudTrail for EC2, security group, or route changes in the same VPC during the gap",
+          "Check whether the flow log destination bucket or log group was also altered"
+        ],
+        "containment": [
+          "Recreate flow logs with the standard format and destination",
+          "Revoke the caller's sessions and keys",
+          "Add a temporary deny on ec2:DeleteFlowLogs across the account"
+        ],
+        "eradication": [
+          "Use GuardDuty findings, which use an independent flow log feed, to review the gap",
+          "Revert network changes made during the gap",
+          "Investigate hosts in the VPC with alternative telemetry such as EDR"
+        ],
+        "recovery": [
+          "Confirm flow records arrive from every ENI in the VPC",
+          "Reconcile the flow log inventory with the Config rule results",
+          "Document the visibility gap in the incident record"
+        ],
+        "lessons": [
+          "Add an SCP denying ec2:DeleteFlowLogs except for the network security role",
+          "Add a data-gap detection per VPC",
+          "Review why the caller had permission to delete flow logs"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Flow log deletions and changes",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName IN (DeleteFlowLogs, CreateFlowLogs, DeleteLogGroup, PutRetentionPolicy) | table _time awsRegion eventName requestParameters.DeleteFlowLogsRequest.FlowLogId.content requestParameters.logGroupName userIdentity.arn sourceIPAddress"
+        },
+        {
+          "title": "Flow log data gaps by interface",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudwatchlogs:vpcflow earliest=-7d | stats max(_time) as last_seen by interface_id, vpc_id | where last_seen < relative_time(now(), \"-1h\") | convert ctime(last_seen)"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-billing-spike-unknown-regions",
+      "name": "Billing spike from resources in unused AWS regions",
+      "summary": "Use when Cost Anomaly Detection or a budget alert shows sudden spend in regions the organization does not operate in, often from attacker-launched compute or AI services.",
+      "tags": [
+        "aws",
+        "billing",
+        "resource-hijacking",
+        "regions"
+      ],
+      "attack": [
+        "T1496",
+        "T1535"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable AWS Cost Anomaly Detection with alerts to the SOC and cloud finance",
+          "Document which regions each account is approved to use",
+          "Ensure CloudTrail is multi-region so unused regions are still logged"
+        ],
+        "identification": [
+          "Open Cost Explorer grouped by region and service to locate the spend",
+          "List write API calls in the unused regions and the principals that made them",
+          "Check for Bedrock InvokeModel or SageMaker usage in the unused regions",
+          "Check for opt-in region enablement with EnableRegion in the account",
+          "Estimate the hourly burn rate to prioritize the response"
+        ],
+        "containment": [
+          "Apply an SCP denying all actions in unapproved regions using aws:RequestedRegion",
+          "Revoke the credentials responsible for the regional activity",
+          "Stop and snapshot running resources in those regions"
+        ],
+        "eradication": [
+          "Terminate attacker instances, endpoints, and model jobs in each unused region",
+          "Disable opt-in regions that were enabled by the attacker",
+          "Delete key pairs, AMIs, and VPCs created in unused regions"
+        ],
+        "recovery": [
+          "Open an AWS Support billing case with the incident timeline",
+          "Confirm Cost Explorer shows spend returning to baseline",
+          "Keep the region-deny SCP in place permanently"
+        ],
+        "lessons": [
+          "Record which regions lacked an SCP deny and close the gap org-wide",
+          "Lower the anomaly threshold for accounts with stable spend",
+          "Measure cost incurred between first regional API call and containment"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Write activity by region against approved list",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail readOnly=false NOT awsRegion IN (<approved_regions>) | stats count values(eventSource) as services dc(eventName) as actions by recipientAccountId, awsRegion, userIdentity.arn | sort - count"
+        },
+        {
+          "title": "Region enablement and AI service use",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail (eventName=EnableRegion OR eventSource=bedrock.amazonaws.com OR eventName=CreateEndpoint OR eventName=CreateTrainingJob) | stats count by awsRegion, eventName, userIdentity.arn, sourceIPAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-assumerole-chaining",
+      "name": "Suspicious AssumeRole chaining across accounts",
+      "summary": "Use when a session assumes a sequence of roles across accounts in an unusual path, reaching privileged roles the original principal should not reach.",
+      "tags": [
+        "aws",
+        "sts",
+        "lateral-movement",
+        "cross-account"
+      ],
+      "attack": [
+        "T1550.001",
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Require sts:SourceIdentity on role sessions so the original user persists through chains",
+          "Collect CloudTrail from all accounts into one index for cross-account correlation",
+          "Map which roles are designed to be assumed from which accounts"
+        ],
+        "identification": [
+          "Reconstruct the chain by joining AssumeRole responseElements.assumedRoleUser with the next caller ARN",
+          "Identify the original human or workload at the start of the chain using sourceIdentity",
+          "Compare each hop against the documented role assumption map",
+          "List privileged actions taken by the final role session in the chain",
+          "Check for role session names designed to imitate automation"
+        ],
+        "containment": [
+          "Revoke sessions on every role in the chain issued before the current time",
+          "Disable the originating credential at the start of the chain",
+          "Tighten the trust policy on the hop that should not have allowed the assumption"
+        ],
+        "eradication": [
+          "Remove trust relationships that allowed unexpected hops",
+          "Undo changes made by the final session in each target account",
+          "Check for persistence created in each account along the chain"
+        ],
+        "recovery": [
+          "Validate legitimate automation still assumes roles along approved paths",
+          "Enforce sourceIdentity in trust policies with sts:SetSourceIdentity",
+          "Watch for new AssumeRole attempts from the original principal"
+        ],
+        "lessons": [
+          "Add a detection for role chains longer than the documented maximum",
+          "Review roles that trust entire accounts rather than specific principals",
+          "Count how many accounts were reachable from the starting credential"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "AssumeRole hops with source and target",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName=AssumeRole | table _time userIdentity.arn userIdentity.accountId requestParameters.roleArn requestParameters.roleSessionName requestParameters.sourceIdentity responseElements.assumedRoleUser.arn sourceIPAddress | sort _time"
+        },
+        {
+          "title": "Chain depth per source identity",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName=AssumeRole | eval origin=coalesce('requestParameters.sourceIdentity', 'userIdentity.sourceIdentity', 'userIdentity.arn') | stats dc(requestParameters.roleArn) as roles dc(recipientAccountId) as accounts values(requestParameters.roleArn) as path by origin | where accounts > 2 | sort - accounts"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-console-login-no-mfa",
+      "name": "AWS console sign-in by an IAM user without MFA",
+      "summary": "Use when CloudTrail ConsoleLogin shows MFAUsed No for an IAM user, especially a privileged one or from a new location, or after repeated failed sign-ins.",
+      "tags": [
+        "aws",
+        "console",
+        "mfa",
+        "authentication"
+      ],
+      "attack": [
+        "T1078.004",
+        "T1110"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Require MFA through an IAM policy that denies actions when aws:MultiFactorAuthPresent is false",
+          "Keep the IAM credential report to show which users have console passwords and MFA",
+          "Alert on ConsoleLogin events with MFAUsed No"
+        ],
+        "identification": [
+          "Confirm the user, source IP, user agent, and MFAUsed value on the ConsoleLogin event",
+          "Count failed ConsoleLogin attempts for the user before the success",
+          "Check whether the user has an MFA device registered in the credential report",
+          "List console actions taken in the session, including IAM and billing pages",
+          "Contact the user to confirm whether the sign-in was theirs"
+        ],
+        "containment": [
+          "Delete the user's login profile to disable console access",
+          "Attach a deny-all policy if the sign-in is unconfirmed",
+          "Check for and remove any MFA device the attacker registered during the session"
+        ],
+        "eradication": [
+          "Reset the console password and require MFA enrollment at next sign-in",
+          "Revert changes made during the unauthorized session",
+          "Determine how the password leaked, such as reuse or phishing"
+        ],
+        "recovery": [
+          "Migrate the user to IAM Identity Center with enforced MFA",
+          "Confirm the credential report shows mfa_active true",
+          "Watch for further password-only sign-in attempts on the user"
+        ],
+        "lessons": [
+          "Count remaining IAM users with passwords and no MFA and set a removal date",
+          "Add a detection on repeated ConsoleLogin failures followed by success",
+          "Review whether the MFA-enforcement policy was attached to this user"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Console sign-ins without MFA",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName=ConsoleLogin userIdentity.type=IAMUser additionalEventData.MFAUsed=No | stats count min(_time) as first max(_time) as last values(responseElements.ConsoleLogin) as results by userIdentity.userName, sourceIPAddress, userAgent | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Failed then successful console sign-ins",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.app=*signin.amazonaws.com* by Authentication.user, Authentication.src, Authentication.action | xyseries Authentication.user Authentication.action count | where failure > 5 AND success > 0"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-identity-center-compromise",
+      "name": "IAM Identity Center user or configuration compromised",
+      "summary": "Use when an attacker gains control of an IAM Identity Center user, changes the identity source, creates permission sets, or assigns admin access across accounts in the organization.",
+      "tags": [
+        "aws",
+        "identity-center",
+        "sso",
+        "privilege-escalation"
+      ],
+      "attack": [
+        "T1078.004",
+        "T1098",
+        "T1484.002"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Integrate Identity Center with the corporate IdP and require phishing-resistant MFA there",
+          "Restrict Identity Center administration to a delegated admin account with few operators",
+          "Alert on CreateAccountAssignment, CreatePermissionSet, and identity source changes"
+        ],
+        "identification": [
+          "List CreateAccountAssignment events and the principals and permission sets assigned",
+          "Check for new or modified permission sets with AdministratorAccess attached",
+          "Review sso-directory events for CreateUser, password resets, or MFA device changes",
+          "Check whether the identity source or external IdP SAML metadata was changed",
+          "List federated sessions created by the compromised user across member accounts"
+        ],
+        "containment": [
+          "Disable the compromised Identity Center user and revoke its active sessions",
+          "Delete unauthorized account assignments with delete-account-assignment",
+          "Revert identity source or IdP metadata changes"
+        ],
+        "eradication": [
+          "Delete rogue permission sets and inline policies added to existing sets",
+          "Revoke role sessions in member accounts created through the compromised assignments",
+          "Reset the user's IdP credentials and MFA factors"
+        ],
+        "recovery": [
+          "Reconcile account assignments with the access-request system of record",
+          "Reprovision permission sets to all accounts and confirm they match IaC",
+          "Confirm legitimate users can still sign in to the access portal"
+        ],
+        "lessons": [
+          "Require approval workflow for new admin permission set assignments",
+          "Add a detection for permission set changes outside the IaC pipeline",
+          "Measure how many accounts received the rogue assignment"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Identity Center assignment and permission set changes",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventSource IN (sso.amazonaws.com, sso-directory.amazonaws.com, identitystore.amazonaws.com) eventName IN (CreateAccountAssignment, CreatePermissionSet, AttachManagedPolicyToPermissionSet, PutInlinePolicyToPermissionSet, ProvisionPermissionSet, CreateUser, UpdatePassword, DeleteMfaDeviceForUser, UpdateExternalIdPConfigurationForDirectory) | table _time eventName requestParameters userIdentity.arn sourceIPAddress"
+        },
+        {
+          "title": "Federated sessions from the suspect user",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName=AssumeRoleWithSAML OR (userIdentity.arn=*AWSReservedSSO* userIdentity.arn=*<suspect_user>*) | stats count values(eventName) as actions by recipientAccountId, userIdentity.arn, sourceIPAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-compromised-cicd-role",
+      "name": "CI/CD deployment role abused from a compromised pipeline",
+      "summary": "Use when a GitHub Actions, GitLab, or Jenkins deployment role is assumed by an unexpected repository, branch, or runner, or performs actions outside its normal deployment pattern.",
+      "tags": [
+        "aws",
+        "cicd",
+        "oidc",
+        "supply-chain",
+        "iam"
+      ],
+      "attack": [
+        "T1078.004",
+        "T1195.002",
+        "T1552.001"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Scope OIDC trust policies with token.actions.githubusercontent.com:sub to repository and branch",
+          "Give each pipeline its own deployment role with least privilege",
+          "Baseline the API calls each deployment role makes during a normal release"
+        ],
+        "identification": [
+          "Check AssumeRoleWithWebIdentity events for the sub claim and identify the repo and ref",
+          "Compare the role's API calls against the normal deployment baseline",
+          "Review the pipeline run logs and workflow file changes around the time of the session",
+          "Identify whether a pull request from a fork or a new branch triggered the run",
+          "Look for the role's credentials being used from IPs outside the runner pool"
+        ],
+        "containment": [
+          "Restrict the role's trust policy to the protected main branch only",
+          "Revoke all active sessions for the deployment role",
+          "Disable the affected workflow or pipeline until reviewed"
+        ],
+        "eradication": [
+          "Revert malicious workflow, buildspec, or Jenkinsfile commits",
+          "Remove resources and IAM changes the role made outside the release",
+          "Rotate long-lived secrets stored in the CI system's variables"
+        ],
+        "recovery": [
+          "Redeploy the application from a verified commit through the hardened pipeline",
+          "Confirm the role's activity matches the deployment baseline on the next release",
+          "Require code owner review on workflow file changes"
+        ],
+        "lessons": [
+          "Audit every OIDC trust policy for wildcard sub conditions",
+          "Add a detection for deployment roles calling IAM or STS outside releases",
+          "Decide whether self-hosted runners need isolation per repository"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Web identity assumptions of the deployment role",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail eventName=AssumeRoleWithWebIdentity requestParameters.roleArn=*<deploy_role>* | table _time userIdentity.userName userIdentity.identityProvider requestParameters.roleSessionName sourceIPAddress responseElements.subjectFromWebIdentityToken"
+        },
+        {
+          "title": "Deployment role actions outside its baseline",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail userIdentity.sessionContext.sessionIssuer.userName=<deploy_role> earliest=-30d latest=-1d | stats count by eventName | fields eventName | eval baseline=1 | append [ search index=aws sourcetype=aws:cloudtrail userIdentity.sessionContext.sessionIssuer.userName=<deploy_role> earliest=-1d | stats count by eventName ] | stats max(baseline) as baseline sum(count) as recent by eventName | where isnull(baseline)"
+        }
+      ]
+    },
+    {
+      "id": "lib-aws-eks-node-role-abuse",
+      "name": "EKS node IAM role credentials abused from a pod",
+      "summary": "Use when a compromised pod reaches the node's instance metadata to use the EKS node role, or the node role is used for actions outside normal kubelet and ECR pulls.",
+      "tags": [
+        "aws",
+        "eks",
+        "kubernetes",
+        "imds",
+        "credential-theft"
+      ],
+      "attack": [
+        "T1552.005",
+        "T1078.004",
+        "T1611"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Set IMDSv2 hop limit to 1 on EKS node groups so pods cannot reach node credentials",
+          "Use EKS Pod Identity or IRSA so workloads never need the node role",
+          "Send EKS control plane audit logs to Splunk"
+        ],
+        "identification": [
+          "Find node role API calls that are not EC2 describe, ECR pull, or EKS describe calls",
+          "Identify the node instance ID from the role session name and list pods scheduled there",
+          "Check kube audit logs for exec or attach into pods on that node",
+          "Review the suspect pod's image and processes for curl to 169.254.169.254",
+          "Check whether node role credentials were used from IPs outside the VPC"
+        ],
+        "containment": [
+          "Cordon and drain the affected node and isolate the suspect pod's namespace with a network policy",
+          "Revoke node role sessions issued before now",
+          "Apply the hop-limit setting to the node group launch template"
+        ],
+        "eradication": [
+          "Replace the node with a fresh one from the managed node group",
+          "Remove the compromised workload and fix the vulnerability it was exploited through",
+          "Remove extra permissions attached to the node role over time"
+        ],
+        "recovery": [
+          "Move workloads that used node role permissions to Pod Identity",
+          "Confirm the node role only performs expected calls after recovery",
+          "Run a pod-level IMDS reachability check across clusters"
+        ],
+        "lessons": [
+          "Add a detection on node role API calls outside the allowed set",
+          "Count node groups still using hop limit 2 and fix them",
+          "Review pod security standards for the affected namespace"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Unusual API calls by EKS node roles",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail userIdentity.sessionContext.sessionIssuer.userName=*NodeInstanceRole* NOT eventName IN (Describe*, GetAuthorizationToken, BatchGetImage, GetDownloadUrlForLayer, BatchCheckLayerAvailability, AssignPrivateIpAddresses, AttachNetworkInterface, CreateNetworkInterface) | stats count values(eventName) as actions by userIdentity.principalId, sourceIPAddress"
+        },
+        {
+          "title": "Exec into pods on the affected node",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit objectRef.subresource IN (exec, attach) | table _time user.username objectRef.namespace objectRef.name sourceIPs{} requestURI"
+        }
+      ]
+    }
+  ]
+}

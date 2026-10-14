@@ -1,0 +1,1277 @@
+{
+  "category": {
+    "id": "supply-chain",
+    "name": "Supply chain & third parties",
+    "description": "Incidents that arrive through vendors, MSPs, open-source packages, software updates, signing certificates, and partners you trust."
+  },
+  "playbooks": [
+    {
+      "id": "lib-supply-chain-trojanized-vendor-update",
+      "name": "Trojanized software update delivered by a trusted vendor",
+      "summary": "Use when a vendor discloses, or you discover, that a signed update for software you run (monitoring, management, or agent software) carried a backdoor that executed with the product's privileges.",
+      "tags": [
+        "supply-chain",
+        "vendor",
+        "software-update",
+        "backdoor"
+      ],
+      "attack": [
+        "T1195.002",
+        "T1071.001",
+        "T1078",
+        "T1553.002"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Maintain a software inventory listing every install of each vendor product with version and host",
+          "Record the update channel for each product: auto-update, internal mirror, or manual",
+          "Keep vendor security contacts and advisory feeds subscribed for all privileged software",
+          "Restrict outbound internet from management servers to an allowlist of vendor update hosts"
+        ],
+        "identification": [
+          "Match installed versions against the vendor's list of trojanized build numbers on every host",
+          "Hash the product binaries on each server and compare them with the vendor-published clean hashes",
+          "Search proxy and DNS logs for the advisory's beacon domains from hosts running the product",
+          "Identify which hosts actually beaconed versus only received the malicious build",
+          "Review service-account activity used by the product for logons outside its normal targets"
+        ],
+        "containment": [
+          "Isolate servers running the trojanized build from the network or block their egress",
+          "Block the advisory's C2 domains and IPs at DNS, proxy, and firewall",
+          "Disable or rotate the product's service accounts and any credentials stored in its console",
+          "Pause automatic updates from the vendor until a verified clean build is published"
+        ],
+        "eradication": [
+          "Rebuild affected servers from known-good media rather than uninstalling the product in place",
+          "Hunt for second-stage tooling on hosts that beaconed, including new services and scheduled tasks",
+          "Reset credentials of every account that authenticated through the compromised servers"
+        ],
+        "recovery": [
+          "Install the vendor's verified clean release and confirm hashes before reconnecting",
+          "Monitor rebuilt hosts and the product's service accounts for renewed beaconing for 30 days",
+          "Reintroduce vendor connectivity behind tightened egress rules"
+        ],
+        "lessons": [
+          "Measure time from vendor advisory to complete inventory of affected installs",
+          "Add an egress allowlist detection for management servers contacting unlisted domains",
+          "Decide whether high-privilege vendor updates need a staging soak period before rollout",
+          "Review the vendor's breach report and reassess the contract's security obligations"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Hosts resolving advisory beacon domains",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first max(_time) as last from datamodel=Network_Resolution where DNS.query IN (\"<ioc_domain_1>\",\"*.<ioc_domain_2>\") by DNS.src DNS.query | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Child processes spawned by the vendor product",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Processes.process) as cmd from datamodel=Endpoint.Processes where Processes.parent_process_name=\"<vendor_service>.exe\" by Processes.dest Processes.process_name | sort - count"
+        },
+        {
+          "title": "Logons by the product service account",
+          "phase": "containment",
+          "spl": "index=* sourcetype=WinEventLog:Security EventCode=4624 Account_Name=\"<vendor_svc_account>\" | stats count values(Logon_Type) as types by ComputerName src_ip | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-malicious-oss-dependency",
+      "name": "Malicious open-source dependency running in production",
+      "summary": "Use when a package already deployed in a production service is reported as malicious, for example a maintainer account takeover that pushed a release which steals environment variables or opens a shell.",
+      "tags": [
+        "supply-chain",
+        "open-source",
+        "dependency",
+        "production"
+      ],
+      "attack": [
+        "T1195.001",
+        "T1552.001",
+        "T1041"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Generate an SBOM for every production service at build time and store it with the release",
+          "Pin dependencies with lockfiles and integrity hashes in all repositories",
+          "Subscribe to the ecosystem's malware advisories through the dependency scanner",
+          "Record which services hold secrets in environment variables reachable by application code"
+        ],
+        "identification": [
+          "Query stored SBOMs for the malicious package name and affected versions across all services",
+          "Determine which deployments ran the bad version and the exact time window it was live",
+          "Read the malicious release's diff to learn what it collects and where it sends data",
+          "Search egress logs from affected pods or hosts for the payload's exfiltration endpoint"
+        ],
+        "containment": [
+          "Redeploy affected services pinned to the last known-good version of the package",
+          "Block the payload's exfiltration domain at the egress proxy and cluster network policy",
+          "Rotate every secret present in the environment of affected services during the window",
+          "Add the bad versions to the internal registry proxy's deny list"
+        ],
+        "eradication": [
+          "Purge the malicious tarball from internal caches and build agent package caches",
+          "Check affected hosts for files or cron entries dropped by the package's install script",
+          "Remove the package entirely if a safe maintained alternative exists"
+        ],
+        "recovery": [
+          "Confirm rebuilt images contain only the clean version by re-scanning their SBOMs",
+          "Watch rotated credentials for use from unexpected sources over the next weeks",
+          "Notify data owners if the payload could have read customer data"
+        ],
+        "lessons": [
+          "Track how long the malicious version took to reach production after publication",
+          "Introduce a minimum package age policy before new releases can be consumed",
+          "Evaluate disabling install scripts in CI builds by default"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Egress from service hosts to exfiltration endpoint",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count sum(All_Traffic.bytes_out) as bytes_out from datamodel=Network_Traffic where All_Traffic.dest IN (\"<ioc_ip>\") by All_Traffic.src All_Traffic.dest All_Traffic.dest_port | sort - bytes_out"
+        },
+        {
+          "title": "Unexpected shells spawned by the app runtime",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.parent_process_name IN (\"node\",\"python3\",\"java\") Processes.process_name IN (\"sh\",\"bash\",\"curl\",\"wget\") by Processes.dest Processes.parent_process_name Processes.process"
+        },
+        {
+          "title": "Deployments of the affected service in the window",
+          "phase": "containment",
+          "spl": "index=* sourcetype=kube:apiserver:audit verb IN (\"create\",\"patch\") objectRef.resource=deployments objectRef.name=\"<service>\" | table _time user.username objectRef.namespace requestObject.spec.template.spec.containers{}.image"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-typosquatted-package",
+      "name": "Typosquatted package installed by a developer or build",
+      "summary": "Use when a package whose name imitates a popular library was installed on a workstation or build agent, typically running an install-time script that harvests tokens or downloads a second stage.",
+      "tags": [
+        "supply-chain",
+        "typosquatting",
+        "package-manager",
+        "developer"
+      ],
+      "attack": [
+        "T1195.001",
+        "T1204.002",
+        "T1552.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Route all package installs through an internal registry proxy that logs every download",
+          "Enable EDR on developer workstations and build agents with process tree retention",
+          "Publish an approved-package list for common libraries developers rely on"
+        ],
+        "identification": [
+          "Pull registry proxy logs to find every client that downloaded the typosquatted name",
+          "Find which repositories reference the package in manifests or lockfiles",
+          "Review the package's install script to see what files, tokens, and hosts it touches",
+          "Inspect EDR process trees on affected machines for the install script's child processes"
+        ],
+        "containment": [
+          "Block the typosquatted name and its publisher in the registry proxy",
+          "Isolate workstations or agents where the install script executed",
+          "Revoke tokens stored in the developer's home directory, such as cloud, Git, and registry tokens"
+        ],
+        "eradication": [
+          "Replace the typosquatted dependency with the intended package and regenerate lockfiles",
+          "Delete persistence the script created, such as shell profile edits or launch agents",
+          "Reimage the workstation if a second-stage binary ran"
+        ],
+        "recovery": [
+          "Reissue developer credentials with hardware-backed MFA after cleanup",
+          "Verify affected repositories build cleanly with the corrected dependency",
+          "Report the package to the registry's security team for takedown"
+        ],
+        "lessons": [
+          "Add a CI check that flags new dependencies within a small edit distance of popular names",
+          "Measure how many installs bypassed the registry proxy",
+          "Brief developers with the actual misspelled name as a training example"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Clients downloading the typosquatted package via proxy",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Web where Web.url=\"*/<typosquat_name>/-/*\" by Web.src Web.user Web.url | convert ctime(first)"
+        },
+        {
+          "title": "Install script child processes on developer hosts",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.parent_process IN (\"*npm install*\",\"*pip install*\",\"*setup.py*\") Processes.process_name IN (\"curl\",\"wget\",\"powershell.exe\",\"sh\") by Processes.dest Processes.user Processes.process"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-browser-extension-pushed",
+      "name": "Vendor-pushed browser extension update turns malicious",
+      "summary": "Use when a browser extension your users already have installed receives an update, often after the publisher's developer account was hijacked, that injects scripts, steals sessions, or reads page contents.",
+      "tags": [
+        "supply-chain",
+        "browser-extension",
+        "session-theft",
+        "endpoint"
+      ],
+      "attack": [
+        "T1176",
+        "T1539",
+        "T1195.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Manage browsers centrally with an extension allowlist enforced by policy",
+          "Collect installed extension IDs and versions from all managed browsers into the inventory",
+          "Know how to force-remove an extension through Chrome and Edge enterprise policy"
+        ],
+        "identification": [
+          "List every user and device with the extension ID installed and its current version",
+          "Obtain the malicious version's manifest and code to see which sites and permissions it uses",
+          "Search proxy logs for requests to the extension's new remote script or exfiltration host",
+          "Identify SaaS apps whose session cookies were readable under the extension's host permissions"
+        ],
+        "containment": [
+          "Add the extension ID to the browser blocklist policy to force uninstall everywhere",
+          "Block the extension's command and exfiltration domains at the proxy",
+          "Revoke active sessions in the SaaS apps the extension could read for affected users"
+        ],
+        "eradication": [
+          "Confirm the extension is gone from every device by re-querying browser inventory",
+          "Clear browser profiles' cached data for affected users where policy allows",
+          "Check affected SaaS tenants for actions taken with stolen sessions, such as new OAuth grants"
+        ],
+        "recovery": [
+          "Re-allow a replacement or the clean version only after the publisher confirms account recovery",
+          "Require affected users to sign in again with MFA on all SaaS apps",
+          "Communicate to users which extension was removed and why"
+        ],
+        "lessons": [
+          "Review whether the extension's permissions were ever needed for its business purpose",
+          "Add detection for newly observed extension update hosts in proxy traffic",
+          "Set a policy to pin extension versions for high-permission extensions"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Browser traffic to extension exfiltration host",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count dc(Web.user) as users from datamodel=Web where Web.dest IN (\"<ioc_domain>\") by Web.src Web.user Web.http_method | sort - count"
+        },
+        {
+          "title": "Session reuse from new IPs after extension update",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=okta:im2 eventType=\"user.session.*\" actor.alternateId IN (<affected_users>) | stats dc(client.ipAddress) as ips values(client.ipAddress) as ip_list by actor.alternateId | where ips > 2"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-msp-rmm-compromise",
+      "name": "Managed service provider or RMM platform compromised",
+      "summary": "Use when your MSP reports a breach, or their remote monitoring and management tool starts pushing scripts or installers to your endpoints that nobody in your organisation requested.",
+      "tags": [
+        "supply-chain",
+        "msp",
+        "rmm",
+        "remote-access"
+      ],
+      "attack": [
+        "T1199",
+        "T1219",
+        "T1072",
+        "T1486"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Document every RMM agent the MSP runs, its console URL, and the accounts it uses in your domain",
+          "Agree a written emergency contact and kill-switch procedure with the MSP",
+          "Forward RMM agent logs and script execution history to your own SIEM",
+          "Keep an out-of-band admin path that does not depend on the MSP's tooling"
+        ],
+        "identification": [
+          "Pull the RMM console's job history to list scripts pushed to your tenant and who ran them",
+          "Search endpoint telemetry for processes spawned by the RMM agent in the incident window",
+          "Identify MSP technician accounts that logged into your domain from unusual sources",
+          "Check whether ransomware or remote access tools were deployed through the RMM"
+        ],
+        "containment": [
+          "Stop and disable the RMM agent service on all endpoints using your own management tooling",
+          "Block the RMM platform's cloud relay addresses at the firewall",
+          "Disable all MSP technician accounts and their VPN access in your environment",
+          "Revoke the MSP's delegated admin rights in your cloud tenants"
+        ],
+        "eradication": [
+          "Remove tools the attacker installed through the RMM, such as additional remote access agents",
+          "Reset passwords for domain admins and any credential stored in the RMM's vault",
+          "Reimage endpoints where pushed scripts executed payloads"
+        ],
+        "recovery": [
+          "Restore MSP access only after receiving their forensic report and remediation evidence",
+          "Re-enroll a fresh RMM tenant with new agent keys and MFA on every technician login",
+          "Validate backups were not deleted through RMM scripts before relying on them"
+        ],
+        "lessons": [
+          "Assess whether the MSP should have standing admin rights or just-in-time access",
+          "Add detection for RMM agents executing script interpreters outside maintenance windows",
+          "Update the MSP contract with breach notification timelines and audit rights"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Processes spawned by RMM agents",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Processes.process) as cmd from datamodel=Endpoint.Processes where Processes.parent_process_name IN (\"<rmm_agent>.exe\") by Processes.dest Processes.process_name _time span=1h | sort - count"
+        },
+        {
+          "title": "MSP technician account logons",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.user IN (\"msp-*\",\"<msp_account>\") by Authentication.user Authentication.src Authentication.dest Authentication.action"
+        },
+        {
+          "title": "Remote access tools installed after compromise",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=WinEventLog:System EventCode=7045 | search Service_File_Name IN (\"*anydesk*\",\"*screenconnect*\",\"*atera*\",\"*splashtop*\") | table _time ComputerName Service_Name Service_File_Name"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-vendor-vpn-account-abuse",
+      "name": "Vendor VPN account used by an attacker",
+      "summary": "Use when a third-party support or contractor VPN account logs in from an unexpected location, at odd hours, or reaches systems outside the vendor's agreed scope.",
+      "tags": [
+        "supply-chain",
+        "vendor",
+        "vpn",
+        "valid-accounts"
+      ],
+      "attack": [
+        "T1133",
+        "T1078",
+        "T1199"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Tag every vendor VPN account with its owning company, sponsor, and permitted subnets",
+          "Require MFA and time-boxed activation for all third-party VPN accounts",
+          "Place vendor VPN pools in a segmented zone with firewall rules limited to their systems"
+        ],
+        "identification": [
+          "Pull VPN logs for the vendor account showing source IPs, geolocation, and session durations",
+          "Call the vendor's named contact to confirm whether their staff made the sessions",
+          "Map internal hosts and ports the VPN-assigned IP reached during each session",
+          "Check whether the vendor account's MFA device was recently re-registered"
+        ],
+        "containment": [
+          "Disable the vendor VPN account and terminate its active sessions on the concentrator",
+          "Block the attacker's source IPs at the VPN gateway",
+          "Disable the vendor's other accounts until the vendor confirms how credentials were exposed"
+        ],
+        "eradication": [
+          "Review systems reached over VPN for new local accounts, services, or dropped tools",
+          "Rotate credentials for application accounts the vendor uses on the target systems",
+          "Remove firewall rules that gave the vendor pool wider access than the contract requires"
+        ],
+        "recovery": [
+          "Issue new vendor credentials bound to named individuals rather than a shared login",
+          "Enable access only on request with sponsor approval and automatic expiry",
+          "Monitor the reissued vendor accounts with a dedicated alert for out-of-scope destinations"
+        ],
+        "lessons": [
+          "Count how many vendor accounts were shared, dormant, or lacked MFA",
+          "Add an alert for vendor VPN logins from countries outside the vendor's operating region",
+          "Confirm the vendor's own incident findings were received and reviewed"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Vendor VPN sessions by source and geo",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first max(_time) as last from datamodel=Authentication where Authentication.user=\"<vendor_account>\" Authentication.app=\"vpn\" by Authentication.src | iplocation Authentication.src | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Internal destinations reached from VPN-assigned IP",
+          "phase": "identification",
+          "spl": "index=* sourcetype=pan:traffic src_ip=\"<vpn_assigned_ip>\" | stats count values(dest_port) as ports sum(bytes) as bytes by dest_ip app | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-third-party-breach-data",
+      "name": "Third-party breach exposing data you shared with them",
+      "summary": "Use when a vendor notifies you, or news reports, that they suffered a breach and data your organisation sent them, such as customer records or employee details, may have been taken.",
+      "tags": [
+        "supply-chain",
+        "third-party",
+        "data-breach",
+        "notification"
+      ],
+      "attack": [],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Keep a register of vendors with the data classes and record counts shared with each",
+          "Ensure contracts include breach notification timelines and cooperation duties",
+          "Know which regulators and customer contracts require notice when processor data is exposed"
+        ],
+        "identification": [
+          "Request the vendor's written incident summary with dates, data fields, and affected record IDs",
+          "Reconcile the vendor's affected records against your own export logs to size exposure",
+          "Determine whether any shared credentials, API keys, or SSO trust exist with the vendor",
+          "Classify exposed fields by sensitivity to drive legal and notification decisions"
+        ],
+        "containment": [
+          "Suspend data feeds and API integrations to the vendor until their environment is verified",
+          "Rotate API keys, SFTP credentials, and service accounts you issued to the vendor",
+          "Engage legal counsel and privacy officer to start the notification clock assessment"
+        ],
+        "eradication": [
+          "Confirm with the vendor that the attacker's access has been removed and how",
+          "Request deletion of data the vendor no longer needs for the contracted service",
+          "Check your own systems for use of any credentials the vendor held"
+        ],
+        "recovery": [
+          "Notify affected individuals and regulators where legally required with agreed messaging",
+          "Offer credit monitoring or identity services if financial identifiers were exposed",
+          "Restore data feeds with minimised fields once the vendor provides remediation evidence"
+        ],
+        "lessons": [
+          "Review whether the vendor received more data fields than the service required",
+          "Record how quickly the vendor notified you versus the contractual requirement",
+          "Add the vendor to a higher assessment tier in the third-party risk program"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Data exports and transfers to the vendor",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count sum(All_Traffic.bytes_out) as bytes_out from datamodel=Network_Traffic where All_Traffic.dest IN (\"<vendor_ip_range>\") by All_Traffic.src All_Traffic.dest_port _time span=1d"
+        },
+        {
+          "title": "Use of vendor-issued API keys after breach date",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=access_combined (\"<vendor_api_key_id>\" OR user=\"<vendor_integration_user>\") earliest=<breach_date> | stats count values(uri_path) as paths by clientip | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-payroll-hr-vendor-breach",
+      "name": "Payroll or HR vendor breach affecting employee records",
+      "summary": "Use when your payroll, benefits, or HR platform provider is breached, putting employee identifiers, bank details, or tax data at risk and enabling direct-deposit fraud against staff.",
+      "tags": [
+        "supply-chain",
+        "payroll",
+        "hr",
+        "pii",
+        "fraud"
+      ],
+      "attack": [
+        "T1078"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Document which employee fields the payroll vendor stores, including bank and tax identifiers",
+          "Ensure HR admin accounts on the vendor portal use SSO with MFA",
+          "Know the payroll cut-off schedule and who can freeze bank detail changes"
+        ],
+        "identification": [
+          "Export the vendor portal audit log for bank account and address changes in the last 60 days",
+          "Compare direct-deposit destinations against the previous payroll run to spot new accounts",
+          "Identify employees whose profiles were viewed or exported by unfamiliar admin sessions",
+          "Confirm with the vendor whether your tenant specifically was accessed"
+        ],
+        "containment": [
+          "Freeze self-service bank detail changes until the next payroll run is verified",
+          "Reset passwords and sessions for all HR administrators on the vendor platform",
+          "Hold disputed payments and contact receiving banks for any diverted deposits"
+        ],
+        "eradication": [
+          "Revert fraudulent bank detail changes after verbal confirmation with each employee",
+          "Remove unrecognised admin users or API tokens from the vendor tenant",
+          "Disable SSO trust or SCIM tokens that the vendor's breach may have exposed"
+        ],
+        "recovery": [
+          "Run a reconciliation of the next payroll before release with a second approver",
+          "Notify affected employees with guidance on tax-fraud and phishing risks",
+          "Re-enable self-service changes with out-of-band confirmation for bank updates"
+        ],
+        "lessons": [
+          "Add a delay and notification step for any direct-deposit change",
+          "Assess whether full tax identifiers needed to be stored at the vendor",
+          "Review how employees learned of the breach versus official notice timing"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Payroll vendor admin sign-ins via SSO",
+          "phase": "identification",
+          "spl": "index=* sourcetype=okta:im2 eventType=\"user.authentication.sso\" target{}.displayName=\"<payroll_app>\" | stats count values(client.ipAddress) as ips by actor.alternateId | sort - count"
+        },
+        {
+          "title": "Employee phishing referencing payroll after breach",
+          "phase": "recovery",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.subject IN (\"*payroll*\",\"*direct deposit*\",\"*W-2*\") by All_Email.src_user All_Email.recipient All_Email.subject | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-compromised-code-signing-cert",
+      "name": "Code-signing certificate compromised or used to sign malware",
+      "summary": "Use when malware signed with a certificate trusted by your environment is found, whether it is your own organisation's signing certificate or a vendor's certificate that your allowlists trust.",
+      "tags": [
+        "supply-chain",
+        "code-signing",
+        "certificate",
+        "trust"
+      ],
+      "attack": [
+        "T1553.002",
+        "T1588.003"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Keep signing keys in an HSM or cloud KMS with every signing operation logged",
+          "List application control rules that trust publishers by certificate rather than hash",
+          "Know the issuing CA's revocation process and emergency contact"
+        ],
+        "identification": [
+          "Collect the signed malicious file and extract its certificate thumbprint and timestamp",
+          "Search EDR and Sysmon for all files signed with that thumbprint across the fleet",
+          "Review HSM or KMS signing logs to find signing operations not tied to a release build",
+          "Determine whether the key was stolen or the signing pipeline was abused to sign the file"
+        ],
+        "containment": [
+          "Remove publisher trust for the certificate from application control policies",
+          "Add the certificate thumbprint to the untrusted certificate store via policy",
+          "Disable the signing service account and lock access to the HSM partition"
+        ],
+        "eradication": [
+          "Request revocation from the CA with a revocation date before the first malicious signature",
+          "Quarantine all files signed by the certificate after the compromise date",
+          "Remove the attacker's path to the signing system, such as a compromised build agent"
+        ],
+        "recovery": [
+          "Issue a new certificate with keys generated in the HSM and re-sign legitimate releases",
+          "Re-enable application control trust only for the new certificate",
+          "Inform customers who validate your signatures about the revoked certificate"
+        ],
+        "lessons": [
+          "Require a second approver for signing operations outside the release pipeline",
+          "Add alerting for signing requests from hosts other than designated build agents",
+          "Review whether hash-based allowlisting would have stopped the signed malware"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Executions of binaries signed by the suspect certificate",
+          "phase": "identification",
+          "spl": "index=* sourcetype=XmlWinEventLog:Microsoft-Windows-Sysmon/Operational EventCode=7 Signature=\"<signer_name>\" | stats count values(ImageLoaded) as files dc(Computer) as hosts by Hashes | sort - hosts"
+        },
+        {
+          "title": "KMS signing operations by caller",
+          "phase": "identification",
+          "spl": "index=* sourcetype=aws:cloudtrail eventSource=kms.amazonaws.com eventName=Sign requestParameters.keyId=\"<signing_key_arn>\" | stats count by userIdentity.arn sourceIPAddress | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-firmware-implant-suspicion",
+      "name": "Suspected hardware or firmware implant on delivered equipment",
+      "summary": "Use when network appliances, servers, or laptops behave as if modified before or during delivery: unexpected outbound traffic at boot, firmware hashes not matching the vendor, or tampered seals.",
+      "tags": [
+        "supply-chain",
+        "firmware",
+        "hardware",
+        "uefi"
+      ],
+      "attack": [
+        "T1195.003",
+        "T1542.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Record vendor-published firmware hashes for every hardware model you deploy",
+          "Keep chain-of-custody records from purchase order to installation for critical gear",
+          "Enable Secure Boot and measured boot with TPM attestation where hardware supports it"
+        ],
+        "identification": [
+          "Dump firmware from the suspect device and compare it with the vendor's reference image",
+          "Inspect packaging, seals, and serial numbers against the shipping manifest",
+          "Capture network traffic from the device during boot before the OS loads",
+          "Find other units from the same shipment or reseller in the inventory"
+        ],
+        "containment": [
+          "Disconnect the suspect device and keep it powered for evidence where safe",
+          "Quarantine other units from the same batch in an isolated network segment",
+          "Block any destinations the device contacted during boot"
+        ],
+        "eradication": [
+          "Reflash firmware from vendor-verified media using an out-of-band programmer if required",
+          "Replace devices where firmware cannot be verified rather than redeploying them",
+          "Revoke credentials and certificates provisioned onto the suspect devices"
+        ],
+        "recovery": [
+          "Reinstall replacement units with attestation verified before production use",
+          "Monitor reflashed devices for anomalous boot-time traffic",
+          "Coordinate with the vendor and, if warranted, law enforcement on the evidence"
+        ],
+        "lessons": [
+          "Assess whether purchases should be restricted to authorised distributors",
+          "Add firmware hash checks to the device onboarding checklist",
+          "Review whether boot-time traffic would have been visible to existing monitoring"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Traffic from the device's management interface",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(All_Traffic.dest_port) as ports from datamodel=Network_Traffic where All_Traffic.src=\"<device_ip>\" by All_Traffic.dest | sort - count"
+        },
+        {
+          "title": "DNS queries by device MAC or IP at boot",
+          "phase": "identification",
+          "spl": "index=* sourcetype=stream:dns src_ip=\"<device_ip>\" | stats earliest(_time) as first values(query) as queries by src_ip | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-saas-outage-security-cause",
+      "name": "SaaS vendor outage caused by a security incident",
+      "summary": "Use when a critical SaaS provider goes down and indicates or admits a security cause such as ransomware, so you must keep operating while judging whether your tenant data or integrations are affected.",
+      "tags": [
+        "supply-chain",
+        "saas",
+        "outage",
+        "business-continuity"
+      ],
+      "attack": [
+        "T1486",
+        "T1199"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Document manual fallback procedures for business processes that depend on each critical SaaS",
+          "Keep regular exports of SaaS data you would need to operate without the vendor",
+          "List every integration, token, and SSO trust between your environment and the vendor"
+        ],
+        "identification": [
+          "Track the vendor's status page and advisories and record each update with timestamps",
+          "Ask the vendor directly whether your tenant's data or credentials were in scope",
+          "Inventory integrations that push data or commands from the vendor into your systems",
+          "Quantify business impact per hour of outage with process owners"
+        ],
+        "containment": [
+          "Disable inbound webhooks and API integrations from the vendor while its state is unknown",
+          "Rotate API tokens and integration credentials you issued to the vendor",
+          "Activate manual fallback procedures for the affected business processes"
+        ],
+        "eradication": [
+          "Obtain the vendor's statement on root cause and removal of attacker access",
+          "Review your logs for unusual calls from the vendor's IP ranges before and during the outage",
+          "Treat any phishing using the outage as a lure as part of this incident"
+        ],
+        "recovery": [
+          "Re-enable integrations one at a time after the vendor confirms restoration",
+          "Reconcile records created manually during the outage back into the SaaS",
+          "Validate data integrity in the restored tenant against your latest export"
+        ],
+        "lessons": [
+          "Measure how long fallback procedures took to activate versus the plan",
+          "Review whether the vendor met contractual availability and notification terms",
+          "Decide whether a secondary provider is needed for this business process"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Inbound requests from vendor IP ranges",
+          "phase": "eradication",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.src IN (\"<vendor_ip_range>\") by Web.src Web.dest Web.uri_path Web.status _time span=1h"
+        },
+        {
+          "title": "Outage-themed phishing lures",
+          "phase": "eradication",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.subject IN (\"*<vendor_name>*outage*\",\"*<vendor_name>*reset*\") by All_Email.src_user All_Email.subject All_Email.action"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-malicious-github-action",
+      "name": "Malicious or hijacked third-party GitHub Action used in workflows",
+      "summary": "Use when a third-party GitHub Action referenced by your workflows is reported compromised, for example a retagged release that dumps runner memory or secrets into build logs.",
+      "tags": [
+        "supply-chain",
+        "github-actions",
+        "ci-cd",
+        "secrets"
+      ],
+      "attack": [
+        "T1195.002",
+        "T1552.001",
+        "T1528"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Pin third-party actions to full commit SHAs rather than tags",
+          "Restrict allowed actions in organisation settings to a vetted list",
+          "Stream GitHub audit logs and workflow run logs to the SIEM"
+        ],
+        "identification": [
+          "Code-search the organisation for uses of the compromised action and the refs referenced",
+          "List workflow runs that executed the action during the compromise window",
+          "Inspect logs of those runs for encoded blobs or secrets the payload printed",
+          "Enumerate secrets and OIDC cloud roles available to each affected workflow"
+        ],
+        "containment": [
+          "Block the action in organisation allowed-actions settings",
+          "Rotate every repository and organisation secret exposed to affected runs",
+          "Delete workflow run logs that contain leaked secret material"
+        ],
+        "eradication": [
+          "Replace the action with a pinned clean SHA or an internal fork",
+          "Review cloud audit logs for use of OIDC roles assumed by affected workflows",
+          "Check repositories for commits or releases created by the GITHUB_TOKEN during the window"
+        ],
+        "recovery": [
+          "Re-run builds with clean actions and verify artifacts match expected outputs",
+          "Confirm rotated secrets are in place and old values fail authentication",
+          "Notify downstream consumers if published artifacts came from affected runs"
+        ],
+        "lessons": [
+          "Measure how many workflows used mutable tags for third-party actions",
+          "Add a CI policy check that rejects unpinned action references",
+          "Reduce default GITHUB_TOKEN permissions to read-only organisation-wide"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Workflow runs in the compromise window",
+          "phase": "identification",
+          "spl": "index=* sourcetype=github:audit action IN (\"workflows.completed_workflow_run\",\"workflows.created_workflow_run\") earliest=<window_start> latest=<window_end> | stats count values(workflow_run_id) as runs by repo"
+        },
+        {
+          "title": "Allowed-actions and secret changes",
+          "phase": "containment",
+          "spl": "index=* sourcetype=github:audit action IN (\"org.update_actions_settings\",\"org.update_actions_secret\",\"repo.update_actions_secret\") | table _time actor repo action"
+        },
+        {
+          "title": "Cloud role use by CI OIDC sessions",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=aws:cloudtrail eventName=AssumeRoleWithWebIdentity userIdentity.identityProvider=\"token.actions.githubusercontent.com\" | stats count by requestParameters.roleArn sourceIPAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-backdoored-core-library",
+      "name": "Backdoored core system library in Linux distributions (XZ-style)",
+      "summary": "Use when a widely used compression, crypto, or system library is found to contain a maintainer-inserted backdoor in specific release versions shipped by some distributions, affecting services such as SSH.",
+      "tags": [
+        "supply-chain",
+        "linux",
+        "backdoor",
+        "open-source",
+        "ssh"
+      ],
+      "attack": [
+        "T1195.001",
+        "T1554"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Collect installed package versions from all Linux hosts and container images centrally",
+          "Track which hosts consume rolling or testing distribution channels",
+          "Keep SSH exposed only through bastions with logging of every session"
+        ],
+        "identification": [
+          "Query the package inventory for the backdoored library versions across hosts and images",
+          "Check affected hosts for whether the vulnerable service actually loads the library at runtime",
+          "Review SSH logs on affected hosts for unusual pre-auth connections or crashes",
+          "Identify internet-exposed hosts running the affected versions first"
+        ],
+        "containment": [
+          "Downgrade or upgrade the library to the distribution's fixed version on affected hosts",
+          "Restrict SSH on affected hosts to bastion addresses until remediated",
+          "Freeze builds of images that pull the affected library version"
+        ],
+        "eradication": [
+          "Rebuild container images from base images containing the fixed library",
+          "Rebuild exposed hosts if logs show suspicious pre-auth activity",
+          "Rotate SSH host keys and user keys on hosts that may have been accessed"
+        ],
+        "recovery": [
+          "Verify every host reports the fixed version in the package inventory",
+          "Restore normal SSH access paths after verification",
+          "Monitor for distribution advisories about related packages from the same maintainer"
+        ],
+        "lessons": [
+          "Decide whether production may use rolling or pre-release distribution channels",
+          "Measure time to produce a fleet-wide answer to which hosts run version X",
+          "Add runtime library loading data to the asset inventory"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Hosts reporting affected package versions",
+          "phase": "identification",
+          "spl": "index=* sourcetype=package source=\"*package*\" NAME=\"<library_name>\" VERSION IN (\"<bad_version_1>\",\"<bad_version_2>\") | stats latest(VERSION) as version by host"
+        },
+        {
+          "title": "SSH pre-auth connections and sshd crashes",
+          "phase": "identification",
+          "spl": "index=* sourcetype=linux_secure (\"Connection closed by\" OR \"preauth\" OR \"segfault\") process=sshd host IN (<affected_hosts>) | stats count by host src | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-vendor-remote-support-abuse",
+      "name": "Vendor remote support session abused to access internal systems",
+      "summary": "Use when a vendor's screen-sharing or remote support session is used for actions outside the support ticket, or an attacker impersonates the vendor's support to start a session with your staff.",
+      "tags": [
+        "supply-chain",
+        "remote-support",
+        "vendor",
+        "social-engineering"
+      ],
+      "attack": [
+        "T1219",
+        "T1199",
+        "T1566.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Define which remote support tools are approved and block all others by application control",
+          "Require a ticket number and internal sponsor before any vendor support session",
+          "Enable session recording in the approved remote support platform"
+        ],
+        "identification": [
+          "Retrieve the support session recording and log for the suspect session",
+          "Confirm with the vendor's support desk whether the technician and ticket are genuine",
+          "List files transferred and commands run during the session on the endpoint",
+          "Identify credentials typed or displayed on screen during the session"
+        ],
+        "containment": [
+          "Terminate the session and uninstall the remote support client from the endpoint",
+          "Block the remote support tool's relay domains if the session was unapproved",
+          "Reset credentials that were exposed on screen or entered during the session"
+        ],
+        "eradication": [
+          "Remove tools or scripts transferred during the session",
+          "Review the endpoint for persistence such as new scheduled tasks or unattended access configurations",
+          "Disable unattended access settings that let the vendor reconnect without approval"
+        ],
+        "recovery": [
+          "Return the endpoint to service after EDR scan and review",
+          "Reschedule legitimate vendor support through the approved process",
+          "Remind the affected staff of the call-back verification step for vendor support"
+        ],
+        "lessons": [
+          "Add detection for remote support tools launched without a matching ticket",
+          "Review whether the help desk knew the approved vendor support process",
+          "Require just-in-time approval prompts for every vendor session"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Remote support tool executions",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Endpoint.Processes where Processes.process_name IN (\"TeamViewer.exe\",\"AnyDesk.exe\",\"ScreenConnect.ClientService.exe\",\"BeyondTrust*.exe\") by Processes.dest Processes.user Processes.process_name | convert ctime(first)"
+        },
+        {
+          "title": "Child processes of the support client",
+          "phase": "eradication",
+          "spl": "| tstats summariesonly=false count values(Processes.process) as cmd from datamodel=Endpoint.Processes where Processes.dest=\"<host>\" Processes.parent_process_name IN (\"TeamViewer.exe\",\"AnyDesk.exe\",\"ScreenConnect.ClientService.exe\") by Processes.process_name"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-marketing-agency-social-takeover",
+      "name": "Marketing agency account compromised and posting to your social media",
+      "summary": "Use when your brand's social media accounts publish scam, crypto, or offensive posts through an external agency's access, such as a hijacked agency staff account or social scheduling tool.",
+      "tags": [
+        "supply-chain",
+        "social-media",
+        "agency",
+        "brand"
+      ],
+      "attack": [
+        "T1199",
+        "T1078"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Keep an inventory of agencies and tools with publishing rights on each social account",
+          "Own the social accounts and business manager under corporate identities, not agency staff",
+          "Document escalation contacts at each social platform's business support"
+        ],
+        "identification": [
+          "Pull the social platform's business manager activity log for the posting identity",
+          "Check the scheduling tool's audit log for which user queued the malicious posts",
+          "Confirm with the agency which staff account was used and whether it is compromised",
+          "Capture screenshots and URLs of every malicious post before deletion"
+        ],
+        "containment": [
+          "Remove the agency's partner access and revoke the scheduling tool's tokens",
+          "Delete or hide the malicious posts and paid promotions",
+          "Change passwords and MFA on corporate-owned social accounts"
+        ],
+        "eradication": [
+          "Remove unknown admins, apps, or payment methods added to the business manager",
+          "Confirm the agency has reset the compromised staff account and its MFA",
+          "Check ad spend for campaigns created by the attacker and dispute charges"
+        ],
+        "recovery": [
+          "Publish a statement to followers about the unauthorised posts",
+          "Restore agency access with named individual accounts and least privilege roles",
+          "Monitor brand accounts for unexpected posts over the following weeks"
+        ],
+        "lessons": [
+          "Require agencies to use MFA and named accounts under contract",
+          "Add alerting on new admins or partner changes in the business manager",
+          "Review time from first malicious post to removal"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Social scheduling tool sign-ins via SSO",
+          "phase": "identification",
+          "spl": "index=* sourcetype=okta:im2 target{}.displayName=\"<social_tool_app>\" | stats count values(client.ipAddress) as ips values(outcome.result) as results by actor.alternateId"
+        },
+        {
+          "title": "Brand account mentions in web proxy for scam links",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.url IN (\"*<scam_domain>*\") by Web.src Web.user Web.url | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-cdn-js-library-compromised",
+      "name": "CDN-hosted JavaScript library compromised on your website",
+      "summary": "Use when a third-party script your site loads from a public CDN or tag provider is altered to skim payment forms, redirect visitors, or harvest credentials typed into your pages.",
+      "tags": [
+        "supply-chain",
+        "javascript",
+        "cdn",
+        "web-skimming"
+      ],
+      "attack": [
+        "T1195.002",
+        "T1189",
+        "T1056.003"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Inventory every external script loaded by each public page, including tag-manager injected ones",
+          "Use Subresource Integrity hashes on static third-party scripts",
+          "Deploy a Content Security Policy with report-uri collection to the SIEM"
+        ],
+        "identification": [
+          "Fetch the current script from the CDN and diff it against the last known-good copy",
+          "Determine which pages load the script, especially checkout and login pages",
+          "Review CSP violation reports for new destinations receiving form data",
+          "Establish when the altered script first appeared using CDN logs or web archive captures"
+        ],
+        "containment": [
+          "Replace the external reference with a self-hosted known-good copy or remove it",
+          "Block the skimmer's exfiltration domain in CSP connect-src and at the WAF",
+          "Purge your own CDN and edge caches serving pages with the bad reference"
+        ],
+        "eradication": [
+          "Remove tag-manager rules or containers that injected the compromised script",
+          "Rotate credentials for the tag manager and CDN accounts if they were the entry point",
+          "Scan all site templates for other references to the compromised provider"
+        ],
+        "recovery": [
+          "Work with the payment processor to identify cards entered during the exposure window",
+          "Notify affected customers and card brands according to PCI obligations",
+          "Monitor CSP reports for new unexpected destinations after the fix"
+        ],
+        "lessons": [
+          "Review why SRI or CSP did not block the modified script",
+          "Measure exposure window from script change to detection",
+          "Consider self-hosting all scripts loaded on payment pages"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "CSP violation reports by blocked destination",
+          "phase": "identification",
+          "spl": "index=* sourcetype=csp:report | stats count dc(document_uri) as pages values(document_uri) as page_list by blocked_uri violated_directive | sort - count"
+        },
+        {
+          "title": "Requests to checkout pages during exposure",
+          "phase": "recovery",
+          "spl": "| tstats summariesonly=false count dc(Web.src) as visitors from datamodel=Web where Web.uri_path IN (\"/checkout*\",\"/payment*\") Web.http_method=POST by _time span=1h"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-container-base-image-upstream",
+      "name": "Upstream container base image compromised",
+      "summary": "Use when a public or vendor base image your Dockerfiles build FROM is found to contain a cryptominer, backdoor, or tampered binary, so every derived image and running container may be affected.",
+      "tags": [
+        "supply-chain",
+        "containers",
+        "docker",
+        "kubernetes"
+      ],
+      "attack": [
+        "T1195.002",
+        "T1525",
+        "T1496"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Mirror approved base images into an internal registry and pin them by digest",
+          "Record base image digests in image metadata or SBOMs at build time",
+          "Enable runtime detection for unexpected processes in containers"
+        ],
+        "identification": [
+          "Identify the malicious base image digests published by the upstream maintainer",
+          "Search build metadata for every internal image built from those digests",
+          "List running pods across clusters that use the derived images",
+          "Check runtime alerts for mining or outbound connections from those pods"
+        ],
+        "containment": [
+          "Block the malicious digests from being pulled via admission control policy",
+          "Scale down or isolate workloads running derived images with network policy",
+          "Remove the malicious base digests from the internal mirror"
+        ],
+        "eradication": [
+          "Rebuild derived images from a verified clean base digest",
+          "Rotate secrets mounted into the affected pods",
+          "Delete compromised image tags from the internal registry"
+        ],
+        "recovery": [
+          "Redeploy workloads with rebuilt images and confirm digests in the running pods",
+          "Monitor node CPU and egress to confirm mining or beaconing has stopped",
+          "Re-scan registries to confirm no images still reference the bad base"
+        ],
+        "lessons": [
+          "Enforce digest pinning and signature verification for base images in CI",
+          "Measure time to answer which workloads use base image X",
+          "Restrict pulls from public registries in production clusters"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Pods created with derived image digests",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit verb=create objectRef.resource=pods | spath path=requestObject.spec.containers{}.image output=image | search image IN (\"*<derived_image>*\") | stats count by objectRef.namespace image user.username"
+        },
+        {
+          "title": "Mining-pool connections from cluster nodes",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest_port IN (3333,4444,5555,14444) All_Traffic.src IN (\"<node_cidr>\") by All_Traffic.src All_Traffic.dest All_Traffic.dest_port"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-unvetted-ai-plugin-data-access",
+      "name": "Unvetted AI model or plugin granted access to company data",
+      "summary": "Use when staff connect a third-party AI assistant, model, or plugin to mailboxes, drives, or code repositories without review, and it may be sending company data to an unknown provider.",
+      "tags": [
+        "supply-chain",
+        "ai",
+        "oauth",
+        "data-exposure",
+        "shadow-it"
+      ],
+      "attack": [
+        "T1528",
+        "T1567"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Require admin consent for third-party OAuth apps requesting mail, file, or repo scopes",
+          "Maintain a list of approved AI tools and the data classes allowed in each",
+          "Log OAuth consent grants from identity providers to the SIEM"
+        ],
+        "identification": [
+          "List users who granted the AI app OAuth consent and the scopes granted",
+          "Review the vendor's privacy terms on retention and model training use of submitted data",
+          "Pull API activity by the app's client ID to estimate data volume accessed",
+          "Classify the data the app could reach, such as source code or customer email"
+        ],
+        "containment": [
+          "Revoke the AI app's OAuth grants and refresh tokens for all users",
+          "Block the app's client ID tenant-wide in the identity provider",
+          "Block uploads to the provider's API domain at the proxy if sensitive data is involved"
+        ],
+        "eradication": [
+          "Request deletion of submitted data from the AI provider in writing",
+          "Remove locally installed plugins or IDE extensions tied to the provider",
+          "Rotate any secrets found in content the app accessed"
+        ],
+        "recovery": [
+          "Offer users an approved AI alternative that meets data handling requirements",
+          "Review the app through the vendor risk process if users still need it",
+          "Communicate the policy on connecting AI tools to company data"
+        ],
+        "lessons": [
+          "Add detection for new OAuth grants with broad mail or drive scopes",
+          "Measure how many users granted consent before detection",
+          "Update acceptable use policy with specific AI data handling rules"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "OAuth consent grants to the AI app",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity Operation=\"Consent to application.\" | search \"<ai_app_name>\" | stats count values(ModifiedProperties{}.NewValue) as scopes by UserId"
+        },
+        {
+          "title": "Uploads to AI provider API domains",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count sum(Web.bytes_out) as bytes_out from datamodel=Web where Web.dest IN (\"api.<ai_provider>.example\") by Web.user Web.src | sort - bytes_out"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-logistics-partner-bec",
+      "name": "Logistics partner email compromise used to redirect payments or shipments",
+      "summary": "Use when a freight, shipping, or logistics partner's mailbox is compromised and messages from it ask your staff to change bank details, pay new invoices, or reroute deliveries.",
+      "tags": [
+        "supply-chain",
+        "bec",
+        "email",
+        "invoice-fraud",
+        "logistics"
+      ],
+      "attack": [
+        "T1586.002",
+        "T1566.002",
+        "T1534"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Store verified phone contacts for each logistics partner outside of email",
+          "Require call-back verification for any change to partner bank details",
+          "Enable external sender tagging and lookalike domain detection on mail"
+        ],
+        "identification": [
+          "Collect the suspicious messages with full headers and compare with prior legitimate ones",
+          "Determine whether the mail came from the partner's real domain or a lookalike",
+          "Search mail logs for all staff who received messages from the partner since the change request",
+          "Check accounts payable for payments or detail changes made after the messages"
+        ],
+        "containment": [
+          "Contact the partner by verified phone to report the compromise",
+          "Quarantine further messages from the partner's address pending confirmation",
+          "Freeze pending payments to the new bank details and contact your bank for recall"
+        ],
+        "eradication": [
+          "Block lookalike domains used in the campaign at the mail gateway",
+          "Revert vendor master data changes in the ERP to verified values",
+          "Remove mailbox rules in your own users' inboxes if they replied and were then phished"
+        ],
+        "recovery": [
+          "Release partner mail after they confirm their account is secured",
+          "Reconcile shipments to confirm none were redirected to a fraudulent address",
+          "Notify finance and logistics teams of the attempt with example messages"
+        ],
+        "lessons": [
+          "Measure whether the call-back control was followed and where it failed",
+          "Add a mail rule flagging partner messages that mention bank detail changes",
+          "Track recovered versus lost funds for the risk register"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Messages from the partner domain and lookalikes",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user IN (\"*@<partner_domain>\",\"*@<lookalike_domain>\") by All_Email.src_user All_Email.recipient All_Email.subject | sort - count"
+        },
+        {
+          "title": "Vendor bank detail changes in ERP",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Change where All_Changes.object_category=\"vendor\" All_Changes.object_attrs=\"*bank*\" by All_Changes.user All_Changes.object _time"
+        }
+      ]
+    },
+    {
+      "id": "lib-supply-chain-marketplace-image-backdoor",
+      "name": "Backdoored cloud marketplace machine image deployed",
+      "summary": "Use when a VM image from a cloud marketplace or community AMI catalogue is found to contain an implanted SSH key, user account, or agent that phones home after launch.",
+      "tags": [
+        "supply-chain",
+        "cloud",
+        "ami",
+        "marketplace",
+        "backdoor"
+      ],
+      "attack": [
+        "T1195.002",
+        "T1098.004",
+        "T1525"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Restrict instance launches to approved image IDs or internally built golden images",
+          "Tag instances with the source image ID and owning team",
+          "Enable VPC flow logs and CloudTrail across all accounts"
+        ],
+        "identification": [
+          "Find every instance launched from the suspect image ID across all accounts and regions",
+          "Inspect authorized_keys, local users, and startup scripts on one instance for implants",
+          "Review VPC flow logs for outbound connections the implant makes after boot",
+          "Check instance roles attached to affected instances and their CloudTrail activity"
+        ],
+        "containment": [
+          "Apply a quarantine security group to instances launched from the image",
+          "Deregister or deny the image ID via service control policy",
+          "Revoke instance role sessions by adding a deny policy for tokens issued before now"
+        ],
+        "eradication": [
+          "Rebuild workloads on approved golden images instead of cleaning the implant",
+          "Remove keys and users the image added from any snapshots kept for reuse",
+          "Rotate secrets the instances fetched from parameter store or secrets manager"
+        ],
+        "recovery": [
+          "Migrate data from quarantined instances after scanning it",
+          "Terminate the quarantined instances once evidence is captured",
+          "Report the listing to the cloud marketplace for removal"
+        ],
+        "lessons": [
+          "Enforce an allowed-images policy with organisation guardrails",
+          "Add detection for RunInstances using image owners outside the approved list",
+          "Review why the marketplace image was chosen over the golden image"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Instances launched from suspect image",
+          "phase": "identification",
+          "spl": "index=* sourcetype=aws:cloudtrail eventName=RunInstances \"<suspect_ami_id>\" | stats count values(responseElements.instancesSet.items{}.instanceId) as instances by recipientAccountId awsRegion userIdentity.arn"
+        },
+        {
+          "title": "Outbound connections from affected instances",
+          "phase": "identification",
+          "spl": "index=* sourcetype=aws:cloudwatchlogs:vpcflow src_ip IN (<instance_ips>) action=ACCEPT | stats count sum(bytes) as bytes by src_ip dest_ip dest_port | sort - bytes"
+        },
+        {
+          "title": "Instance role API activity",
+          "phase": "containment",
+          "spl": "index=* sourcetype=aws:cloudtrail userIdentity.arn=\"*assumed-role/<instance_role>/*\" | stats count by eventName sourceIPAddress | sort - count"
+        }
+      ]
+    }
+  ]
+}

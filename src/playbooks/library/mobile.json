@@ -1,0 +1,958 @@
+{
+  "category": {
+    "id": "mobile",
+    "name": "Mobile & lost devices",
+    "description": "Lost, stolen, seized, or compromised laptops, phones, tablets, and removable media, plus MDM, SIM swap, and mobile malware incidents."
+  },
+  "playbooks": [
+    {
+      "id": "lib-mobile-lost-encrypted-laptop",
+      "name": "Lost corporate laptop with full-disk encryption",
+      "summary": "Use when an employee reports a corporate laptop lost or misplaced and it is believed to be encrypted, to confirm encryption, cut access, and decide on notification.",
+      "tags": [
+        "mobile",
+        "lost-device",
+        "laptop",
+        "encryption",
+        "endpoint"
+      ],
+      "attack": [],
+      "severity": "Low",
+      "tasks": {
+        "preparation": [
+          "Escrow BitLocker and FileVault recovery keys in Intune, Jamf, or AD for every laptop",
+          "Report encryption compliance per device in the MDM or endpoint management console",
+          "Publish a lost-device hotline and form that collects time, place, and device tag",
+          "Enable remote lock and wipe capability for all corporate laptops"
+        ],
+        "identification": [
+          "Confirm the asset tag and serial number in the CMDB and match it to the user",
+          "Verify encryption status and last compliance check-in for the device in the MDM console",
+          "Check whether the device was powered off, asleep, or locked when lost",
+          "Record the last check-in time, IP, and location reported by the endpoint agent"
+        ],
+        "containment": [
+          "Issue a remote lock or wipe command queued for the next check-in",
+          "Revoke the device's certificates and remove it from conditional access trusted devices",
+          "Reset the user's password and revoke refresh tokens in the identity provider"
+        ],
+        "eradication": [
+          "Mark the device as lost in the CMDB and the EDR console",
+          "Remove saved VPN profiles and Wi-Fi certificates tied to the device",
+          "Rotate the BitLocker or FileVault recovery key record so the escrowed key is retired"
+        ],
+        "recovery": [
+          "Issue a replacement laptop and restore user data from cloud sync or backup",
+          "Watch for the lost device checking in and confirm the wipe executed",
+          "File a police report if theft is suspected and record the report number"
+        ],
+        "lessons": [
+          "Record whether encryption evidence was strong enough to avoid breach notification",
+          "Track how quickly the loss was reported after it happened",
+          "Review the fleet for laptops reporting encryption non-compliance"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Last sign-ins from the lost device",
+          "phase": "identification",
+          "spl": "index=* sourcetype=azure:aad:signin deviceDetail.deviceId=\"<device_id>\" | stats latest(_time) as last values(ipAddress) as ips values(appDisplayName) as apps by userPrincipalName | convert ctime(last)"
+        },
+        {
+          "title": "Any authentication from the device after reported loss",
+          "phase": "recovery",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.src=\"<device_hostname>\" earliest=<loss_time> by Authentication.user Authentication.app Authentication.action _time span=1h"
+        }
+      ]
+    },
+    {
+      "id": "lib-mobile-lost-unencrypted-laptop",
+      "name": "Lost laptop without disk encryption",
+      "summary": "Use when a lost or stolen laptop was not encrypted, so data on disk must be presumed exposed and the team must scope data, credentials, and notification duties.",
+      "tags": [
+        "mobile",
+        "lost-device",
+        "laptop",
+        "data-exposure",
+        "privacy"
+      ],
+      "attack": [],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Alert on laptops that fail the encryption compliance policy for more than 7 days",
+          "Keep a data classification map of which roles store regulated data locally",
+          "Have privacy and legal contacts ready for breach notification decisions",
+          "Back up laptop user folders to cloud storage so their contents can be inventoried"
+        ],
+        "identification": [
+          "Confirm in the MDM console that the drive really was unencrypted",
+          "Inventory files synced from the laptop using the cloud backup or OneDrive file list",
+          "Identify regulated data such as PII, PHI, or cardholder data in that file list",
+          "List saved credentials, browser sessions, SSH keys, and VPN configs on the laptop",
+          "Interview the user about local-only files that were never synced"
+        ],
+        "containment": [
+          "Queue a remote wipe and lock in the MDM console",
+          "Revoke all sessions and tokens for the user across SaaS apps",
+          "Rotate SSH keys, API tokens, and service passwords that were stored on the laptop",
+          "Disable the device's VPN certificate"
+        ],
+        "eradication": [
+          "Remove trusted-device status from MFA and conditional access",
+          "Rotate any shared or team credentials found in local files",
+          "Invalidate browser-saved passwords by forcing resets for every site in the user's password manager export"
+        ],
+        "recovery": [
+          "Provide an encrypted replacement laptop and confirm encryption before handover",
+          "Monitor for use of the rotated credentials or the old device identity",
+          "Restore the user's files to the new laptop from cloud backup, not from removable copies"
+        ],
+        "lessons": [
+          "Determine with legal whether regulatory or customer notification is required",
+          "Find out why the encryption policy failed or was exempted for this laptop",
+          "Block network access for unencrypted endpoints via conditional access",
+          "Count remaining unencrypted laptops in the fleet and set a deadline"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Files accessed by the user from the laptop in the last 30 days",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity Workload IN (\"OneDrive\", \"SharePoint\") UserId=<suspect_user> Operation IN (\"FileDownloaded\", \"FileSyncDownloadedFull\") earliest=-30d | stats count by SourceFileName SiteUrl ClientIP"
+        },
+        {
+          "title": "Use of credentials stored on the lost laptop",
+          "phase": "recovery",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.user=<suspect_user> earliest=<loss_time> by Authentication.src Authentication.app Authentication.action"
+        },
+        {
+          "title": "Endpoints out of encryption compliance",
+          "phase": "lessons",
+          "spl": "index=mdm sourcetype=intune:devices encryptionState!=\"encrypted\" operatingSystem IN (\"Windows\", \"macOS\") | stats count by deviceName userPrincipalName complianceState"
+        }
+      ]
+    },
+    {
+      "id": "lib-mobile-stolen-phone-corporate-email",
+      "name": "Stolen phone with corporate email and apps",
+      "summary": "Use when an employee's phone holding corporate mail, chat, or MFA apps is stolen, to cut mailbox and app access and stop the phone being used as an MFA factor.",
+      "tags": [
+        "mobile",
+        "stolen-device",
+        "email",
+        "mfa",
+        "mdm"
+      ],
+      "attack": [
+        "T1078"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Require app protection policies that wipe corporate app data on remote command",
+          "Enforce a device passcode and auto-lock via MDM for any phone with corporate mail",
+          "Document how users report stolen phones outside business hours",
+          "Allow users to register a backup MFA method before they need it"
+        ],
+        "identification": [
+          "Identify the phone in the MDM or Exchange mobile device list for the user",
+          "Check the last sync time of Exchange ActiveSync or Outlook mobile for the device",
+          "Determine which MFA methods were bound to the phone, including authenticator push and SMS",
+          "Ask whether the phone was locked with a passcode or biometrics when stolen"
+        ],
+        "containment": [
+          "Send a selective wipe of corporate data through the MDM or app protection policy",
+          "Remove the phone from the user's registered MFA methods",
+          "Revoke all refresh tokens and sign the user out of every session",
+          "Block the device ID in Exchange ActiveSync"
+        ],
+        "eradication": [
+          "Re-register MFA on a new device after verifying the user's identity",
+          "Check the mailbox for new inbox rules or forwarding created after the theft",
+          "Remove the stolen phone from Teams, Slack, and other chat apps' active device lists"
+        ],
+        "recovery": [
+          "Enroll the replacement phone and confirm compliance before restoring mail",
+          "Help the user contact their carrier to suspend the line and blacklist the IMEI",
+          "Re-add the user to MFA with a hardware key or second authenticator as a backup factor"
+        ],
+        "lessons": [
+          "Measure time from theft to selective wipe",
+          "Review whether app protection policies covered every corporate app on the phone",
+          "Encourage phishing-resistant MFA that does not depend on a single phone"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Mailbox activity from the stolen device",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity Workload=Exchange UserId=<suspect_user> ClientInfoString IN (\"*ActiveSync*\", \"*Outlook-iOS*\", \"*Outlook-Android*\") | stats latest(_time) as last values(Operation) as ops by ClientIP ClientInfoString | convert ctime(last)"
+        },
+        {
+          "title": "Inbox rules created after the theft",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=o365:management:activity Operation IN (\"New-InboxRule\", \"Set-InboxRule\", \"Set-Mailbox\") UserId=<suspect_user> earliest=<theft_time> | table _time Operation Parameters{}.Name Parameters{}.Value ClientIP"
+        }
+      ]
+    },
+    {
+      "id": "lib-mobile-malicious-app-byod",
+      "name": "Malicious app on a BYOD phone with corporate access",
+      "summary": "Use when mobile threat defense or a user report shows a malicious or risky app on a personally owned phone that has corporate mail, chat, or file access.",
+      "tags": [
+        "mobile",
+        "byod",
+        "mobile-malware",
+        "mtd",
+        "app-protection"
+      ],
+      "attack": [
+        "T1406",
+        "T1409",
+        "T1517"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Deploy mobile threat defense integrated with MDM and conditional access for BYOD",
+          "Use app protection policies so corporate data stays in managed apps only",
+          "Write a BYOD privacy statement covering what security can see on personal phones",
+          "Define which app risk levels block corporate access automatically"
+        ],
+        "identification": [
+          "Pull the MTD alert detail: app name, package ID, permissions, and risk reason",
+          "Check whether the app has accessibility, notification, or device admin permissions",
+          "Determine which corporate apps the user has on the device and data they hold",
+          "Search for the same package ID on other enrolled devices"
+        ],
+        "containment": [
+          "Let conditional access mark the device non-compliant and block corporate apps",
+          "Selectively wipe corporate data from managed apps on the device",
+          "Ask the user to uninstall the app and walk them through it"
+        ],
+        "eradication": [
+          "Confirm through MTD that the app is gone before restoring access",
+          "Reset the user's password if the app could read notifications or OTP codes",
+          "Add the package ID to the MTD and MDM blocked app list"
+        ],
+        "recovery": [
+          "Restore corporate access once the device reports compliant",
+          "Review the user's sign-ins for the week after the app was installed",
+          "Confirm managed app data was not copied to the malicious app via app protection logs"
+        ],
+        "lessons": [
+          "Measure how many BYOD devices had the same app installed",
+          "Check whether app protection prevented copy-out of corporate data",
+          "Share user guidance on sideloaded and lookalike apps"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "MTD detections for the package across devices",
+          "phase": "identification",
+          "spl": "index=mdm sourcetype=mtd:alerts app_package=\"<package_id>\" | stats latest(_time) as last values(threat_type) as threat by device_id user os_version | convert ctime(last)"
+        },
+        {
+          "title": "Sign-ins by the user from the mobile device",
+          "phase": "recovery",
+          "spl": "index=* sourcetype=azure:aad:signin userPrincipalName=<suspect_user> deviceDetail.operatingSystem IN (\"Android\", \"iOS\") | stats count by appDisplayName ipAddress status.errorCode deviceDetail.isCompliant"
+        }
+      ]
+    },
+    {
+      "id": "lib-mobile-executive-phone-spyware",
+      "name": "Suspected mercenary spyware on an executive's phone",
+      "summary": "Use when an executive receives a threat notification from Apple or Google, or shows signs of commercial spyware such as Pegasus-class implants on their phone.",
+      "tags": [
+        "mobile",
+        "spyware",
+        "executive",
+        "vip",
+        "forensics"
+      ],
+      "attack": [
+        "T1430",
+        "T1429",
+        "T1636"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Pre-arrange a specialist mobile forensics provider for high-risk staff",
+          "Offer Lockdown Mode and Advanced Protection guidance to executives who travel",
+          "Keep spare clean phones preconfigured for VIP replacement",
+          "Agree how executive privacy is protected during device forensics"
+        ],
+        "identification": [
+          "Preserve any Apple or Google threat notification email or in-app banner",
+          "Take an encrypted iTunes or ADB backup and sysdiagnose without resetting the phone",
+          "Run the backup through an open-source indicator checker such as MVT with current IOCs",
+          "Review which sensitive meetings, deals, or travel happened while the phone may be infected",
+          "Check whether other executives or assistants received similar notifications"
+        ],
+        "containment": [
+          "Move the executive to a clean replacement phone with a new number if possible",
+          "Keep the suspect phone powered on in airplane mode or a Faraday bag for analysis",
+          "Treat calls, messages, and microphone audio from the phone as possibly intercepted"
+        ],
+        "eradication": [
+          "Revoke all corporate tokens and app registrations tied to the suspect phone",
+          "Reset passwords for accounts used on the phone from a separate clean device",
+          "Retire or factory reset the original phone only after the forensic provider is done"
+        ],
+        "recovery": [
+          "Enable Lockdown Mode or equivalent on the replacement device",
+          "Brief the executive on rebooting daily and avoiding unknown links",
+          "Inform legal and communications if business-sensitive information may be exposed"
+        ],
+        "lessons": [
+          "Decide whether a formal threat assessment or law enforcement report is needed",
+          "Extend the VIP device protection program to assistants and family where appropriate",
+          "Review how fast the forensic provider engaged"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Executive sign-ins from new locations or devices",
+          "phase": "identification",
+          "spl": "index=* sourcetype=azure:aad:signin userPrincipalName IN (<exec_users>) | stats count values(ipAddress) as ips values(location.countryOrRegion) as countries by deviceDetail.displayName deviceDetail.operatingSystem"
+        },
+        {
+          "title": "DNS lookups from the executive phone's corporate Wi-Fi IP",
+          "phase": "identification",
+          "spl": "index=* sourcetype=stream:dns src_ip=<phone_wifi_ip> | stats count by query | sort count | head 200"
+        }
+      ]
+    },
+    {
+      "id": "lib-mobile-employee-sim-swap",
+      "name": "SIM swap against an employee's phone number",
+      "summary": "Use when an employee's phone suddenly loses service or the carrier reports a SIM or eSIM change, and SMS-based MFA or recovery for corporate accounts may be hijacked.",
+      "tags": [
+        "mobile",
+        "sim-swap",
+        "mfa",
+        "account-takeover",
+        "telecom"
+      ],
+      "attack": [
+        "T1451",
+        "T1111",
+        "T1078"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Remove SMS and voice as allowed MFA methods for privileged and finance users",
+          "Ask staff to add a carrier account PIN or port-out lock to their numbers",
+          "Keep corporate carrier account contacts for fast SIM reversal on company lines",
+          "Monitor for MFA phone number changes in the identity provider"
+        ],
+        "identification": [
+          "Confirm with the employee from another channel that their phone shows no service",
+          "Check the identity provider for SMS MFA challenges and password resets after the outage",
+          "Review sign-ins for the user from new devices or IPs since the SIM change",
+          "Check if personal accounts with the same phone number reported resets too"
+        ],
+        "containment": [
+          "Remove the phone number from the user's MFA and self-service password reset methods",
+          "Reset the user's password and revoke all active sessions",
+          "Contact the carrier, or help the employee contact theirs, to reverse the SIM swap",
+          "Disable payment or approval workflows the user owns until verified"
+        ],
+        "eradication": [
+          "Remove MFA methods or devices the attacker enrolled after the swap",
+          "Delete mailbox forwarding or rules created by the attacker",
+          "Register a phishing-resistant authenticator such as a FIDO2 key"
+        ],
+        "recovery": [
+          "Restore the user's access after in-person or video identity verification",
+          "Monitor the account for new MFA registrations over the next 30 days",
+          "Confirm with the carrier that the number is back on the employee's SIM with a port-out lock"
+        ],
+        "lessons": [
+          "Count users still using SMS MFA and set a migration target",
+          "Add a detection for SMS-based reset followed by MFA method change",
+          "Review whether help desk verification could have been bypassed the same way"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "SMS MFA and reset events for the user",
+          "phase": "identification",
+          "spl": "index=* sourcetype=okta:im2 actor.alternateId=<suspect_user> eventType IN (\"user.mfa.factor.activate\", \"user.account.reset_password\", \"system.sms.send_factor_verify_message\", \"user.mfa.factor.update\") | table _time eventType client.ipAddress client.userAgent.rawUserAgent outcome.result"
+        },
+        {
+          "title": "New MFA factors registered after the SIM change",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=azure:audit activityDisplayName IN (\"User registered security info\", \"User changed default security info\") targetResources{}.userPrincipalName=<suspect_user> earliest=<swap_time> | table _time activityDisplayName initiatedBy.user.ipAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-mobile-jailbroken-device-corp-data",
+      "name": "Jailbroken or rooted device accessing corporate data",
+      "summary": "Use when MDM or MTD reports a jailbroken iPhone or rooted Android device that still has corporate mail, files, or app sessions.",
+      "tags": [
+        "mobile",
+        "jailbreak",
+        "rooted",
+        "compliance",
+        "mdm"
+      ],
+      "attack": [
+        "T1404",
+        "T1398"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Configure compliance policy to flag jailbreak and root detection signals",
+          "Block non-compliant devices from corporate apps through conditional access",
+          "State the jailbreak and root rule in the acceptable use and BYOD policies"
+        ],
+        "identification": [
+          "Confirm the jailbreak or root flag in MDM and MTD and rule out a false positive",
+          "Check which corporate apps and accounts were active on the device",
+          "Look for sideloaded apps or tweak frameworks that can read other apps' data",
+          "Determine how long the device was rooted before detection"
+        ],
+        "containment": [
+          "Block the device from corporate resources via compliance and conditional access",
+          "Selectively wipe corporate containers and managed apps",
+          "Revoke tokens issued to the device"
+        ],
+        "eradication": [
+          "Require the user to restore stock firmware before re-enrollment",
+          "Reset the user's password if credentials were stored on the device",
+          "Remove the device's certificates for Wi-Fi and VPN"
+        ],
+        "recovery": [
+          "Re-enroll the device only after attestation passes again",
+          "Monitor the user's sign-ins for unknown devices for two weeks",
+          "Reissue Wi-Fi and VPN certificates to the re-enrolled device only after compliance passes"
+        ],
+        "lessons": [
+          "Measure lag between jailbreak and MDM detection",
+          "Evaluate hardware-backed attestation such as Play Integrity or App Attest for corporate apps",
+          "Remind staff of the consequences of rooting corporate-enabled phones"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Devices flagged jailbroken or rooted",
+          "phase": "identification",
+          "spl": "index=mdm sourcetype=intune:devices (jailBroken=\"True\" OR complianceState=\"noncompliant\") | stats latest(_time) as last by deviceName userPrincipalName operatingSystem osVersion jailBroken | convert ctime(last)"
+        },
+        {
+          "title": "Corporate app access from the flagged device",
+          "phase": "identification",
+          "spl": "index=* sourcetype=azure:aad:signin deviceDetail.deviceId=\"<device_id>\" | stats count by appDisplayName conditionalAccessStatus status.errorCode"
+        }
+      ]
+    },
+    {
+      "id": "lib-mobile-mdm-compromise-mass-wipe",
+      "name": "MDM console compromised or mass device wipe issued",
+      "summary": "Use when someone abuses the MDM or UEM console (Intune, Jamf, Workspace ONE) to wipe, lock, or push scripts to many devices, or an MDM admin account is compromised.",
+      "tags": [
+        "mobile",
+        "mdm",
+        "admin-compromise",
+        "destructive",
+        "intune"
+      ],
+      "attack": [
+        "T1072",
+        "T1485",
+        "T1078.004"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Require multi-admin approval for wipe, retire, and script deployment in the MDM",
+          "Limit MDM global admins to a small group using phishing-resistant MFA",
+          "Back up MDM configuration profiles, scripts, and app assignments",
+          "Keep a list of business-critical devices that would need priority rebuild"
+        ],
+        "identification": [
+          "Pull MDM audit logs for wipe, retire, lock, and script deployment actions",
+          "Identify the admin account, source IP, and session used for the actions",
+          "Count devices affected and categorize them by business function",
+          "Check for new MDM admin roles, API apps, or certificates created recently"
+        ],
+        "containment": [
+          "Disable the compromised admin account and revoke its sessions",
+          "Cancel pending wipe or script actions not yet delivered to devices",
+          "Remove rogue API apps, service principals, or enrollment tokens",
+          "Freeze MDM admin changes to a named break-glass account only"
+        ],
+        "eradication": [
+          "Delete malicious scripts, profiles, and app assignments the attacker deployed",
+          "Rotate APNs certificates, enrollment tokens, and MDM connectors if exposed",
+          "Investigate how the admin credentials were obtained and close that path"
+        ],
+        "recovery": [
+          "Rebuild wiped devices starting with priority roles using Autopilot or Automated Device Enrollment",
+          "Restore configuration from the MDM backup and verify policy assignments",
+          "Communicate to staff how to re-enroll and restore data from cloud backups"
+        ],
+        "lessons": [
+          "Measure how many devices were wiped before the action was stopped",
+          "Turn on multi-admin approval if it was not enforced",
+          "Add an alert for bulk device actions above a threshold"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Bulk wipe and retire actions in Intune audit logs",
+          "phase": "identification",
+          "spl": "index=* sourcetype=azure:intune:audit activityType IN (\"wipe ManagedDevice\", \"retire ManagedDevice\", \"remoteLock ManagedDevice\") | bin _time span=10m | stats dc(resources{}.resourceId) as devices values(actor.userPrincipalName) as admins by _time | where devices > 5"
+        },
+        {
+          "title": "MDM admin sign-ins by source",
+          "phase": "identification",
+          "spl": "index=* sourcetype=azure:aad:signin appDisplayName IN (\"Microsoft Intune\", \"Microsoft Intune portal extension\") userPrincipalName IN (<mdm_admins>) | stats count values(ipAddress) as ips by userPrincipalName status.errorCode"
+        },
+        {
+          "title": "Script and app deployments created by the admin",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=azure:intune:audit actor.userPrincipalName=<suspect_admin> activityType IN (\"*DeviceManagementScript*\", \"*MobileApp*\", \"*DeviceConfiguration*\") | table _time activityType resources{}.displayName"
+        }
+      ]
+    },
+    {
+      "id": "lib-mobile-rogue-mdm-profile",
+      "name": "Rogue MDM or configuration profile installed on a device",
+      "summary": "Use when a phone or Mac has an unknown configuration profile, root certificate, VPN, or MDM enrollment that could intercept traffic or control the device.",
+      "tags": [
+        "mobile",
+        "configuration-profile",
+        "mitm",
+        "ios",
+        "macos"
+      ],
+      "attack": [
+        "T1632.001",
+        "T1638",
+        "T1553.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Report installed profiles and trusted root certificates from MDM-managed devices",
+          "Block manual profile installation on supervised iOS devices",
+          "Teach users that profile install prompts from websites or texts are suspicious"
+        ],
+        "identification": [
+          "List all configuration profiles on the device and their signing identity",
+          "Check for unknown trusted root CAs, global HTTP proxies, or VPN payloads",
+          "Ask the user how the profile was installed: link, email, QR code, or Wi-Fi portal",
+          "Search MDM inventory for the same profile identifier on other devices"
+        ],
+        "containment": [
+          "Remove the rogue profile or have the user delete it in device settings",
+          "Block the profile's proxy or VPN server address at the corporate egress",
+          "Treat traffic since installation as intercepted and revoke the user's sessions"
+        ],
+        "eradication": [
+          "Reset passwords for accounts the user signed into while the profile was active",
+          "Block the distribution URL or domain on secure web gateway and DNS",
+          "Revoke and reissue any corporate certificates installed on the device while the rogue root was trusted"
+        ],
+        "recovery": [
+          "Confirm the device shows only the corporate MDM profile after cleanup",
+          "Monitor for reinstallation of the same profile identifier",
+          "Restore the user's corporate app access only after a fresh compliance check"
+        ],
+        "lessons": [
+          "Supervise corporate iOS devices so profile installs can be restricted",
+          "Add MDM reporting for non-corporate root certificates",
+          "Use this example in phishing awareness material"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Devices reporting the unknown profile identifier",
+          "phase": "identification",
+          "spl": "index=mdm sourcetype=jamf:inventory profile_identifier=\"<profile_id>\" | stats latest(_time) as last by device_name username serial_number | convert ctime(last)"
+        },
+        {
+          "title": "Proxy or VPN traffic to the rogue endpoint",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest_ip=<ioc_ip> by All_Traffic.src_ip All_Traffic.dest_port All_Traffic.action"
+        }
+      ]
+    },
+    {
+      "id": "lib-mobile-lost-usb-sensitive-data",
+      "name": "Lost USB drive containing sensitive data",
+      "summary": "Use when a USB stick or external drive holding customer, employee, or confidential data is lost, to establish what was on it, whether it was encrypted, and notification needs.",
+      "tags": [
+        "mobile",
+        "removable-media",
+        "usb",
+        "data-loss",
+        "privacy"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Enforce BitLocker To Go or hardware-encrypted USB drives through device control",
+          "Log file copies to removable media in the DLP or EDR platform",
+          "Keep a register of approved encrypted USB drives by serial and owner"
+        ],
+        "identification": [
+          "Get the drive's make, serial, and whether it was an approved encrypted model",
+          "Pull DLP or EDR file-copy logs for the drive serial to list what was written to it",
+          "Classify the copied files for PII, PHI, financial, or confidential content",
+          "Estimate the number of individuals whose data was on the drive"
+        ],
+        "containment": [
+          "Search the last known locations and lost-and-found with facilities",
+          "Rotate any passwords, keys, or secrets that were stored on the drive",
+          "Revoke the drive from the approved device register"
+        ],
+        "eradication": [
+          "Delete remaining copies of the data from other unmanaged media the user holds",
+          "Block the drive serial in device control in case it resurfaces",
+          "Remove the data set from the user's local folders if it no longer needs to be held"
+        ],
+        "recovery": [
+          "Give the user an approved encrypted drive or a secure file sharing alternative",
+          "Prepare notification letters with legal if unencrypted personal data was on the drive",
+          "Set up a monitored mailbox or call line for individuals receiving notification letters"
+        ],
+        "lessons": [
+          "Decide whether unencrypted USB write access should be blocked company-wide",
+          "Review why the user needed to carry data on removable media",
+          "Track how complete the DLP file-copy evidence was"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Files written to the lost USB drive",
+          "phase": "identification",
+          "spl": "index=* sourcetype=dlp:endpoint action=\"copy_to_removable\" device_serial=\"<usb_serial>\" | stats count values(file_name) as files values(classification) as classes by user host"
+        },
+        {
+          "title": "Removable media writes by the user in the last 90 days",
+          "phase": "identification",
+          "spl": "index=* sourcetype=XmlWinEventLog:Microsoft-Windows-Sysmon/Operational EventCode=11 User=\"*<suspect_user>\" TargetFilename IN (\"E:\\\\*\", \"F:\\\\*\", \"G:\\\\*\") earliest=-90d | stats count by host TargetFilename"
+        }
+      ]
+    },
+    {
+      "id": "lib-mobile-stolen-field-tablet",
+      "name": "Stolen tablet from a field worker",
+      "summary": "Use when a ruggedized or shared tablet used by field technicians, drivers, or inspectors is stolen, including from a vehicle, along with any work orders or customer data on it.",
+      "tags": [
+        "mobile",
+        "stolen-device",
+        "tablet",
+        "field-operations",
+        "kiosk-mode"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Run field tablets in MDM kiosk or dedicated-device mode with a locked app set",
+          "Enable location reporting on field tablets where policy and law allow",
+          "Use per-device service accounts so a stolen tablet can be cut off alone",
+          "Keep cached offline work order data minimal and encrypted"
+        ],
+        "identification": [
+          "Confirm the tablet's device ID, assigned crew, and vehicle from the fleet register",
+          "Pull the last location and check-in time from the MDM console",
+          "List customer addresses, work orders, or site access codes cached on the tablet",
+          "Check whether the field app session or device certificate was used after the theft"
+        ],
+        "containment": [
+          "Send a full wipe to the tablet through the MDM console",
+          "Disable the tablet's service account and revoke its device certificate",
+          "Change site gate or lockbox codes that were stored on the tablet"
+        ],
+        "eradication": [
+          "Remove the device from the field service platform's trusted device list",
+          "Invalidate any offline tokens the field app issued to the tablet",
+          "Reset the field app PIN or shared crew login that was used on the tablet"
+        ],
+        "recovery": [
+          "Provision a replacement tablet from the spare pool and enroll it in kiosk mode",
+          "File a police report with the device serial and IMEI",
+          "Notify affected customers if their personal data or access codes were on the device"
+        ],
+        "lessons": [
+          "Review vehicle storage rules for devices left unattended",
+          "Track replacement time to keep field crews productive",
+          "Reduce the amount of customer data the field app caches offline"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Field app API calls from the stolen tablet",
+          "phase": "identification",
+          "spl": "index=app sourcetype=fieldservice:api device_id=\"<device_id>\" earliest=<theft_time> | stats count values(endpoint) as endpoints by src_ip user"
+        },
+        {
+          "title": "MDM check-ins and location for the tablet",
+          "phase": "identification",
+          "spl": "index=mdm sourcetype=intune:devices deviceId=\"<device_id>\" | table _time deviceName lastSyncDateTime managementState complianceState"
+        }
+      ]
+    },
+    {
+      "id": "lib-mobile-device-seized-at-border",
+      "name": "Device left at border or seized by customs",
+      "summary": "Use when a traveling employee's laptop or phone is inspected, imaged, retained, or confiscated by border or customs officials, or left behind at a checkpoint.",
+      "tags": [
+        "mobile",
+        "travel",
+        "border",
+        "seized-device",
+        "legal"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Issue loaner travel laptops and phones with minimal data for high-risk destinations",
+          "Brief travelers on what to do and whom to call if a device is inspected",
+          "Have legal counsel guidance on privileged data and device searches by country"
+        ],
+        "identification": [
+          "Record which device, where, when, and whether it was out of the traveler's sight",
+          "Ask whether the traveler unlocked the device or gave passwords to officials",
+          "List the data, accounts, and privileged legal material on the device",
+          "Check whether the device was returned and whether it was powered off throughout"
+        ],
+        "containment": [
+          "Revoke the device's tokens, certificates, and MFA registrations",
+          "Reset passwords for every account accessible from the device",
+          "Treat a returned device as untrusted and do not reconnect it to the corporate network"
+        ],
+        "eradication": [
+          "Send the returned device for forensic review or reimage it before reuse",
+          "Replace hardware security keys that were in custody with the device",
+          "Rotate VPN, SSH, and API credentials that were stored on the seized device"
+        ],
+        "recovery": [
+          "Provide a clean replacement device to the traveler at the destination",
+          "Review sign-in logs for the traveler's accounts for unknown access",
+          "Debrief the traveler and record officials' agency and reference numbers for legal"
+        ],
+        "lessons": [
+          "Involve legal on whether privileged or customer data was disclosed",
+          "Update the travel security program for destinations with device searches",
+          "Track whether loaner devices were used as recommended"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Sign-ins from the seized device after seizure",
+          "phase": "identification",
+          "spl": "index=* sourcetype=azure:aad:signin deviceDetail.deviceId=\"<device_id>\" earliest=<seizure_time> | table _time userPrincipalName appDisplayName ipAddress location.countryOrRegion status.errorCode"
+        },
+        {
+          "title": "Traveler account access by country",
+          "phase": "recovery",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.user=<suspect_user> earliest=-14d by Authentication.src Authentication.app Authentication.action | iplocation Authentication.src | stats sum(count) by Country Authentication.app"
+        }
+      ]
+    },
+    {
+      "id": "lib-mobile-smishing-installed-apk",
+      "name": "Smishing text led to a malicious APK install",
+      "summary": "Use when an employee clicked a text message link and sideloaded an Android APK, such as a fake delivery or bank app, on a phone with corporate access.",
+      "tags": [
+        "mobile",
+        "smishing",
+        "android",
+        "apk",
+        "banking-trojan"
+      ],
+      "attack": [
+        "T1660",
+        "T1476",
+        "T1417.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Disallow installs from unknown sources on corporate-managed Android work profiles",
+          "Give staff a simple way to forward suspicious texts to the SOC",
+          "Keep MTD with sideloaded app detection on devices with corporate access"
+        ],
+        "identification": [
+          "Collect the SMS text, sender number, and link from the user's screenshot",
+          "Identify the installed APK package name and its requested permissions",
+          "Check whether the app was granted accessibility or SMS read permissions",
+          "Search proxy and DNS logs for the smishing domain from other corporate devices",
+          "Find other employees who received the same text"
+        ],
+        "containment": [
+          "Block the device from corporate access until the APK is removed",
+          "Block the smishing and C2 domains on DNS and secure web gateway",
+          "Reset passwords and revoke sessions for accounts used on the phone"
+        ],
+        "eradication": [
+          "Have the user boot into safe mode and uninstall the APK, or factory reset",
+          "Remove the APK's device admin rights before uninstalling if it holds them",
+          "Report the smishing domain to the registrar and the carrier spam service"
+        ],
+        "recovery": [
+          "Restore access after MTD reports the device clean",
+          "Advise the user to check personal banking apps for fraud",
+          "Watch the user's accounts for OTP-intercept style sign-ins over the next two weeks"
+        ],
+        "lessons": [
+          "Add the lure theme to smishing awareness content",
+          "Track how many recipients reported versus clicked",
+          "Review whether the work profile restrictions applied to this device"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Corporate devices resolving the smishing domain",
+          "phase": "identification",
+          "spl": "index=* sourcetype=stream:dns query IN (\"*<smish_domain>\") | stats count min(_time) as first by src_ip query | convert ctime(first)"
+        },
+        {
+          "title": "APK downloads seen at the web proxy",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.url=\"*.apk\" by Web.src Web.user Web.url Web.http_user_agent"
+        }
+      ]
+    },
+    {
+      "id": "lib-mobile-user-reports-phone-hacked",
+      "name": "Employee reports their corporate phone is hacked",
+      "summary": "Use when a user reports battery drain, strange pop-ups, messages they did not send, or account alerts and believes their corporate phone is compromised, before any evidence is confirmed.",
+      "tags": [
+        "mobile",
+        "user-report",
+        "triage",
+        "mdm",
+        "mtd"
+      ],
+      "attack": [
+        "T1418",
+        "T1426"
+      ],
+      "severity": "Low",
+      "tasks": {
+        "preparation": [
+          "Publish a mobile triage questionnaire for the service desk",
+          "Ensure MDM collects installed app inventory for corporate phones",
+          "Keep a loaner phone pool so a suspect phone can be swapped quickly"
+        ],
+        "identification": [
+          "Interview the user on symptoms, when they began, and recent installs or links",
+          "Pull the phone's installed app list and profiles from the MDM console",
+          "Check MTD for network, app, or OS risk detections on the phone",
+          "Review sign-ins and MFA prompts the user did not initiate",
+          "Check the OS version against current security patches"
+        ],
+        "containment": [
+          "Swap the phone for a loaner if any credible indicator is found",
+          "Revoke sessions and require a password change if unexpected sign-ins exist",
+          "Ask the user to stop using the phone for corporate MFA until triage is complete"
+        ],
+        "eradication": [
+          "Remove any unapproved apps or profiles identified in the inventory",
+          "Update the phone to the latest OS and security patch level",
+          "Factory reset and re-enroll the phone if indicators remain unexplained"
+        ],
+        "recovery": [
+          "Return the phone after reset and confirm compliance in MDM",
+          "Follow up with the user after a week to confirm symptoms are gone",
+          "Remove the loaner phone from the user once their own device is returned clean"
+        ],
+        "lessons": [
+          "Record whether symptoms were benign such as adware, a full disk, or OS bugs",
+          "Refine the service desk questionnaire using this case",
+          "Track how many hacked-phone reports turn out to be real compromises"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "MFA push prompts the user did not initiate",
+          "phase": "identification",
+          "spl": "index=* sourcetype=okta:im2 actor.alternateId=<suspect_user> eventType=\"system.push.send_factor_verify_push\" earliest=-7d | stats count by client.ipAddress outcome.result"
+        },
+        {
+          "title": "Installed apps reported by MDM for the phone",
+          "phase": "identification",
+          "spl": "index=mdm sourcetype=intune:detectedapps deviceId=\"<device_id>\" | stats latest(version) as version by displayName publisher | sort displayName"
+        }
+      ]
+    },
+    {
+      "id": "lib-mobile-departed-employee-device-not-returned",
+      "name": "Departed employee has not returned company devices",
+      "summary": "Use when a former employee or contractor keeps a company laptop, phone, or token after their last day and the device may still hold data or working access.",
+      "tags": [
+        "mobile",
+        "offboarding",
+        "insider-risk",
+        "asset-recovery",
+        "hr"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Tie HR termination events to automatic account disable and device lock",
+          "Track device assignment per person in the asset system for offboarding checks",
+          "Prepare prepaid return shipping kits for remote employees"
+        ],
+        "identification": [
+          "List every device assigned to the person from the asset system and MDM",
+          "Check last check-in time and network location for each device",
+          "Confirm that the person's accounts were disabled on schedule",
+          "Review DLP and cloud logs for large downloads in the last 30 days of employment"
+        ],
+        "containment": [
+          "Issue remote lock and wipe for each unreturned device",
+          "Revoke device certificates, VPN profiles, and hardware token assignments",
+          "Disable any personal device enrollments still syncing corporate data"
+        ],
+        "eradication": [
+          "Remove the person from shared drives, groups, and SaaS apps that bypass SSO",
+          "Rotate shared credentials the person knew",
+          "Reassign or close any mailboxes and OneDrive storage the person still owns"
+        ],
+        "recovery": [
+          "Send formal return requests through HR and then legal if ignored",
+          "Mark the device as lost if not returned by the deadline and record write-off",
+          "Inspect and reimage any device that is returned before reissuing it"
+        ],
+        "lessons": [
+          "Measure how many departures leave devices outstanding past 14 days",
+          "Fix gaps between HR systems and identity or MDM deprovisioning",
+          "Decide whether final pay or contract terms should address device return"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Activity by the departed user after termination",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.user=<suspect_user> earliest=<term_date> by Authentication.app Authentication.src Authentication.action"
+        },
+        {
+          "title": "Bulk downloads in the final 30 days of employment",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity UserId=<suspect_user> Operation IN (\"FileDownloaded\", \"FileSyncDownloadedFull\") earliest=-30d@d | bin _time span=1d | stats count by _time | where count > 100"
+        },
+        {
+          "title": "MDM check-ins from unreturned devices",
+          "phase": "containment",
+          "spl": "index=mdm sourcetype=intune:devices userPrincipalName=<suspect_user> | stats latest(lastSyncDateTime) as last_sync by deviceName serialNumber managementState"
+        }
+      ]
+    }
+  ]
+}

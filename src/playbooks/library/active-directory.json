@@ -1,0 +1,1877 @@
+{
+  "category": {
+    "id": "active-directory",
+    "name": "Active Directory",
+    "description": "Incidents in on-premises Active Directory: Kerberos abuse, credential theft from DCs, privilege escalation, persistence, delegation abuse, and Tier 0 compromise."
+  },
+  "playbooks": [
+    {
+      "id": "lib-active-directory-kerberoasting",
+      "name": "Kerberoasting: bulk RC4 service ticket requests from one account",
+      "summary": "Use when a single user or host requests many TGS tickets for SPN-bearing accounts, often with RC4 encryption, suggesting offline cracking of service account passwords.",
+      "tags": [
+        "active-directory",
+        "kerberos",
+        "kerberoasting",
+        "credential-access"
+      ],
+      "attack": [
+        "T1558.003"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable Audit Kerberos Service Ticket Operations on all domain controllers so 4769 is logged",
+          "Maintain an inventory of user accounts with SPNs and their owners",
+          "Deploy a honey SPN account with no legitimate use to alert on any ticket request",
+          "Enforce AES-only encryption types on service accounts where applications support it"
+        ],
+        "identification": [
+          "Search 4769 events for TicketEncryptionType 0x17 grouped by requesting account and source IP",
+          "Count distinct ServiceName values requested by the suspect account in a 10-minute window",
+          "Identify the process on the source host that issued the requests via Sysmon or EDR telemetry",
+          "List which requested SPN accounts are privileged or have weak, old passwords"
+        ],
+        "containment": [
+          "Disable or reset the password of the account that issued the bulk TGS requests",
+          "Isolate the source workstation in EDR pending forensic review",
+          "Rotate passwords on every privileged SPN account whose ticket was requested, using 25+ characters"
+        ],
+        "eradication": [
+          "Remove the roasting tool and any staged hash output files from the source host",
+          "Convert eligible service accounts to gMSA so passwords rotate automatically",
+          "Remove unused SPNs and strip SPNs from accounts in privileged groups"
+        ],
+        "recovery": [
+          "Restart dependent services after service account password rotation and confirm they authenticate",
+          "Monitor 4624 logons by the rotated service accounts for use from unexpected hosts for 30 days",
+          "Re-enable the requesting user only after a credential reset and device rebuild"
+        ],
+        "lessons": [
+          "Add a detection for one account requesting more than N distinct SPN tickets in a short window",
+          "Track the count of RC4-capable service accounts as a hardening metric",
+          "Review why privileged service accounts had crackable passwords and set a rotation policy"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "RC4 TGS requests by account and source",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4769 Ticket_Encryption_Type=0x17 Service_Name!=\"*$\" | stats dc(Service_Name) as spns values(Service_Name) as services by Account_Name, Client_Address | where spns > 5 | sort - spns"
+        },
+        {
+          "title": "Honey SPN ticket requests",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4769 Service_Name=\"<honey_spn_account>\" | table _time, Account_Name, Client_Address, Ticket_Encryption_Type"
+        },
+        {
+          "title": "Logons by rotated service accounts after reset",
+          "phase": "recovery",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.user IN (<svc_account_list>) by Authentication.user, Authentication.src, Authentication.dest | rename Authentication.* as *"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-asrep-roasting",
+      "name": "AS-REP roasting of accounts without Kerberos pre-authentication",
+      "summary": "Use when AS-REQ traffic targets accounts flagged DONT_REQ_PREAUTH, letting an attacker collect encrypted AS-REP data to crack offline without any credentials.",
+      "tags": [
+        "active-directory",
+        "kerberos",
+        "asrep-roasting",
+        "credential-access"
+      ],
+      "attack": [
+        "T1558.004"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Audit Kerberos Authentication Service on DCs so 4768 events include pre-auth type",
+          "Report weekly on accounts with userAccountControl DONT_REQ_PREAUTH set",
+          "Document the business owner for every account that legitimately needs pre-auth disabled"
+        ],
+        "identification": [
+          "Search 4768 events with PreAuthType 0 to list targeted accounts and requesting IPs",
+          "Query AD for all accounts where userAccountControl includes 4194304",
+          "Check whether the requesting IP is a domain-joined host or an unmanaged device",
+          "Determine whether any roastable account has privileged group membership"
+        ],
+        "containment": [
+          "Enable Kerberos pre-authentication on every targeted account that does not strictly need it",
+          "Reset passwords on roastable accounts that were targeted",
+          "Block the unmanaged source IP at the network edge or NAC"
+        ],
+        "eradication": [
+          "Locate and remove the tooling used to send AS-REQ requests from the source host",
+          "Replace legacy apps requiring disabled pre-auth with supported authentication",
+          "Remove stale accounts that were found with pre-auth disabled"
+        ],
+        "recovery": [
+          "Confirm targeted accounts authenticate normally with pre-auth enabled",
+          "Watch for 4768 PreAuthType 0 events recurring against the same accounts",
+          "Verify no successful logon used the targeted accounts from new sources"
+        ],
+        "lessons": [
+          "Add a scheduled check that alerts when DONT_REQ_PREAUTH is set on any account",
+          "Alert on AS-REQ without pre-auth from non-server subnets",
+          "Record how long roastable accounts existed before discovery"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "AS-REQ without pre-authentication",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4768 Pre_Authentication_Type=0 | stats count values(Account_Name) as targets by Client_Address | sort - count"
+        },
+        {
+          "title": "UAC changes that disable pre-auth",
+          "phase": "lessons",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4738 \"Don't Require Preauth\" | table _time, Subject_Account_Name, Target_Account_Name, New_UAC_Value"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-dcsync",
+      "name": "DCSync: directory replication requested by a non-DC account",
+      "summary": "Use when a user or host that is not a domain controller invokes DRSUAPI GetNCChanges replication rights, typically to dump krbtgt and admin password hashes.",
+      "tags": [
+        "active-directory",
+        "dcsync",
+        "credential-access",
+        "replication"
+      ],
+      "attack": [
+        "T1003.006"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable Audit Directory Service Access with SACLs on the domain root for replication GUIDs",
+          "Keep an allowlist of DC computer accounts and Entra Connect accounts holding replication rights",
+          "Capture DRSUAPI traffic metadata from DC network sensors or NDR"
+        ],
+        "identification": [
+          "Search 4662 events for replication GUIDs 1131f6aa and 1131f6ad from non-DC accounts",
+          "Identify the source IP of the replication request and map it to a host",
+          "Review the domain root ACL for unexpected Replicating Directory Changes All grants",
+          "Determine which account hashes were likely retrieved, assuming krbtgt is included"
+        ],
+        "containment": [
+          "Disable the account that performed replication and isolate the source host",
+          "Remove any non-standard replication rights from the domain root ACL",
+          "Start the double krbtgt reset procedure if krbtgt exposure is likely",
+          "Reset passwords for all Tier 0 accounts whose hashes were replicated"
+        ],
+        "eradication": [
+          "Hunt for persistence the attacker added with the stolen hashes such as new admins or GPOs",
+          "Remove dumping tools and output files from the source host",
+          "Rebuild the source host from a known good image"
+        ],
+        "recovery": [
+          "Complete the second krbtgt reset after replication convergence",
+          "Monitor 4662 replication events for any recurrence from non-DC sources",
+          "Confirm Entra Connect and other legitimate sync still function after ACL cleanup"
+        ],
+        "lessons": [
+          "Deploy a standing alert for replication GUID access by non-DC principals",
+          "Review how the attacker gained an account with replication rights",
+          "Add replication right holders to the quarterly Tier 0 access review"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Replication rights used by non-DC accounts",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4662 (Properties=\"*1131f6aa-9c07-11d1-f79f-00c04fc2dcd2*\" OR Properties=\"*1131f6ad-9c07-11d1-f79f-00c04fc2dcd2*\") Account_Name!=\"*$\" | stats count by Account_Name, Object_Name, ComputerName"
+        },
+        {
+          "title": "Network logons on DCs from the replication source",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4624 Logon_Type=3 Source_Network_Address=\"<ioc_ip>\" host IN (<dc_list>) | table _time, host, Account_Name, Authentication_Package"
+        },
+        {
+          "title": "Domain root ACL changes",
+          "phase": "containment",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=5136 Attribute_LDAP_Display_Name=nTSecurityDescriptor DN=\"DC=*\" | table _time, Subject_Account_Name, DN, Attribute_Value"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-golden-ticket",
+      "name": "Golden Ticket: forged TGTs signed with a stolen krbtgt key",
+      "summary": "Use when Kerberos activity shows TGTs that no DC issued, abnormal ticket lifetimes, or nonexistent users, indicating the krbtgt hash is compromised.",
+      "tags": [
+        "active-directory",
+        "kerberos",
+        "golden-ticket",
+        "persistence"
+      ],
+      "attack": [
+        "T1558.001"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Record krbtgt password last set date and rotate it at least twice a year",
+          "Retain 4768 and 4769 events from all DCs for at least 90 days",
+          "Pre-stage the Microsoft krbtgt reset script and test it in a lab forest"
+        ],
+        "identification": [
+          "Find 4769 service ticket requests with no matching 4768 TGT issuance for that account and host",
+          "Look for Kerberos logons by usernames that do not exist in AD",
+          "Check for ticket lifetimes exceeding the domain policy maximum in EDR Kerberos telemetry",
+          "Trace how the krbtgt hash was exposed via DCSync, NTDS theft, or DC compromise"
+        ],
+        "containment": [
+          "Reset krbtgt once, wait for replication, then reset it again to invalidate forged TGTs",
+          "Isolate hosts where forged tickets were used",
+          "Restrict Tier 0 logon to PAWs while the reset is underway"
+        ],
+        "eradication": [
+          "Close the original access path that yielded the krbtgt key",
+          "Hunt for additional persistence: new admin accounts, SID history, AdminSDHolder changes",
+          "Rebuild any DC that was directly compromised"
+        ],
+        "recovery": [
+          "Verify Kerberos authentication health on all DCs after both resets",
+          "Monitor for 4769 events with failure codes indicating old forged tickets being replayed",
+          "Confirm trusts and cross-forest authentication still function"
+        ],
+        "lessons": [
+          "Add correlation detection for TGS requests lacking a preceding TGT",
+          "Shorten the krbtgt rotation interval and automate it",
+          "Measure time between krbtgt exposure and reset completion"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "TGS without preceding TGT for the account",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode IN (4768,4769) | eval acct=lower(mvindex(split(Account_Name,\"@\"),0)) | stats values(EventCode) as codes by acct, Client_Address | where mvcount(codes)=1 AND codes=4769"
+        },
+        {
+          "title": "Kerberos logons by nonexistent users",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4624 Authentication_Package=Kerberos | lookup ad_users sAMAccountName as Account_Name OUTPUT sAMAccountName as known | where isnull(known) AND NOT match(Account_Name,\"\\$$\") | stats count by Account_Name, host"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-silver-ticket",
+      "name": "Silver Ticket: forged service tickets for a single server",
+      "summary": "Use when a server accepts Kerberos service tickets that no DC issued, implying the attacker holds that computer or service account's key and forges TGS locally.",
+      "tags": [
+        "active-directory",
+        "kerberos",
+        "silver-ticket",
+        "lateral-movement"
+      ],
+      "attack": [
+        "T1558.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable PAC validation where supported on high-value servers",
+          "Forward 4624 and 4634 logon events from Tier 0 and Tier 1 servers to the SIEM",
+          "Ensure computer account password rotation is not disabled by GPO"
+        ],
+        "identification": [
+          "Find 4624 Kerberos logons on the target server with no 4769 for that SPN on any DC",
+          "Identify which service class is abused such as CIFS, HOST, MSSQLSvc, or HTTP",
+          "Check whether the server's machine account hash was dumped via LSASS or registry",
+          "Review logon account names and group SIDs for impossible combinations"
+        ],
+        "containment": [
+          "Reset the target computer account password twice with Reset-ComputerMachinePassword",
+          "Reset the service account password if a user-based SPN was forged",
+          "Restrict network access to the affected server to admin jump hosts"
+        ],
+        "eradication": [
+          "Remove credential dumping artifacts from the server",
+          "Hunt for scheduled tasks or services created during forged sessions",
+          "Patch or harden the server path used to extract the machine key"
+        ],
+        "recovery": [
+          "Confirm the server's secure channel with Test-ComputerSecureChannel",
+          "Watch for further DC-less Kerberos logons on the server for 14 days",
+          "Return network access after secure channel and EDR scans are clean"
+        ],
+        "lessons": [
+          "Build a detection joining server 4624 Kerberos logons to DC 4769 events",
+          "Review where machine account rotation was disabled",
+          "Add service accounts with forged tickets to the gMSA migration list"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Server Kerberos logons without DC ticket issuance",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4624 Authentication_Package=Kerberos host=\"<host>\" | stats earliest(_time) as first by Account_Name, Source_Network_Address | join type=left Account_Name [search index=wineventlog EventCode=4769 Service_Name=\"<host>$\" | stats count as tgs by Account_Name] | where isnull(tgs)"
+        },
+        {
+          "title": "Machine account password resets",
+          "phase": "recovery",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4742 Target_Account_Name=\"<host>$\" | table _time, Subject_Account_Name, Target_Account_Name, Password_Last_Set"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-ntds-dit-theft",
+      "name": "NTDS.dit copied from a domain controller",
+      "summary": "Use when a DC shows ntdsutil IFM creation, Volume Shadow Copy access to NTDS.dit, or SYSTEM hive export, meaning every domain password hash may be in attacker hands.",
+      "tags": [
+        "active-directory",
+        "ntds",
+        "credential-access",
+        "domain-controller"
+      ],
+      "attack": [
+        "T1003.003"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable process creation logging with command line on all domain controllers",
+          "Alert on vssadmin, ntdsutil, and diskshadow execution on DCs",
+          "Restrict interactive logon on DCs to a small named Tier 0 group",
+          "Keep offline, tested system-state backups of at least two DCs"
+        ],
+        "identification": [
+          "Search DC process logs for ntdsutil \"ac i ntds\" ifm or vssadmin create shadow",
+          "Look for copies of ntds.dit or SYSTEM hive in temp, share, or web folders on the DC",
+          "Trace outbound SMB, HTTP, or cloud storage transfers from the DC around the copy time",
+          "Identify the account and logon session that ran the extraction commands"
+        ],
+        "containment": [
+          "Isolate the DC from non-DC networks while keeping replication with peers",
+          "Disable the account that executed the extraction and kill its sessions",
+          "Delete shadow copies and staged ntds.dit or hive copies after evidence capture",
+          "Begin a domain-wide password reset plan prioritizing Tier 0 and service accounts"
+        ],
+        "eradication": [
+          "Perform the double krbtgt reset",
+          "Reset all privileged, service, and trust account passwords",
+          "Force a password change at next logon for all users",
+          "Rebuild the affected DC from media rather than cleaning it in place"
+        ],
+        "recovery": [
+          "Monitor for pass-the-hash use of pre-reset hashes across the estate",
+          "Confirm all trust passwords were rotated and trusts validate",
+          "Track completion percentage of the domain-wide password reset daily"
+        ],
+        "lessons": [
+          "Add detection for IFM creation and NTDS.dit file reads by non-system processes",
+          "Review how the attacker gained interactive access to a DC",
+          "Measure the time from extraction to full credential rotation"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "NTDS extraction commands on DCs",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.dest IN (<dc_list>) (Processes.process=\"*ntdsutil*ifm*\" OR Processes.process=\"*vssadmin*create shadow*\" OR Processes.process=\"*ntds.dit*\" OR Processes.process=\"*reg* save*hklm\\\\system*\") by Processes.dest, Processes.user, Processes.process | rename Processes.* as *"
+        },
+        {
+          "title": "Large outbound transfers from DCs",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(All_Traffic.bytes_out) as bytes from datamodel=Network_Traffic where All_Traffic.src IN (<dc_ip_list>) by All_Traffic.src, All_Traffic.dest, All_Traffic.dest_port | where bytes > 50000000 | rename All_Traffic.* as *"
+        },
+        {
+          "title": "File creation of ntds.dit copies",
+          "phase": "identification",
+          "spl": "index=sysmon sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode=11 TargetFilename=\"*ntds.dit\" NOT TargetFilename=\"C:\\\\Windows\\\\NTDS\\\\*\" | table _time, host, Image, TargetFilename"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-password-spray-dc",
+      "name": "Password spray against domain controllers",
+      "summary": "Use when one source tries a few common passwords against many domain accounts via Kerberos or NTLM, staying under lockout thresholds to find weak credentials.",
+      "tags": [
+        "active-directory",
+        "password-spray",
+        "credential-access",
+        "brute-force"
+      ],
+      "attack": [
+        "T1110.003"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Collect 4771 and 4776 failures from every DC, not just the PDC emulator",
+          "Deploy a banned password list through Entra Password Protection or a filter DLL",
+          "Know the domain lockout threshold and observation window values"
+        ],
+        "identification": [
+          "Group 4771 code 0x18 and 4776 0xC000006A failures by source and count distinct targeted users",
+          "Find accounts with a success from the spraying source after failures",
+          "Map the spraying source IP to a host, VPN user, or exposed service",
+          "Check whether the spray targeted only enabled users, indicating prior enumeration"
+        ],
+        "containment": [
+          "Block the spraying source IP at the firewall or VPN concentrator",
+          "Force password resets for accounts that authenticated successfully during the spray",
+          "Revoke VPN and remote access sessions of compromised accounts"
+        ],
+        "eradication": [
+          "Remove malware or tooling on the internal host that sourced the spray",
+          "Expire passwords that match the sprayed seasonal patterns",
+          "Close any internet-facing service that exposed NTLM authentication"
+        ],
+        "recovery": [
+          "Monitor compromised accounts for logons from new hosts for two weeks",
+          "Confirm the spraying source no longer generates authentication failures",
+          "Notify affected users and verify their new passwords meet policy"
+        ],
+        "lessons": [
+          "Tune a detection for one source failing against more than 20 distinct accounts",
+          "Report how many accounts used a sprayed password",
+          "Evaluate smart lockout or MFA for internal-facing remote access"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Spray pattern: one source, many users",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" (EventCode=4771 Failure_Code=0x18) OR (EventCode=4776 Error_Code=0xC000006A) | eval src=coalesce(Client_Address, Source_Workstation) | bin _time span=30m | stats dc(Account_Name) as users count by _time, src | where users > 20"
+        },
+        {
+          "title": "Successful logons from the spray source",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.src=\"<ioc_ip>\" Authentication.action=success by Authentication.user, Authentication.dest | rename Authentication.* as *"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-lockout-storm",
+      "name": "Account lockout storm across the domain",
+      "summary": "Use when hundreds of accounts lock out in a short window from brute force or a misconfigured device, disrupting logons and possibly masking an attack.",
+      "tags": [
+        "active-directory",
+        "brute-force",
+        "lockout",
+        "availability"
+      ],
+      "attack": [
+        "T1110.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Forward 4740 lockout events with Caller Computer Name from the PDC emulator",
+          "Pre-approve a bulk unlock script and the authority to run it",
+          "Document how to identify service accounts and mapped drives using stale credentials"
+        ],
+        "identification": [
+          "Count 4740 events per minute and list the top Caller Computer Name values",
+          "Distinguish attack from misconfiguration by checking whether one source hits many users",
+          "Inspect the caller host for services, scheduled tasks, or apps with saved bad credentials",
+          "Check whether locked accounts include help desk or emergency admins"
+        ],
+        "containment": [
+          "Block or quarantine the caller host generating the bad authentications",
+          "Temporarily raise the lockout threshold under change control if the storm is ongoing",
+          "Prioritize unlocking accounts needed for incident response and critical operations"
+        ],
+        "eradication": [
+          "Correct the stored credential on misconfigured devices or services",
+          "Remove the brute-force tool or malware if the source is attacker-controlled",
+          "Disable legacy protocols on the source system that retry with cached passwords"
+        ],
+        "recovery": [
+          "Bulk unlock affected accounts once the source is stopped",
+          "Restore the original lockout policy and confirm GPO application",
+          "Watch the 4740 rate for 24 hours to confirm it returns to baseline"
+        ],
+        "lessons": [
+          "Alert when lockouts exceed baseline by a set multiple in 15 minutes",
+          "Review whether lockout policy itself is a denial-of-service risk",
+          "Record root cause: attack, stale credential, or tooling error"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Lockouts per minute by caller computer",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4740 | bin _time span=1m | stats dc(Target_Account_Name) as accounts by _time, Caller_Computer_Name | sort - accounts"
+        },
+        {
+          "title": "Failure sources for locked accounts",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode IN (4625,4771,4776) Account_Name IN (<locked_accounts>) | eval src=coalesce(Source_Network_Address, Client_Address, Source_Workstation) | stats count by src, Account_Name | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-new-domain-admin",
+      "name": "Unexpected account added to Domain Admins",
+      "summary": "Use when an account is added to Domain Admins, Enterprise Admins, Schema Admins, or Administrators without a matching change ticket.",
+      "tags": [
+        "active-directory",
+        "privilege-escalation",
+        "group-change",
+        "tier0"
+      ],
+      "attack": [
+        "T1098",
+        "T1078.002"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Alert on 4728, 4732, and 4756 events for all built-in privileged groups",
+          "Keep an approved baseline of privileged group membership",
+          "Require change tickets for any Tier 0 group modification"
+        ],
+        "identification": [
+          "Identify who added the member, from which DC, and the source logon session",
+          "Confirm with the change owner whether a ticket exists for the addition",
+          "Review activity of the newly added account since the addition time",
+          "Check whether the adder account itself was recently compromised or elevated"
+        ],
+        "containment": [
+          "Remove the unauthorized member from the privileged group",
+          "Disable the added account and the account that performed the change",
+          "Purge Kerberos tickets of the added account on hosts it touched with klist purge"
+        ],
+        "eradication": [
+          "Review all actions the added admin took, including GPO, ACL, and account changes",
+          "Revert persistence created with the elevated account",
+          "Reset passwords for the actor and any credentials the admin could have harvested"
+        ],
+        "recovery": [
+          "Compare current privileged group membership against the approved baseline",
+          "Re-enable legitimate accounts after credential reset and review",
+          "Monitor privileged groups at increased sensitivity for 30 days"
+        ],
+        "lessons": [
+          "Evaluate just-in-time privileged access to shrink standing Domain Admin membership",
+          "Measure time from group change to alert triage",
+          "Review whether delegated OU admins could modify Tier 0 groups"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Privileged group membership additions",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode IN (4728,4732,4756) Group_Name IN (\"Domain Admins\",\"Enterprise Admins\",\"Schema Admins\",\"Administrators\") | table _time, host, Subject_Account_Name, Member_Name, Group_Name"
+        },
+        {
+          "title": "Activity of the new admin account",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" Account_Name=\"<suspect_user>\" earliest=<added_time> | stats count values(EventCode) as events by host"
+        },
+        {
+          "title": "Change data model view of the group change",
+          "phase": "recovery",
+          "spl": "| tstats summariesonly=false count from datamodel=Change where All_Changes.object_category=group All_Changes.object IN (\"Domain Admins\",\"Enterprise Admins\") by All_Changes.user, All_Changes.object, All_Changes.action | rename All_Changes.* as *"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-adminsdholder-tampering",
+      "name": "AdminSDHolder ACL tampered for persistence",
+      "summary": "Use when the AdminSDHolder object's security descriptor gains a new ACE, which SDProp then stamps onto every protected admin account and group every hour.",
+      "tags": [
+        "active-directory",
+        "adminsdholder",
+        "persistence",
+        "acl"
+      ],
+      "attack": [
+        "T1098",
+        "T1484"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Set a SACL on CN=AdminSDHolder,CN=System to audit writes to nTSecurityDescriptor",
+          "Export and store a baseline of the AdminSDHolder ACL",
+          "Know the SDProp interval and how to trigger it manually"
+        ],
+        "identification": [
+          "Search 5136 events on CN=AdminSDHolder for nTSecurityDescriptor changes",
+          "Diff the current AdminSDHolder ACL against the stored baseline",
+          "Identify the trustee granted rights and what rights such as GenericAll or WriteDACL",
+          "Check protected accounts with adminCount=1 for the propagated ACE"
+        ],
+        "containment": [
+          "Remove the rogue ACE from AdminSDHolder",
+          "Disable the trustee account or remove it from the group granted the ACE",
+          "Run SDProp manually via RunProtectAdminGroupsTask to repropagate the clean ACL"
+        ],
+        "eradication": [
+          "Verify the rogue ACE is gone from every protected object after SDProp",
+          "Review what the trustee did with its rights such as password resets or group changes",
+          "Reset credentials of any protected account the trustee could have controlled"
+        ],
+        "recovery": [
+          "Re-export the AdminSDHolder ACL and confirm it matches baseline",
+          "Monitor 4724 password resets and 4728 group adds by the former trustee",
+          "Confirm legitimate delegated tooling still works with the restored ACL"
+        ],
+        "lessons": [
+          "Add an hourly diff job of the AdminSDHolder ACL",
+          "Review who holds rights to modify objects under CN=System",
+          "Include AdminSDHolder checks in Tier 0 audits"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Writes to AdminSDHolder security descriptor",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=5136 DN=\"CN=AdminSDHolder,CN=System,*\" Attribute_LDAP_Display_Name=nTSecurityDescriptor | table _time, host, Subject_Account_Name, Operation_Type, Attribute_Value"
+        },
+        {
+          "title": "Password resets on protected accounts",
+          "phase": "eradication",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4724 Subject_Account_Name=\"<suspect_user>\" | table _time, Subject_Account_Name, Target_Account_Name, host"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-gpo-persistence",
+      "name": "Group Policy Object modified to deploy attacker persistence",
+      "summary": "Use when a GPO linked to many computers gains a new scheduled task, startup script, or registry change that runs attacker code across the domain.",
+      "tags": [
+        "active-directory",
+        "gpo",
+        "persistence",
+        "lateral-movement"
+      ],
+      "attack": [
+        "T1484.001",
+        "T1053.005"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Audit writes to groupPolicyContainer objects and SYSVOL Policies folders",
+          "Back up all GPOs nightly with Backup-GPO and keep versions offline",
+          "Restrict GPO edit rights to a named Group Policy admin group"
+        ],
+        "identification": [
+          "Search 5136 events on groupPolicyContainer objects for versionNumber and gPCMachineExtensionNames changes",
+          "Inspect SYSVOL for new ScheduledTasks.xml, scripts.ini, or Registry.pol files in the GPO GUID folder",
+          "Compare the modified GPO against last night's backup with a GPO report diff",
+          "List OUs the GPO is linked to and estimate how many hosts already applied it"
+        ],
+        "containment": [
+          "Unlink or disable the modified GPO immediately",
+          "Remove edit permissions from the account that made the change",
+          "Block the payload hash and C2 domains referenced by the GPO task in EDR and proxy"
+        ],
+        "eradication": [
+          "Restore the GPO from the known good backup",
+          "Delete scheduled tasks or services the GPO created on every endpoint via EDR",
+          "Remove payload files dropped from SYSVOL or network shares"
+        ],
+        "recovery": [
+          "Run gpupdate /force on affected OUs and confirm the clean version number applies",
+          "Hunt endpoints for continued execution of the payload for 7 days",
+          "Re-link the restored GPO after validation"
+        ],
+        "lessons": [
+          "Add detection for scheduled task creation via Group Policy client service",
+          "Review GPO delegation and remove unnecessary editors",
+          "Track how many endpoints executed the malicious GPO before unlink"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "GPO attribute changes",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=5136 Object_Class=groupPolicyContainer | table _time, Subject_Account_Name, DN, Attribute_LDAP_Display_Name, Attribute_Value"
+        },
+        {
+          "title": "Scheduled tasks created by Group Policy",
+          "phase": "eradication",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4698 | search Task_Content=\"*<payload_name>*\" | stats count by host, Task_Name"
+        },
+        {
+          "title": "SYSVOL file writes",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=5145 Share_Name=\"*SYSVOL\" Relative_Target_Name=\"*Policies*\" Accesses=\"*WriteData*\" | table _time, Account_Name, Source_Address, Relative_Target_Name"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-laps-read-abuse",
+      "name": "Bulk LAPS local admin password reads",
+      "summary": "Use when an account reads ms-Mcs-AdmPwd or msLAPS-Password attributes for many computers, giving it local admin on each and a lateral movement path.",
+      "tags": [
+        "active-directory",
+        "laps",
+        "credential-access",
+        "lateral-movement"
+      ],
+      "attack": [
+        "T1555",
+        "T1078.003"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Configure SACLs to audit read access to LAPS password attributes",
+          "Document which groups are delegated LAPS read rights per OU",
+          "Enable Windows LAPS password expiration after use where available"
+        ],
+        "identification": [
+          "Search 4662 events for reads of the LAPS password attribute GUID by account",
+          "Count distinct computers whose LAPS password the suspect account read",
+          "Check for 4624 logon type 3 with local admin accounts on those computers afterwards",
+          "Review who granted the suspect account LAPS read rights"
+        ],
+        "containment": [
+          "Remove the suspect account from groups with LAPS read delegation",
+          "Force LAPS password rotation on every computer that was read",
+          "Disable the suspect account pending review"
+        ],
+        "eradication": [
+          "Hunt read computers for tools, services, or users added using local admin",
+          "Remove excess LAPS read ACEs found with Find-AdmPwdExtendedRights",
+          "Rotate credentials cached on hosts accessed with local admin"
+        ],
+        "recovery": [
+          "Confirm new LAPS passwords were written and expiration times reset",
+          "Monitor local administrator logons across the read computers",
+          "Restore least-privilege LAPS delegation to helpdesk tiers"
+        ],
+        "lessons": [
+          "Alert when one account reads more than 10 LAPS passwords in an hour",
+          "Include LAPS read delegation in quarterly access reviews",
+          "Assess moving to Windows LAPS with encrypted passwords and history"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "LAPS attribute reads by account",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4662 (Properties=\"*ms-Mcs-AdmPwd*\" OR Properties=\"*msLAPS-Password*\" OR Properties=\"*<laps_attr_guid>*\") | stats dc(Object_Name) as computers values(Object_Name) as objs by Account_Name | sort - computers"
+        },
+        {
+          "title": "Local admin network logons after reads",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4624 Logon_Type=3 Account_Name=\"Administrator\" Account_Domain!=\"<domain>\" host IN (<read_computers>) | table _time, host, Source_Network_Address"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-adcs-certificate-abuse",
+      "name": "AD CS abuse: ESC1 template misuse or ESC8 relay to web enrollment",
+      "summary": "Use when a certificate is issued with an arbitrary SAN for a privileged user, or NTLM is relayed to the CA's HTTP enrollment endpoint to obtain a DC certificate.",
+      "tags": [
+        "active-directory",
+        "adcs",
+        "certificates",
+        "privilege-escalation"
+      ],
+      "attack": [
+        "T1649",
+        "T1557.001"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable CA auditing for certificate requests and issuance events 4886 and 4887",
+          "Inventory templates with ENROLLEE_SUPPLIES_SUBJECT and client authentication EKU",
+          "Require EPA and HTTPS or disable the certsrv web enrollment role",
+          "Know how to revoke certificates and publish an updated CRL quickly"
+        ],
+        "identification": [
+          "Search 4887 events for certificates whose SAN differs from the requester",
+          "Find certificate requests for DC or admin subjects from a non-admin requester",
+          "Check IIS logs on the CA for NTLM authentication to /certsrv from DC machine accounts",
+          "Look for 4768 PKINIT logons using the newly issued certificate"
+        ],
+        "containment": [
+          "Revoke the maliciously issued certificates and publish the CRL",
+          "Disable the vulnerable template or remove the supply-in-request flag",
+          "Stop the CA web enrollment endpoint or enforce EPA",
+          "Reset credentials of the impersonated account and purge its tickets"
+        ],
+        "eradication": [
+          "Add the revoked certificate thumbprints to NTAuth monitoring and block PKINIT use",
+          "Restrict template enrollment rights to specific groups",
+          "Hunt for DCSync or admin activity performed with the forged identity"
+        ],
+        "recovery": [
+          "Re-enable needed templates with manager approval required",
+          "Monitor 4887 for SAN mismatches for 30 days",
+          "Confirm legitimate enrollment workflows still issue certificates"
+        ],
+        "lessons": [
+          "Run a recurring AD CS misconfiguration scan and track ESC findings",
+          "Add a detection for PKINIT logons by privileged accounts from new hosts",
+          "Document the CA as Tier 0 and enforce Tier 0 admin controls on it"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Issued certificates with mismatched requester and SAN",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4887 host=\"<ca_host>\" | rex field=Attributes \"(?i)san:upn=(?<san_upn>[^&\\s]+)\" | where isnotnull(san_upn) AND lower(san_upn)!=lower(Requester) | table _time, Requester, san_upn, Template, Request_ID"
+        },
+        {
+          "title": "NTLM auth to CA web enrollment",
+          "phase": "identification",
+          "spl": "index=iis host=\"<ca_host>\" cs_uri_stem=\"/certsrv*\" | stats count by c_ip, cs_username, cs_uri_stem, sc_status"
+        },
+        {
+          "title": "PKINIT logons for privileged users",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4768 Pre_Authentication_Type=16 Account_Name IN (<privileged_accounts>) | table _time, Account_Name, Client_Address, Certificate_Thumbprint"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-ntlm-relay",
+      "name": "NTLM relay attack against SMB or LDAP services",
+      "summary": "Use when coerced or poisoned NTLM authentication is relayed to another server, often seen as a machine or user authenticating from an IP that is not its own.",
+      "tags": [
+        "active-directory",
+        "ntlm",
+        "relay",
+        "lateral-movement"
+      ],
+      "attack": [
+        "T1557.001",
+        "T1187"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enforce SMB signing on all servers and LDAP signing and channel binding on DCs",
+          "Disable LLMNR and NBT-NS through GPO",
+          "Log 4624 events with source IP and NTLM package details on servers"
+        ],
+        "identification": [
+          "Find NTLM logons where the source IP does not match the account's own host IP",
+          "Look for coercion RPC calls such as EfsRpcOpenFileRaw or SpoolSample against DCs",
+          "Identify the relay host running responder or ntlmrelayx-style listeners",
+          "Review LDAP changes made by the relayed identity such as RBCD or new computer objects"
+        ],
+        "containment": [
+          "Isolate the relay host",
+          "Block inbound SMB and HTTP from the relay host to servers",
+          "Revert directory changes the relayed session made"
+        ],
+        "eradication": [
+          "Remove listener tooling from the relay host",
+          "Patch or disable the coerced service such as Print Spooler on DCs",
+          "Reset passwords of relayed user accounts"
+        ],
+        "recovery": [
+          "Validate SMB signing and LDAP channel binding enforcement with a scan",
+          "Monitor for NTLM logon source mismatches over two weeks",
+          "Confirm that legacy apps work with signing enforcement"
+        ],
+        "lessons": [
+          "Track the percentage of NTLM authentication versus Kerberos in the domain",
+          "Add detection for coercion RPC calls to DCs",
+          "Plan NTLM deprecation for remaining dependent systems"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "NTLM logons where source IP does not match account host",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4624 Authentication_Package=NTLM Account_Name=\"*$\" | lookup asset_lookup nt_host as Account_Name OUTPUT ip as account_ip | where isnotnull(account_ip) AND account_ip!=Source_Network_Address | table _time, host, Account_Name, Source_Network_Address, account_ip"
+        },
+        {
+          "title": "LLMNR and NBT-NS traffic",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest_port IN (5355,137) by All_Traffic.src, All_Traffic.dest | rename All_Traffic.* as *"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-pass-the-hash",
+      "name": "Pass-the-hash lateral movement with NTLM",
+      "summary": "Use when an account's NTLM hash is reused to log on to other hosts without its password, typically seen as logon type 9 or NTLM network logons from unusual sources.",
+      "tags": [
+        "active-directory",
+        "pass-the-hash",
+        "lateral-movement",
+        "ntlm"
+      ],
+      "attack": [
+        "T1550.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable LSA protection and Credential Guard on workstations and servers",
+          "Add privileged users to Protected Users to block NTLM",
+          "Deploy unique local admin passwords with LAPS"
+        ],
+        "identification": [
+          "Search 4624 logon type 9 with seclogo and NTLM package on endpoints",
+          "Find NTLM network logons by admin accounts to hosts they never log on to",
+          "Identify the host where the hash was dumped by looking for LSASS access",
+          "Map the chain of hosts reached with the same account and time sequence"
+        ],
+        "containment": [
+          "Reset the reused account password twice to invalidate the hash",
+          "Isolate the dump host and the hosts reached with the hash",
+          "Block SMB and WinRM between workstations"
+        ],
+        "eradication": [
+          "Remove the dumping tool and any services installed via PsExec-style execution",
+          "Rotate local admin passwords on reached hosts",
+          "Clear cached credentials of privileged accounts on non-Tier 0 hosts"
+        ],
+        "recovery": [
+          "Monitor for NTLM logons by the reset account for a week",
+          "Return isolated hosts after EDR scans and credential hygiene checks",
+          "Confirm the account works with Kerberos only"
+        ],
+        "lessons": [
+          "Detect LSASS handle access by unsigned processes",
+          "Review why privileged credentials were cached on the dump host",
+          "Expand Protected Users and Credential Guard coverage"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Logon type 9 with seclogo",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4624 Logon_Type=9 Logon_Process=seclogo | table _time, host, Account_Name, Process_Name"
+        },
+        {
+          "title": "LSASS access by unusual processes",
+          "phase": "identification",
+          "spl": "index=sysmon sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode=10 TargetImage=\"*\\\\lsass.exe\" GrantedAccess IN (0x1010,0x1410,0x1fffff) NOT SourceImage IN (\"*\\\\MsMpEng.exe\",\"*\\\\csrss.exe\") | stats count by host, SourceImage, GrantedAccess"
+        },
+        {
+          "title": "NTLM admin logons to new hosts",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Authentication where Authentication.user=\"<suspect_user>\" Authentication.authentication_method=NTLM by Authentication.dest, Authentication.src | rename Authentication.* as *"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-pass-the-ticket",
+      "name": "Pass-the-ticket: stolen Kerberos tickets reused on another host",
+      "summary": "Use when a TGT or service ticket exported from one machine's memory is injected and used from a different host, so the same ticket appears from two client IPs.",
+      "tags": [
+        "active-directory",
+        "kerberos",
+        "pass-the-ticket",
+        "lateral-movement"
+      ],
+      "attack": [
+        "T1550.003"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Ensure EDR records Kerberos ticket export and injection API calls",
+          "Retain 4769 events with client address and ticket options from all DCs",
+          "Keep privileged sessions on PAWs to limit where tickets are cached"
+        ],
+        "identification": [
+          "Find the same account requesting service tickets from two client IPs within ticket lifetime",
+          "Search EDR for kirbi or ccache files written to disk",
+          "Identify the source host where tickets were dumped from LSASS",
+          "List services accessed with the stolen ticket and the data touched"
+        ],
+        "containment": [
+          "Purge tickets on the source and destination hosts with klist purge",
+          "Reset the account password so new TGTs require the new key",
+          "Isolate the host that injected the ticket"
+        ],
+        "eradication": [
+          "Delete exported ticket files and the tool used to export them",
+          "Investigate how the attacker gained admin on the ticket source host",
+          "Reset krbtgt if a TGT for a Tier 0 account was stolen and lifetime remains"
+        ],
+        "recovery": [
+          "Monitor the account for multi-source TGS requests for 10 hours beyond max ticket lifetime",
+          "Return hosts after rebuild or clean EDR verdict",
+          "Validate the user's normal access works after reset"
+        ],
+        "lessons": [
+          "Add correlation detection for one account's tickets used from multiple IPs",
+          "Reduce maximum ticket lifetime for privileged accounts via authentication policy silos",
+          "Review why privileged tickets were present on a lower-tier host"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Same account using tickets from multiple IPs",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4769 Account_Name=\"<suspect_user>*\" | bin _time span=1h | stats dc(Client_Address) as ips values(Client_Address) as addrs values(Service_Name) as services by _time, Account_Name | where ips > 1"
+        },
+        {
+          "title": "Ticket files written to disk",
+          "phase": "identification",
+          "spl": "index=sysmon sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode=11 (TargetFilename=\"*.kirbi\" OR TargetFilename=\"*.ccache\") | table _time, host, Image, TargetFilename"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-unconstrained-delegation",
+      "name": "Unconstrained delegation host used to capture privileged TGTs",
+      "summary": "Use when a computer trusted for unconstrained delegation receives forwarded TGTs from DCs or admins, often after a coercion attack, letting the attacker impersonate them.",
+      "tags": [
+        "active-directory",
+        "delegation",
+        "kerberos",
+        "privilege-escalation"
+      ],
+      "attack": [
+        "T1558",
+        "T1187"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "List every non-DC computer with TRUSTED_FOR_DELEGATION set and justify each",
+          "Mark Tier 0 accounts as sensitive and cannot be delegated",
+          "Disable Print Spooler on DCs to reduce coercion paths"
+        ],
+        "identification": [
+          "Query AD for userAccountControl 524288 on non-DC computer objects",
+          "Find DC machine accounts authenticating to the delegation host via 4624",
+          "Check the host for Rubeus monitor or similar ticket harvesting processes",
+          "Search for coercion RPC calls originating from the delegation host to DCs"
+        ],
+        "containment": [
+          "Isolate the unconstrained delegation host",
+          "Remove the TRUSTED_FOR_DELEGATION flag from the computer object",
+          "Reset krbtgt twice if a DC TGT was captured",
+          "Reset passwords of admin accounts whose TGTs reached the host"
+        ],
+        "eradication": [
+          "Replace unconstrained delegation with constrained or resource-based delegation",
+          "Rebuild the delegation host",
+          "Hunt for DCSync or admin actions using captured DC identities"
+        ],
+        "recovery": [
+          "Validate applications on the host work with constrained delegation",
+          "Monitor for DC machine account logons to non-DC hosts",
+          "Confirm no remaining non-DC computers allow unconstrained delegation"
+        ],
+        "lessons": [
+          "Alert when TRUSTED_FOR_DELEGATION is set on any computer",
+          "Expand the sensitive-account flag to all privileged users",
+          "Track count of unconstrained delegation hosts to zero"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "DC machine accounts logging on to delegation hosts",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4624 Account_Name IN (<dc_machine_accounts>) host=\"<delegation_host>\" | table _time, host, Account_Name, Source_Network_Address, Logon_Type"
+        },
+        {
+          "title": "Delegation flag changes",
+          "phase": "lessons",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4742 New_UAC_Value=\"*\" | search \"Trusted For Delegation\" | table _time, Subject_Account_Name, Target_Account_Name, New_UAC_Value"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-rbcd-abuse",
+      "name": "Resource-based constrained delegation written onto a target computer",
+      "summary": "Use when msDS-AllowedToActOnBehalfOfOtherIdentity is set on a computer, often to an attacker-created machine account, enabling S4U impersonation of admins to that host.",
+      "tags": [
+        "active-directory",
+        "rbcd",
+        "delegation",
+        "privilege-escalation"
+      ],
+      "attack": [
+        "T1134",
+        "T1098"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Set ms-DS-MachineAccountQuota to 0 so users cannot create computer accounts",
+          "Audit writes to msDS-AllowedToActOnBehalfOfOtherIdentity via 5136",
+          "Know which computers legitimately use RBCD"
+        ],
+        "identification": [
+          "Search 5136 for changes to msDS-AllowedToActOnBehalfOfOtherIdentity",
+          "Identify recently created computer accounts via 4741 and who created them",
+          "Find S4U2Self and S4U2Proxy 4769 requests involving the new machine account",
+          "Review logons to the target computer by impersonated admins"
+        ],
+        "containment": [
+          "Clear the RBCD attribute on the target computer",
+          "Disable and delete the attacker-created computer account",
+          "Isolate the target computer for forensic review"
+        ],
+        "eradication": [
+          "Remove write rights on computer objects that the attacker abused",
+          "Hunt the target host for persistence created under impersonated sessions",
+          "Reset the target computer account password"
+        ],
+        "recovery": [
+          "Confirm MachineAccountQuota remains 0",
+          "Monitor for any new RBCD attribute writes",
+          "Restore normal service on the target host"
+        ],
+        "lessons": [
+          "Alert on 4741 computer creation by non-admin users",
+          "Review GenericWrite and WriteProperty ACEs over computer objects",
+          "Include RBCD paths in attack path analysis"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "RBCD attribute writes",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=5136 Attribute_LDAP_Display_Name=\"msDS-AllowedToActOnBehalfOfOtherIdentity\" | table _time, Subject_Account_Name, DN, Operation_Type"
+        },
+        {
+          "title": "Computer accounts created by users",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4741 | table _time, Subject_Account_Name, Target_Account_Name, host"
+        },
+        {
+          "title": "S4U ticket requests by the new machine account",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4769 Account_Name=\"<new_machine>$*\" | table _time, Account_Name, Service_Name, Transited_Services, Client_Address"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-shadow-credentials",
+      "name": "Shadow Credentials: rogue key added to msDS-KeyCredentialLink",
+      "summary": "Use when an attacker writes a new key credential to a user or computer object so they can request a TGT via PKINIT as that identity without knowing its password.",
+      "tags": [
+        "active-directory",
+        "shadow-credentials",
+        "pkinit",
+        "persistence"
+      ],
+      "attack": [
+        "T1556",
+        "T1098"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Audit writes to msDS-KeyCredentialLink on user and computer objects",
+          "Document which accounts legitimately use Windows Hello for Business keys",
+          "Limit GenericWrite over privileged accounts"
+        ],
+        "identification": [
+          "Search 5136 for msDS-KeyCredentialLink changes by accounts other than the object itself or ADSync",
+          "Find PKINIT 4768 events for the targeted account from unexpected IPs",
+          "Determine whether the target is privileged or a DC computer account",
+          "Review the writer's ACL rights over the target object"
+        ],
+        "containment": [
+          "Remove the rogue key credential entry from the target object",
+          "Reset the target account password and purge its tickets",
+          "Disable the account that wrote the key"
+        ],
+        "eradication": [
+          "Remove the ACE that allowed the writer to modify the target",
+          "Hunt for other objects with unexplained key credentials",
+          "Search for NTLM hash retrieval via UnPAC-the-hash using the forged identity"
+        ],
+        "recovery": [
+          "Verify legitimate WHfB keys are intact for users who rely on them",
+          "Monitor PKINIT logons for the target for 30 days",
+          "Restore the writer account only after review"
+        ],
+        "lessons": [
+          "Create detection for KeyCredentialLink writes outside provisioning",
+          "Audit write ACLs on privileged objects quarterly",
+          "Track time from attribute write to detection"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "KeyCredentialLink writes",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=5136 Attribute_LDAP_Display_Name=\"msDS-KeyCredentialLink\" NOT Subject_Account_Name IN (\"MSOL_*\",\"*$\") | table _time, Subject_Account_Name, DN, Operation_Type"
+        },
+        {
+          "title": "PKINIT logons for the target",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4768 Pre_Authentication_Type=16 Account_Name=\"<target_account>\" | table _time, Account_Name, Client_Address"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-sid-history-injection",
+      "name": "SID history injection granting hidden privileged access",
+      "summary": "Use when an account's sIDHistory attribute contains a privileged SID such as Domain Admins or Enterprise Admins, granting rights without visible group membership.",
+      "tags": [
+        "active-directory",
+        "sid-history",
+        "persistence",
+        "privilege-escalation"
+      ],
+      "attack": [
+        "T1134.005"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable SID filtering on external and forest trusts",
+          "Alert on 4765 and 4766 SID history events",
+          "Report accounts with non-empty sIDHistory monthly"
+        ],
+        "identification": [
+          "Query AD for accounts whose sIDHistory contains RID 512, 519, or 500",
+          "Search for 4765 SID history added events and 4738 changes",
+          "Determine whether the SID history is a migration leftover or newly injected",
+          "Review logons and access by the account with the privileged SID"
+        ],
+        "containment": [
+          "Clear the sIDHistory attribute on the affected account",
+          "Disable the account and purge its Kerberos tickets",
+          "Reset the account's password"
+        ],
+        "eradication": [
+          "Investigate DC compromise since direct sIDHistory writes require DC-level access",
+          "Remove all unneeded migration SID history across the domain",
+          "Hunt for associated Golden Ticket or DCShadow activity"
+        ],
+        "recovery": [
+          "Confirm SID filtering is active with netdom trust /quarantine",
+          "Re-run the sIDHistory report and confirm it is empty or justified",
+          "Monitor the account for privileged actions for 30 days"
+        ],
+        "lessons": [
+          "Add a scheduled search for privileged SIDs in sIDHistory",
+          "Document migration cleanup completion dates",
+          "Review DC security since injection implies Tier 0 compromise"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "SID history additions",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode IN (4765,4766) | table _time, host, Subject_Account_Name, Target_Account_Name, SID_History"
+        },
+        {
+          "title": "Account changes touching SID history",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4738 SID_History!=\"-\" | table _time, Subject_Account_Name, Target_Account_Name, SID_History"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-compromised-service-account",
+      "name": "Service account used interactively or from an unexpected host",
+      "summary": "Use when a service account that normally runs on fixed servers logs on interactively, over RDP, or from a workstation, suggesting its password was stolen.",
+      "tags": [
+        "active-directory",
+        "service-account",
+        "valid-accounts",
+        "credential-misuse"
+      ],
+      "attack": [
+        "T1078.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Maintain a lookup of each service account and the servers it is allowed to run on",
+          "Deny interactive and RDP logon rights to service accounts via GPO",
+          "Record the application owner and restart procedure for each service account"
+        ],
+        "identification": [
+          "Search 4624 logon types 2, 10, and 11 for accounts in the service account lookup",
+          "Compare the service account's source hosts against its allowed server list",
+          "Check where the password may have leaked: scripts, config files, or Kerberoasting",
+          "List data and systems the account can reach with its group memberships"
+        ],
+        "containment": [
+          "Rotate the service account password and update it on the approved servers",
+          "Kill sessions of the account on unapproved hosts",
+          "Restrict the account with logon workstation limits to its approved servers"
+        ],
+        "eradication": [
+          "Remove plaintext copies of the password from scripts and shares",
+          "Migrate the account to a gMSA if the application supports it",
+          "Strip unnecessary privileged group memberships from the account"
+        ],
+        "recovery": [
+          "Confirm the dependent application restarted cleanly with the new password",
+          "Monitor the account for logons outside approved servers for 30 days",
+          "Verify the application owner signs off on restored function"
+        ],
+        "lessons": [
+          "Alert on any interactive logon by an account tagged as service",
+          "Report the number of service accounts with passwords older than one year",
+          "Review how the password was exposed and fix the storage method"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Interactive logons by service accounts",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4624 Logon_Type IN (2,10,11) [| inputlookup service_accounts.csv | fields Account_Name] | table _time, host, Account_Name, Logon_Type, Source_Network_Address"
+        },
+        {
+          "title": "Service account logons outside allowed servers",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.user=\"<svc_account>\" by Authentication.dest, Authentication.src | rename Authentication.* as * | lookup service_account_hosts user as user OUTPUT allowed_dest | where isnull(mvfind(allowed_dest, dest))"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-krbtgt-reset",
+      "name": "Planned krbtgt double reset after suspected domain compromise",
+      "summary": "Use when Tier 0 compromise is suspected and the krbtgt key must be rotated twice in a controlled way to invalidate forged and stolen Kerberos tickets.",
+      "tags": [
+        "active-directory",
+        "krbtgt",
+        "recovery",
+        "kerberos"
+      ],
+      "attack": [],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Keep the krbtgt reset script tested in a lab with the current forest functional level",
+          "Document the maximum user ticket lifetime and replication convergence time",
+          "Pre-arrange a change window and communications for possible service ticket errors"
+        ],
+        "identification": [
+          "Confirm the reason for reset: suspected Golden Ticket, DCSync, or NTDS theft",
+          "Check replication health on all DCs with repadmin /replsummary before starting",
+          "Record current krbtgt pwdLastSet and msDS-KeyVersionNumber",
+          "Identify read-only DCs, which have separate krbtgt_ accounts to reset"
+        ],
+        "containment": [
+          "Close the attacker access path before rotation so the new key is not re-stolen",
+          "Perform the first krbtgt reset on the PDC emulator",
+          "Force replication of the krbtgt object to all writable DCs"
+        ],
+        "eradication": [
+          "Wait at least the maximum ticket lifetime plus replication time before the second reset",
+          "Perform the second krbtgt reset and force replication again",
+          "Reset RODC krbtgt accounts if those DCs were in scope"
+        ],
+        "recovery": [
+          "Verify msDS-KeyVersionNumber increased by two on every DC",
+          "Watch 4769 failure code 0x1F and 4771 spikes for apps holding old tickets",
+          "Restart services that fail Kerberos after the reset"
+        ],
+        "lessons": [
+          "Schedule routine krbtgt rotation every 180 days",
+          "Record any applications that broke and why",
+          "Measure end-to-end reset duration for future planning"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "krbtgt password changes",
+          "phase": "recovery",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode IN (4724,4738) Target_Account_Name=\"krbtgt*\" | table _time, host, Subject_Account_Name, Target_Account_Name, EventCode"
+        },
+        {
+          "title": "Kerberos failures after reset",
+          "phase": "recovery",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode IN (4769,4771) Failure_Code IN (0x1F,0x29) | timechart span=10m count by Failure_Code"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-stale-privileged-account",
+      "name": "Dormant privileged account suddenly used",
+      "summary": "Use when an admin account that has not logged on for months becomes active, which may mean a former admin's or forgotten account's credentials are in attacker hands.",
+      "tags": [
+        "active-directory",
+        "dormant-account",
+        "valid-accounts",
+        "privileged-access"
+      ],
+      "attack": [
+        "T1078.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Report privileged accounts with lastLogonTimestamp older than 90 days monthly",
+          "Tie each privileged account to an HR identity and active employment status",
+          "Disable admin accounts automatically after 60 days of inactivity"
+        ],
+        "identification": [
+          "Confirm the account's previous lastLogonTimestamp and its group memberships",
+          "Check with HR and the listed owner whether the person still holds the role",
+          "List hosts the account logged on to and actions taken since reactivation",
+          "Review whether a password reset or unlock happened just before the logon"
+        ],
+        "containment": [
+          "Disable the dormant account and remove it from privileged groups",
+          "Kill active sessions and purge its tickets on reached hosts",
+          "Reset the account password to a random value"
+        ],
+        "eradication": [
+          "Revert changes the account made such as new accounts, GPO edits, or ACL changes",
+          "Delete the account if no owner claims it after review",
+          "Find and disable other orphaned privileged accounts"
+        ],
+        "recovery": [
+          "Re-run the stale privileged account report and confirm it is clean",
+          "Monitor for reuse attempts of the disabled account via 4625 events",
+          "Document the outcome with the owning team"
+        ],
+        "lessons": [
+          "Add a detection for first logon by a privileged account after 90 days",
+          "Integrate joiner-mover-leaver events with privileged account removal",
+          "Track count of privileged accounts without a named owner"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Privileged account first logon after dormancy",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false min(_time) as first max(_time) as last from datamodel=Authentication where Authentication.user IN (<privileged_accounts>) Authentication.action=success by Authentication.user | rename Authentication.* as * | join user [| inputlookup ad_privileged_lastlogon.csv] | where first - last_logon_prior > 7776000"
+        },
+        {
+          "title": "Reset or unlock before reactivation",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode IN (4724,4767,4722) Target_Account_Name=\"<suspect_user>\" | table _time, Subject_Account_Name, Target_Account_Name, EventCode"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-zerologon-style-exploit",
+      "name": "Netlogon exploit attempt against a domain controller",
+      "summary": "Use when a DC shows Netlogon secure channel anomalies, such as a DC machine account password reset to empty, consistent with a Zerologon-style vulnerability exploit.",
+      "tags": [
+        "active-directory",
+        "netlogon",
+        "exploit",
+        "domain-controller"
+      ],
+      "attack": [
+        "T1210",
+        "T1068"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Apply Netlogon security updates and enforce secure RPC enforcement mode on all DCs",
+          "Forward System log Netlogon events 5827 through 5831 from DCs",
+          "Inventory non-Windows devices that use Netlogon secure channel"
+        ],
+        "identification": [
+          "Search for 4742 events where a DC machine account password is changed by ANONYMOUS LOGON",
+          "Look for bursts of Netlogon RPC traffic to a DC from a single non-DC source",
+          "Review Netlogon 5829 events for vulnerable secure channel connections",
+          "Check whether DC replication broke, a common side effect of the reset"
+        ],
+        "containment": [
+          "Block the source IP from reaching DC RPC ports",
+          "Confirm all DCs are patched and enforcement mode is on",
+          "Treat the domain as compromised and start Tier 0 credential rotation"
+        ],
+        "eradication": [
+          "Reset the affected DC machine account password with netdom resetpwd",
+          "Run the double krbtgt reset",
+          "Hunt for DCSync and new admin accounts created after the exploit"
+        ],
+        "recovery": [
+          "Verify DC replication with repadmin /showrepl after the machine account fix",
+          "Confirm secure channel health on all DCs with nltest /sc_verify",
+          "Monitor for further anonymous machine account changes"
+        ],
+        "lessons": [
+          "Measure DC patch latency for critical vulnerabilities",
+          "Add detection for anonymous 4742 events on DC machine accounts",
+          "Document exceptions for devices needing vulnerable Netlogon and their removal date"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "DC machine account changed by anonymous logon",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4742 Subject_Account_Name=\"ANONYMOUS LOGON\" Target_Account_Name IN (<dc_machine_accounts>) | table _time, host, Target_Account_Name"
+        },
+        {
+          "title": "Netlogon vulnerable connection events",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:System\" SourceName=NETLOGON EventCode IN (5827,5828,5829,5830,5831) | stats count by host, EventCode, Message"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-bloodhound-recon",
+      "name": "SharpHound or BloodHound collection detected on an endpoint",
+      "summary": "Use when EDR or network telemetry shows AD graph collection: session enumeration over SMB, bulk LDAP queries, and a zip of JSON files written on a workstation.",
+      "tags": [
+        "active-directory",
+        "recon",
+        "bloodhound",
+        "discovery"
+      ],
+      "attack": [
+        "T1087.002",
+        "T1069.002",
+        "T1482"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Ensure EDR has detections for SharpHound binaries and in-memory collection",
+          "Enable NetSessionEnum hardening so non-admins cannot enumerate sessions",
+          "Know which red team or audit engagements are authorized to run collection"
+        ],
+        "identification": [
+          "Confirm with the red team lead whether an authorized assessment is running",
+          "Find the collection output zip and JSON files on the host and record their timestamps",
+          "Count hosts the source contacted over TCP 445 in the collection window",
+          "Identify the account context the collector ran under"
+        ],
+        "containment": [
+          "Isolate the collecting host if no authorized engagement matches",
+          "Disable the account used to run the collector",
+          "Block outbound transfer of the output archive at the proxy"
+        ],
+        "eradication": [
+          "Delete the collector and output files after evidence capture",
+          "Determine how the attacker reached the host and remove that access",
+          "Run your own attack path analysis and fix the shortest paths to Domain Admins"
+        ],
+        "recovery": [
+          "Return the host after rebuild and credential reset",
+          "Monitor for repeat SMB session enumeration from any workstation",
+          "Re-check that attack path fixes closed the top routes"
+        ],
+        "lessons": [
+          "Add a detection for one workstation opening SMB to hundreds of hosts within minutes",
+          "Require red team engagements to register source hosts with the SOC",
+          "Track the count of attack paths to Tier 0 over time"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Workstation fanning out over SMB",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false dc(All_Traffic.dest) as targets from datamodel=Network_Traffic where All_Traffic.dest_port=445 by All_Traffic.src, _time span=10m | where targets > 100 | rename All_Traffic.* as *"
+        },
+        {
+          "title": "Collector output files",
+          "phase": "identification",
+          "spl": "index=sysmon sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode=11 (TargetFilename=\"*_BloodHound.zip\" OR TargetFilename=\"*_computers.json\" OR TargetFilename=\"*_users.json\") | table _time, host, User, Image, TargetFilename"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-ldap-mass-enumeration",
+      "name": "Mass LDAP enumeration of users, groups, and ACLs",
+      "summary": "Use when a host issues unusually broad or expensive LDAP queries against DCs, such as full user dumps or ACL reads, outside normal application patterns.",
+      "tags": [
+        "active-directory",
+        "ldap",
+        "discovery",
+        "recon"
+      ],
+      "attack": [
+        "T1087.002",
+        "T1069.002"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Enable Field Engineering diagnostics or event 1644 for expensive LDAP queries on DCs",
+          "Baseline which servers run legitimate LDAP-heavy jobs such as HR sync",
+          "Forward Directory Service logs from DCs to the SIEM"
+        ],
+        "identification": [
+          "Search 1644 events for the client IP and filters returning thousands of entries",
+          "Look for filters like (objectClass=*) or (servicePrincipalName=*) from workstations",
+          "Map the client IP to a host and the account that ran the query",
+          "Identify the process on the host issuing LDAP queries via EDR network events"
+        ],
+        "containment": [
+          "Block LDAP and LDAPS from the source host to DCs if not authorized",
+          "Disable the querying account pending review",
+          "Isolate the host if malicious tooling is confirmed"
+        ],
+        "eradication": [
+          "Remove the enumeration tool or script from the host",
+          "Assume the directory structure is known and prioritize fixes for exposed weak ACLs",
+          "Check for follow-on Kerberoasting of SPNs that were enumerated"
+        ],
+        "recovery": [
+          "Restore LDAP access for the host once cleared",
+          "Watch 1644 volume from workstations for two weeks",
+          "Verify legitimate LDAP consumers still work"
+        ],
+        "lessons": [
+          "Alert on workstation LDAP queries returning more than 5000 entries",
+          "Document legitimate LDAP-heavy services in a lookup",
+          "Consider restricting anonymous and low-privilege read on sensitive attributes"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Expensive LDAP queries by client",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Directory Service\" EventCode=1644 | rex field=Message \"Client:\\s+(?<client>[\\d\\.]+)\" | rex field=Message \"Filter:\\s+(?<filter>[^\\r\\n]+)\" | stats count values(filter) as filters by client | sort - count"
+        },
+        {
+          "title": "LDAP connections from workstations",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest IN (<dc_ip_list>) All_Traffic.dest_port IN (389,636,3268) by All_Traffic.src | rename All_Traffic.* as * | lookup asset_lookup ip as src OUTPUT category | search category=workstation"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-ad-connect-compromise",
+      "name": "Entra Connect (AD Connect) sync server compromised",
+      "summary": "Use when the hybrid identity sync server shows unauthorized access, since its accounts hold on-premises replication rights and cloud sync credentials.",
+      "tags": [
+        "active-directory",
+        "hybrid-identity",
+        "entra-connect",
+        "tier0"
+      ],
+      "attack": [
+        "T1078.002",
+        "T1003.006"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Classify the Entra Connect server as Tier 0 and restrict logon to Tier 0 admins",
+          "Record the on-premises MSOL_ connector account and the cloud Sync_ account names",
+          "Keep a staging-mode Entra Connect server ready for failover"
+        ],
+        "identification": [
+          "Review interactive and RDP logons to the sync server by non-Tier 0 accounts",
+          "Check for access to the ADSync database or decryption of connector credentials",
+          "Search for DCSync activity from the MSOL_ account outside the sync server IP",
+          "Review Entra audit logs for directory changes by the sync account that are not sync operations"
+        ],
+        "containment": [
+          "Isolate the sync server and pause synchronization",
+          "Reset the MSOL_ connector account password",
+          "Rotate the cloud sync account credentials through the Entra Connect wizard",
+          "Revoke tokens for the cloud sync account"
+        ],
+        "eradication": [
+          "Rebuild the sync server or promote the staging server",
+          "Reset passwords for Tier 0 accounts if DCSync from the connector account occurred",
+          "Remove unexpected local admins and services on the server"
+        ],
+        "recovery": [
+          "Resume sync and confirm delta and full sync cycles complete without errors",
+          "Verify password hash sync and writeback status in the Entra portal",
+          "Monitor sync account sign-ins for anomalies for 30 days"
+        ],
+        "lessons": [
+          "Add a detection for MSOL_ replication from any host but the sync server",
+          "Review how non-Tier 0 admins had access to the server",
+          "Test staging server failover twice a year"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Logons to the sync server",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4624 host=\"<sync_server>\" Logon_Type IN (2,10) | stats count by Account_Name, Source_Network_Address"
+        },
+        {
+          "title": "Connector account replication from other hosts",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4662 Account_Name=\"MSOL_*\" Properties=\"*1131f6ad-9c07-11d1-f79f-00c04fc2dcd2*\" | join Logon_ID [search index=wineventlog EventCode=4624 Account_Name=\"MSOL_*\" | fields Logon_ID, Source_Network_Address] | where Source_Network_Address!=\"<sync_server_ip>\""
+        },
+        {
+          "title": "Sync account sign-ins in Entra",
+          "phase": "recovery",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" userPrincipalName=\"Sync_*\" | stats count by ipAddress, appDisplayName, status.errorCode"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-tier0-workstation-compromise",
+      "name": "Privileged access workstation used by Tier 0 admins compromised",
+      "summary": "Use when malware or an intruder is found on a PAW or admin jump host used by Domain Admins, exposing their credentials and sessions to the attacker.",
+      "tags": [
+        "active-directory",
+        "paw",
+        "tier0",
+        "credential-access"
+      ],
+      "attack": [
+        "T1078.002",
+        "T1003.001"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Keep a list of all PAWs and jump hosts and the admins who use them",
+          "Apply application allowlisting and block internet browsing on PAWs",
+          "Keep spare clean PAWs imaged and ready to issue"
+        ],
+        "identification": [
+          "Identify every admin who logged on to the PAW since the earliest malicious activity",
+          "Review EDR timeline for initial access such as a USB device, update, or remote tool",
+          "Check for LSASS access, keylogging, or screen capture on the PAW",
+          "Review DC logons by the PAW's admins from other hosts after compromise"
+        ],
+        "containment": [
+          "Isolate the PAW and stop all admin use of it",
+          "Reset passwords and smart card certificates of admins who used it",
+          "Issue clean replacement PAWs to affected admins"
+        ],
+        "eradication": [
+          "Rebuild the PAW from trusted media instead of cleaning",
+          "Hunt Tier 0 systems for changes made in admin sessions during compromise",
+          "Run the krbtgt double reset if Domain Admin credentials were exposed"
+        ],
+        "recovery": [
+          "Validate allowlisting and hardening baselines on replacement PAWs",
+          "Monitor affected admin accounts for logons from non-PAW hosts",
+          "Confirm all exposed credentials were rotated"
+        ],
+        "lessons": [
+          "Review how the PAW control set was bypassed",
+          "Alert on any Tier 0 admin logon from a non-PAW host",
+          "Track PAW hardening compliance as a Tier 0 metric"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Admins who logged on to the PAW",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4624 host=\"<host>\" Logon_Type IN (2,10,11) | stats min(_time) as first max(_time) as last by Account_Name"
+        },
+        {
+          "title": "Tier 0 admin logons from non-PAW hosts",
+          "phase": "recovery",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.user IN (<tier0_admins>) by Authentication.user, Authentication.src | rename Authentication.* as * | lookup paw_hosts src OUTPUT is_paw | where isnull(is_paw)"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-dcshadow",
+      "name": "DCShadow: unauthorized replication source pushing directory changes",
+      "summary": "Use when a host briefly registers as a replication partner in the Configuration partition to inject directory changes that evade normal change auditing on real DCs.",
+      "tags": [
+        "active-directory",
+        "dcshadow",
+        "defense-evasion",
+        "replication"
+      ],
+      "attack": [
+        "T1207"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Audit creation and deletion of objects under CN=Sites,CN=Configuration",
+          "Keep a known-good list of DC hostnames and their nTDSDSA GUIDs",
+          "Monitor registration of the replication SPN class E3514235 on non-DC accounts"
+        ],
+        "identification": [
+          "Search 5137 and 5141 for nTDSDSA server objects created then removed within minutes",
+          "Find 4742 events adding GC/ or E3514235 SPNs to a workstation computer account",
+          "Identify inbound replication requests to real DCs from a non-DC source IP",
+          "Diff recently changed directory attributes against backup to find injected values"
+        ],
+        "containment": [
+          "Isolate the host that registered as a replication source",
+          "Remove the rogue SPNs and any residual server object from Configuration",
+          "Disable the account used to perform the registration"
+        ],
+        "eradication": [
+          "Revert the injected attribute changes such as SID history or ACL edits",
+          "Rebuild the host used to launch the registration",
+          "Investigate how the attacker gained the Domain Admin rights DCShadow requires"
+        ],
+        "recovery": [
+          "Confirm the Configuration partition contains only legitimate DC objects",
+          "Monitor for new nTDSDSA registrations for 30 days",
+          "Validate replication health across all real DCs with repadmin"
+        ],
+        "lessons": [
+          "Add detection for short-lived nTDSDSA objects and replication SPNs on workstations",
+          "Review why an account held the rights needed to register a replica",
+          "Treat DCShadow capability as evidence of prior Tier 0 compromise"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Short-lived replication server objects",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode IN (5137,5141) Object_Class=nTDSDSA | transaction DN maxspan=10m startswith=(EventCode=5137) endswith=(EventCode=5141) | table _time, Subject_Account_Name, DN, duration"
+        },
+        {
+          "title": "Replication SPNs added to workstations",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4742 | search Service_Principal_Names=\"*E3514235-4B06-11D1-AB04-00C04FC2DCD2*\" OR Service_Principal_Names=\"GC/*\" | table _time, Subject_Account_Name, Target_Account_Name, Service_Principal_Names"
+        }
+      ]
+    },
+    {
+      "id": "lib-active-directory-rogue-dc-replication",
+      "name": "Rogue or unexpected domain controller joining replication",
+      "summary": "Use when an unrecognized domain controller appears in the topology or replicates with legitimate DCs, suggesting an attacker promoted a DC or restored one from media.",
+      "tags": [
+        "active-directory",
+        "replication",
+        "rogue-dc",
+        "persistence"
+      ],
+      "attack": [
+        "T1207",
+        "T1098"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Maintain an authoritative inventory of all legitimate domain controllers",
+          "Alert on DC promotion events and new entries in the Domain Controllers OU",
+          "Restrict the right to add computers to the domain and to promote DCs"
+        ],
+        "identification": [
+          "List all DCs with nltest /dclist and compare against the authoritative inventory",
+          "Review 4928 and 4929 replication source and destination events for unknown partners",
+          "Check the Domain Controllers OU for a computer object you do not recognize",
+          "Trace when and by whom the rogue DC was promoted via directory service logs"
+        ],
+        "containment": [
+          "Network-isolate the rogue DC from the other DCs",
+          "Stop inbound and outbound replication with the rogue DC",
+          "Disable the account that performed the promotion"
+        ],
+        "eradication": [
+          "Force demote or metadata-cleanup the rogue DC from the topology",
+          "Remove its computer and server objects and DNS records",
+          "Run the double krbtgt reset since a rogue DC implies full directory access"
+        ],
+        "recovery": [
+          "Verify the DC list matches the authoritative inventory",
+          "Confirm replication is healthy among legitimate DCs only",
+          "Monitor for new DC promotions for 30 days"
+        ],
+        "lessons": [
+          "Alert on any DC promotion and reconcile against the inventory",
+          "Review who holds rights to promote domain controllers",
+          "Assess physical and virtual controls preventing rogue DC creation"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Replication with unexpected partners",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode IN (4928,4929) | rex field=Message \"Source DRA:\\s+(?<source_dra>[^\\r\\n]+)\" | stats count by host, source_dra | search NOT source_dra IN (<known_dc_list>)"
+        },
+        {
+          "title": "DC promotion activity",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=\"WinEventLog:Security\" EventCode=4742 Target_Account_Name=\"*$\" | search \"Server Trust Account\" OR New_UAC_Value=\"0x82000\" | table _time, Subject_Account_Name, Target_Account_Name, New_UAC_Value"
+        }
+      ]
+    }
+  ]
+}

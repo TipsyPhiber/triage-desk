@@ -1,0 +1,1375 @@
+{
+  "category": {
+    "id": "containers-k8s",
+    "name": "Containers & Kubernetes",
+    "description": "Incidents in container platforms and Kubernetes clusters: runtime escapes, RBAC and token abuse, exposed APIs, supply chain tampering, and destructive changes."
+  },
+  "playbooks": [
+    {
+      "id": "lib-containers-k8s-privileged-pod-created",
+      "name": "Privileged pod created outside the approved deployment path",
+      "summary": "Use when the API server audit log or a policy engine shows a pod with privileged: true, hostPID, hostNetwork, or added capabilities created by an unexpected identity.",
+      "tags": [
+        "kubernetes",
+        "privileged-pod",
+        "privilege-escalation",
+        "audit-log"
+      ],
+      "attack": [
+        "T1610",
+        "T1611"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enforce Pod Security Admission restricted or baseline profiles on workload namespaces",
+          "Ship kube-apiserver audit logs at RequestResponse level for pod create to the SIEM",
+          "Keep an allowlist of system namespaces and service accounts permitted privileged pods",
+          "Deploy Kyverno or Gatekeeper policies that deny privileged and hostPath specs by default"
+        ],
+        "identification": [
+          "Pull the pod create audit event and record user, groups, source IP, and user agent",
+          "Inspect the pod spec for privileged, hostPID, hostNetwork, hostIPC, and SYS_ADMIN",
+          "Check which node the pod scheduled to and what image and command it ran",
+          "Determine whether the creating identity normally deploys via CI or GitOps",
+          "Review container logs and exec events for the pod since creation"
+        ],
+        "containment": [
+          "Cordon the node where the privileged pod ran to stop new scheduling",
+          "Delete the privileged pod after capturing its spec and logs as evidence",
+          "Suspend the creating identity's RoleBindings or kubeconfig credential",
+          "Apply a namespace label enforcing the restricted Pod Security profile"
+        ],
+        "eradication": [
+          "Inspect the node for host-level changes such as new systemd units or SSH keys",
+          "Drain and rebuild the node from a clean image if host access is suspected",
+          "Rotate service account tokens and secrets mounted on that node"
+        ],
+        "recovery": [
+          "Uncordon or replace the node and rebalance workloads",
+          "Confirm the admission policy now rejects the same pod spec in a dry run",
+          "Restore the identity's access with least-privilege RBAC if it was legitimate"
+        ],
+        "lessons": [
+          "Add a detection for privileged pod creation by non-allowlisted identities",
+          "Review why the admission policy allowed the spec, such as an exempt namespace",
+          "Track the number of namespaces running without Pod Security enforcement"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Privileged or host-namespace pod creations",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit verb=create objectRef.resource=pods | spath path=requestObject.spec output=spec | search spec=\"*\\\"privileged\\\":true*\" OR spec=\"*hostPID\\\":true*\" OR spec=\"*hostNetwork\\\":true*\" | table _time user.username sourceIPs{} objectRef.namespace objectRef.name userAgent"
+        },
+        {
+          "title": "Other actions by the creating identity",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit user.username=<suspect_user> | stats count values(objectRef.namespace) as ns by verb objectRef.resource | sort - count"
+        },
+        {
+          "title": "Admission denials for privileged specs after enforcement",
+          "phase": "recovery",
+          "spl": "index=* sourcetype=kube:apiserver:audit objectRef.resource=pods responseStatus.code=403 \"PodSecurity\" | stats count by user.username objectRef.namespace"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-container-escape",
+      "name": "Container escape to the underlying node",
+      "summary": "Use when runtime telemetry shows a container process touching host namespaces, writing to host paths, or exploiting a runtime or kernel flaw to reach the node.",
+      "tags": [
+        "kubernetes",
+        "container-escape",
+        "runtime",
+        "node"
+      ],
+      "attack": [
+        "T1611",
+        "T1068"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Run a runtime sensor such as Falco or an EDR with container context on every node",
+          "Track container runtime, runc, and kernel versions against escape CVEs",
+          "Use seccomp RuntimeDefault and drop all capabilities in workload pod specs",
+          "Keep a golden node image so compromised nodes can be replaced quickly"
+        ],
+        "identification": [
+          "Review runtime alerts for nsenter, mount of host filesystems, or writes to /proc/sys",
+          "Identify the source container, pod, image digest, and node of the escape",
+          "Check the node for processes outside any container cgroup started after the alert",
+          "Determine whether the escape used a privileged spec, mounted socket, or kernel exploit",
+          "Check kubelet credentials on the node for subsequent API server use"
+        ],
+        "containment": [
+          "Cordon the node and isolate it with a cloud security group or network policy",
+          "Snapshot the node disk and capture memory before termination",
+          "Revoke the node's kubelet client certificate or cloud instance role sessions",
+          "Block the source image digest via admission policy"
+        ],
+        "eradication": [
+          "Terminate the node and replace it from the golden image",
+          "Patch runc, containerd, and the kernel across the node pool",
+          "Rotate secrets that were mounted into any pod scheduled on the node"
+        ],
+        "recovery": [
+          "Redeploy workloads onto patched nodes and verify health",
+          "Confirm runtime sensors are reporting from all replacement nodes",
+          "Review the image source and rebuild it from a trusted base"
+        ],
+        "lessons": [
+          "Measure patch lag on node images for container runtime CVEs",
+          "Add detections for host namespace entry from container processes",
+          "Evaluate sandboxed runtimes such as gVisor or Kata for untrusted workloads"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Falco escape-related rules by node and pod",
+          "phase": "identification",
+          "spl": "index=* sourcetype=falco (rule=\"*Namespace*\" OR rule=\"*Mount*\" OR rule=\"*Escape*\" OR rule=\"*Sensitive*mount*\") | stats count values(output_fields.proc.cmdline) as cmds by output_fields.k8s.pod.name output_fields.k8s.ns.name hostname rule"
+        },
+        {
+          "title": "API calls using the node's kubelet identity",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit user.username=\"system:node:<node_name>\" NOT verb IN (get,watch,list) | stats count by verb objectRef.resource objectRef.namespace"
+        },
+        {
+          "title": "Host processes outside containers on the node",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.dest=<node_name> by Processes.process_name Processes.parent_process_name Processes.user _time span=1m | sort - _time"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-exposed-kubelet-api",
+      "name": "Kubelet API exposed and accessed anonymously",
+      "summary": "Use when a node's kubelet port 10250 or read-only 10255 is reachable from untrusted networks with anonymous auth, allowing pod listing or command execution.",
+      "tags": [
+        "kubernetes",
+        "kubelet",
+        "exposure",
+        "misconfiguration"
+      ],
+      "attack": [
+        "T1190",
+        "T1609"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Set kubelet anonymous-auth false and authorization-mode Webhook on every node",
+          "Disable the kubelet read-only port 10255 in the node configuration",
+          "Restrict node security groups so 10250 is only reachable from the control plane",
+          "Log kubelet authentication failures and node flow logs to the SIEM"
+        ],
+        "identification": [
+          "Scan node IPs from an external host to confirm whether 10250 or 10255 respond",
+          "Review VPC or firewall flow logs for external sources connecting to kubelet ports",
+          "Check kubelet logs for /run, /exec, or /pods requests from unknown sources",
+          "List containers that had commands run via the kubelet and the commands executed",
+          "Confirm the kubelet configuration flags on affected nodes"
+        ],
+        "containment": [
+          "Block inbound 10250 and 10255 from the internet at the security group or firewall",
+          "Cordon affected nodes and restart kubelet with anonymous auth disabled",
+          "Terminate pods that had commands executed through the kubelet"
+        ],
+        "eradication": [
+          "Replace affected nodes and fix the node bootstrap template or launch configuration",
+          "Rotate secrets and tokens from pods where commands ran",
+          "Remove miners or tools dropped into containers via kubelet exec"
+        ],
+        "recovery": [
+          "Verify from outside that kubelet ports are unreachable on all nodes",
+          "Confirm kubectl logs and exec still work through the API server",
+          "Re-run CIS Kubernetes Benchmark checks on the node pool"
+        ],
+        "lessons": [
+          "Add continuous external exposure scanning for kubelet ports",
+          "Review how the node template drifted from hardened defaults",
+          "Alert on any direct kubelet API call not originating from the API server"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Inbound connections to kubelet ports from outside the cluster",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest_port IN (10250,10255) All_Traffic.action=allowed NOT All_Traffic.src IN (<control_plane_cidrs>) by All_Traffic.src All_Traffic.dest All_Traffic.dest_port"
+        },
+        {
+          "title": "VPC flow log hits on kubelet ports",
+          "phase": "identification",
+          "spl": "index=* sourcetype=aws:cloudwatchlogs:vpcflow dest_port IN (10250,10255) action=ACCEPT | stats count earliest(_time) as first latest(_time) as last by src_ip dest_ip | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Kubelet exec and run requests",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:kubelet (\"/exec/\" OR \"/run/\" OR \"/pods\") | rex \"(?<path>/(exec|run|pods)[^ \\\"]*)\" | stats count by host path"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-exposed-docker-socket",
+      "name": "Docker daemon socket or remote API exposed",
+      "summary": "Use when the Docker API on TCP 2375/2376 is reachable without TLS auth, or docker.sock is mounted into a container, letting someone start containers on the host.",
+      "tags": [
+        "docker",
+        "exposure",
+        "docker-socket",
+        "container"
+      ],
+      "attack": [
+        "T1610",
+        "T1190",
+        "T1611"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Disable the Docker TCP listener or require mutual TLS on port 2376",
+          "Block mounts of /var/run/docker.sock in workloads via admission policy",
+          "Forward docker events and daemon logs to the SIEM",
+          "Inventory hosts running dockerd outside the managed cluster"
+        ],
+        "identification": [
+          "Confirm external reachability of 2375 and 2376 on the host",
+          "Pull docker events for container create, start, and exec in the exposure window",
+          "List running containers with their images, mounts, and creation times",
+          "Identify containers mounting / or docker.sock from the host",
+          "Check outbound connections from new containers for mining pools or C2"
+        ],
+        "containment": [
+          "Firewall off the Docker API port and stop the TCP listener",
+          "Stop and preserve unknown containers with docker export before removal",
+          "Isolate the host from the network if a host mount was used"
+        ],
+        "eradication": [
+          "Remove unknown containers, images, and volumes created by the attacker",
+          "Check host crontabs, authorized_keys, and systemd units for persistence",
+          "Rebuild the host if the root filesystem was mounted into an attacker container"
+        ],
+        "recovery": [
+          "Restore legitimate containers from known image digests",
+          "Verify the daemon configuration file no longer exposes tcp://0.0.0.0",
+          "Confirm from an external host that 2375 and 2376 no longer answer"
+        ],
+        "lessons": [
+          "Add external scanning for 2375 and 2376 across all public ranges",
+          "Detect docker.sock mounts in pod specs and compose files",
+          "Review why the host was outside configuration management"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Container creates and execs from docker events",
+          "phase": "identification",
+          "spl": "index=* sourcetype=docker:events (Action=create OR Action=start OR Action=exec_create*) host=<host> | table _time Action Actor.Attributes.image Actor.Attributes.name Actor.ID"
+        },
+        {
+          "title": "Connections to Docker API ports",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest_port IN (2375,2376) by All_Traffic.src All_Traffic.dest All_Traffic.action | sort - count"
+        },
+        {
+          "title": "Images pulled during exposure window",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=docker:events Type=image Action=pull host=<host> | stats earliest(_time) as first by Actor.ID Actor.Attributes.name | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-cryptominer-in-cluster",
+      "name": "Cryptominer running in the cluster",
+      "summary": "Use when nodes show sustained CPU saturation, connections to mining pools, or runtime alerts for miner binaries inside pods or as host processes.",
+      "tags": [
+        "kubernetes",
+        "cryptomining",
+        "resource-hijacking",
+        "runtime"
+      ],
+      "attack": [
+        "T1496",
+        "T1610"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Set CPU limits and ResourceQuotas on every namespace",
+          "Restrict egress with NetworkPolicies or an egress gateway so pods cannot reach arbitrary ports",
+          "Subscribe to a threat feed of mining pool domains and stratum ports for DNS and proxy logs",
+          "Alert on cloud bill anomalies for node autoscaling"
+        ],
+        "identification": [
+          "Find pods and nodes with sustained near-limit CPU usage and unexpected images",
+          "Check DNS logs for mining pool domains and connections on stratum ports such as 3333 or 4444",
+          "Identify the workload controller that created the miner pod, such as a Deployment or CronJob",
+          "Trace how the miner arrived: exposed dashboard, vulnerable app, stolen kubeconfig, or image",
+          "Check for DaemonSets that spread the miner to every node"
+        ],
+        "containment": [
+          "Scale the malicious workload to zero and preserve its manifest",
+          "Apply a deny-all egress NetworkPolicy to the affected namespace",
+          "Block mining pool domains at DNS and egress firewall",
+          "Revoke the credential used to deploy the miner"
+        ],
+        "eradication": [
+          "Delete the miner workloads, CronJobs, and any DaemonSets they created",
+          "Patch the vulnerable application or exposed component that was the entry point",
+          "Check nodes for host-level miner persistence outside Kubernetes"
+        ],
+        "recovery": [
+          "Scale down autoscaled nodes added during mining",
+          "Confirm cluster CPU usage returns to baseline",
+          "Re-deploy affected legitimate workloads from GitOps"
+        ],
+        "lessons": [
+          "Add detection for pods connecting to stratum ports or pool domains",
+          "Review cost impact and whether billing alerts fired in time",
+          "Track namespaces without egress restrictions"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "DNS lookups for mining pools from cluster CIDRs",
+          "phase": "identification",
+          "spl": "index=* sourcetype=stream:dns src_ip IN (<pod_cidrs>) (query=\"*pool*\" OR query=\"*xmr*\" OR query=\"*monero*\" OR query=\"*nanopool*\") | stats count by src_ip query"
+        },
+        {
+          "title": "Outbound connections on stratum ports",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest_port IN (3333,4444,5555,7777,14444) All_Traffic.src IN (<pod_cidrs>,<node_cidrs>) by All_Traffic.src All_Traffic.dest All_Traffic.dest_port"
+        },
+        {
+          "title": "Who created the miner workload",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit verb=create objectRef.resource IN (deployments,daemonsets,cronjobs,pods) objectRef.namespace=<namespace> | table _time user.username sourceIPs{} objectRef.resource objectRef.name userAgent"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-malicious-public-image",
+      "name": "Malicious or typosquatted image pulled from a public registry",
+      "summary": "Use when a workload runs an image from Docker Hub or another public registry that is unvetted, typosquatted, or contains miners, backdoors, or credential stealers.",
+      "tags": [
+        "kubernetes",
+        "supply-chain",
+        "container-image",
+        "registry"
+      ],
+      "attack": [
+        "T1204.003",
+        "T1610",
+        "T1195.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Allow images only from the internal registry or a pull-through cache via admission policy",
+          "Scan images in the registry and at admission for malware and known CVEs",
+          "Require image references by digest in production manifests",
+          "Keep an SBOM and provenance attestation for each internal base image"
+        ],
+        "identification": [
+          "List all pods running the suspect image name or digest across clusters",
+          "Compare the image name with the intended one for typosquatting such as alpline or nginxx",
+          "Pull the image into an isolated sandbox and inspect layers, entrypoint, and embedded binaries",
+          "Check which manifest, Helm chart, or developer introduced the image reference",
+          "Review network connections and processes from containers using the image"
+        ],
+        "containment": [
+          "Add the image digest and repository to an admission deny policy",
+          "Scale down or delete workloads using the image after preserving manifests",
+          "Block egress destinations contacted by the image's processes"
+        ],
+        "eradication": [
+          "Replace the image reference with a vetted internal image pinned by digest",
+          "Rotate secrets and service account tokens available to the affected pods",
+          "Purge the image from node caches and the pull-through cache"
+        ],
+        "recovery": [
+          "Redeploy affected services and verify functionality",
+          "Confirm admission now rejects pulls from unapproved public registries",
+          "Notify the public registry of the malicious repository"
+        ],
+        "lessons": [
+          "Track the percentage of running images from approved registries",
+          "Add a CI check for image names close to popular images",
+          "Review whether developers had a fast path to request new base images"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Pods created with the suspect image",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit verb=create objectRef.resource=pods \"<suspect_image>\" | table _time user.username objectRef.namespace objectRef.name"
+        },
+        {
+          "title": "Container runtime image pulls from public registries",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:container:* OR sourcetype=docker:events Action=pull | rex field=_raw \"(?<image>(docker\\.io|ghcr\\.io|quay\\.io)/[^\\s\\\"]+)\" | stats count by image host | sort - count"
+        },
+        {
+          "title": "Network activity from pods running the image",
+          "phase": "identification",
+          "spl": "index=* sourcetype=falco output_fields.container.image.repository=<suspect_repo> | stats count values(output_fields.fd.name) as conns by rule output_fields.k8s.pod.name"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-secrets-read-etcd",
+      "name": "Kubernetes secrets read in bulk or etcd accessed directly",
+      "summary": "Use when audit logs show an identity listing or getting many secrets across namespaces, or someone connects directly to etcd and dumps the keyspace.",
+      "tags": [
+        "kubernetes",
+        "secrets",
+        "etcd",
+        "credential-access"
+      ],
+      "attack": [
+        "T1552.007",
+        "T1555"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable envelope encryption for secrets at rest with a KMS provider",
+          "Restrict etcd client ports 2379 and 2380 to control plane nodes with mTLS",
+          "Audit secrets get, list, and watch at Metadata level or higher",
+          "Limit RBAC so few identities can list secrets cluster-wide"
+        ],
+        "identification": [
+          "Find identities that performed list or get on secrets across many namespaces",
+          "Record which secret names were read and classify them by system and sensitivity",
+          "Check etcd logs and network flows for client connections from non control-plane IPs",
+          "Determine whether the identity is a human, CI system, operator, or stolen token",
+          "Check whether etcd backups or snapshots were copied off-cluster"
+        ],
+        "containment": [
+          "Remove the identity's RBAC permission on secrets or disable the credential",
+          "Firewall etcd ports to control plane addresses only",
+          "Prioritise rotation of cloud keys, database passwords, and TLS keys found in read secrets"
+        ],
+        "eradication": [
+          "Rotate every secret read by the identity and update dependent workloads",
+          "Rotate etcd client certificates and the KMS encryption key if etcd was dumped",
+          "Hunt for use of the stolen secrets in cloud, database, and SaaS logs"
+        ],
+        "recovery": [
+          "Restart workloads to pick up rotated secrets and confirm health",
+          "Verify encryption at rest is active by reading a secret directly from etcd as a test",
+          "Secure etcd backup storage with access logging and encryption"
+        ],
+        "lessons": [
+          "Add a detection for secrets list across more than a few namespaces by one identity",
+          "Move high-value secrets to an external secret manager with per-read audit",
+          "Measure time to rotate all secrets in a namespace"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Identities reading secrets across many namespaces",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit objectRef.resource=secrets verb IN (get,list,watch) | stats dc(objectRef.namespace) as namespaces dc(objectRef.name) as secrets count by user.username sourceIPs{} | where namespaces>3 | sort - secrets"
+        },
+        {
+          "title": "Secrets read by the suspect identity",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=kube:apiserver:audit objectRef.resource=secrets user.username=<suspect_user> | stats count by objectRef.namespace objectRef.name verb"
+        },
+        {
+          "title": "Connections to etcd from outside the control plane",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest_port IN (2379,2380) NOT All_Traffic.src IN (<control_plane_ips>) by All_Traffic.src All_Traffic.dest"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-service-account-token-abuse",
+      "name": "Service account token stolen and used outside its pod",
+      "summary": "Use when a Kubernetes service account token is used from an unexpected IP, user agent, or for actions the workload never performs, suggesting it was exfiltrated.",
+      "tags": [
+        "kubernetes",
+        "service-account",
+        "token-theft",
+        "rbac"
+      ],
+      "attack": [
+        "T1528",
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Use projected, time-bound service account tokens instead of legacy secret tokens",
+          "Set automountServiceAccountToken false for workloads that do not call the API",
+          "Restrict API server access to known CIDRs or a private endpoint",
+          "Baseline each service account's normal verbs, resources, and source IPs"
+        ],
+        "identification": [
+          "Find audit events for the service account from source IPs outside the pod CIDR",
+          "Compare user agents with the workload's normal client library",
+          "List actions the token performed that the workload never needs, such as listing secrets",
+          "Identify the pod or legacy secret the token came from and how it leaked",
+          "Check whether the token was used to create new tokens or RoleBindings"
+        ],
+        "containment": [
+          "Delete the legacy token secret or restart the pod to invalidate its projected token",
+          "Temporarily remove the service account's RoleBindings",
+          "Block the external source IP from the API server endpoint"
+        ],
+        "eradication": [
+          "Recreate the service account and rebind only the permissions it needs",
+          "Remove any tokens, RoleBindings, or workloads the attacker created",
+          "Fix the leak path, such as a token in logs, image layers, or an SSRF in the app"
+        ],
+        "recovery": [
+          "Redeploy the workload with the new service account and verify API calls succeed",
+          "Confirm no further API calls from the external IP",
+          "Verify the workload now mounts only a projected, audience-bound token"
+        ],
+        "lessons": [
+          "Add an alert for service accounts used from outside pod and node CIDRs",
+          "Migrate remaining legacy service account token secrets",
+          "Review RBAC to remove wildcard verbs from workload service accounts"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Service account calls from outside cluster networks",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit user.username=\"system:serviceaccount:*\" | mvexpand sourceIPs{} | rename sourceIPs{} as src | search NOT src IN (<pod_cidrs>,<node_cidrs>) | stats count values(verb) as verbs by user.username src userAgent"
+        },
+        {
+          "title": "Actions by the suspect service account",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit user.username=\"system:serviceaccount:<namespace>:<sa_name>\" | stats count by verb objectRef.resource objectRef.namespace responseStatus.code | sort - count"
+        },
+        {
+          "title": "Token or RoleBinding creation by the service account",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=kube:apiserver:audit user.username=\"system:serviceaccount:<namespace>:<sa_name>\" (objectRef.subresource=token OR objectRef.resource IN (rolebindings,clusterrolebindings,serviceaccounts)) verb=create"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-cluster-admin-rolebinding",
+      "name": "Unexpected cluster-admin ClusterRoleBinding created",
+      "summary": "Use when a ClusterRoleBinding or RoleBinding granting cluster-admin or wildcard permissions appears for a user, group, or service account outside change control.",
+      "tags": [
+        "kubernetes",
+        "rbac",
+        "privilege-escalation",
+        "persistence"
+      ],
+      "attack": [
+        "T1098",
+        "T1078"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Manage all RBAC bindings through GitOps so drift is detectable",
+          "Alert on any create or patch of ClusterRoleBindings referencing cluster-admin",
+          "Limit bind and escalate verbs to a break-glass group"
+        ],
+        "identification": [
+          "Pull the binding create event with the subject, roleRef, and creating identity",
+          "Check whether the binding exists in the GitOps repo or a change ticket",
+          "Review all actions taken by the newly bound subject since the binding",
+          "Determine how the creating identity had permission to bind cluster-admin",
+          "Search for other bindings, ClusterRoles, or webhooks created in the same session"
+        ],
+        "containment": [
+          "Delete the unauthorised binding after exporting its YAML",
+          "Disable the creating identity's credential or revoke its kubeconfig certificate",
+          "Disable the newly privileged subject if it is attacker controlled"
+        ],
+        "eradication": [
+          "Remove any workloads, webhooks, or CRDs created with the elevated access",
+          "Rotate cluster secrets read by the privileged subject",
+          "Reconcile RBAC against the GitOps source of truth and remove drift"
+        ],
+        "recovery": [
+          "Confirm the GitOps controller reports RBAC in sync",
+          "Verify break-glass access still works for the platform team",
+          "Re-run an RBAC review tool to list remaining cluster-admin subjects"
+        ],
+        "lessons": [
+          "Count identities able to bind or escalate and reduce them",
+          "Add policy blocking cluster-admin bindings outside the platform namespace pipeline",
+          "Review time from binding creation to detection"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "ClusterRoleBinding creates and patches",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit objectRef.resource IN (clusterrolebindings,rolebindings) verb IN (create,update,patch) | spath path=requestObject.roleRef.name output=role | spath path=requestObject.subjects{}.name output=subject | table _time user.username verb objectRef.name role subject sourceIPs{}"
+        },
+        {
+          "title": "Actions by the newly bound subject",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit user.username=<bound_subject> earliest=<binding_time> | stats count by verb objectRef.resource objectRef.namespace | sort - count"
+        },
+        {
+          "title": "Admission webhooks or CRDs created in the same window",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=kube:apiserver:audit verb=create objectRef.resource IN (mutatingwebhookconfigurations,validatingwebhookconfigurations,customresourcedefinitions,clusterroles) earliest=<binding_time> | table _time user.username objectRef.resource objectRef.name"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-admission-controller-disabled",
+      "name": "Admission controller or policy engine disabled or bypassed",
+      "summary": "Use when Gatekeeper, Kyverno, or a validating webhook is deleted, set to fail open, or has namespaces excluded, removing guardrails on what can run in the cluster.",
+      "tags": [
+        "kubernetes",
+        "admission-control",
+        "defense-evasion",
+        "policy"
+      ],
+      "attack": [
+        "T1562.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Set policy webhooks to failurePolicy Fail for security-critical rules",
+          "Alert on deletes or changes to ValidatingWebhookConfiguration and policy CRDs",
+          "Protect the policy engine namespace with RBAC limited to the platform team"
+        ],
+        "identification": [
+          "Find the delete or patch on webhook configurations, Kyverno policies, or Gatekeeper constraints",
+          "Check whether failurePolicy changed to Ignore or namespaceSelector excluded namespaces",
+          "Check whether the policy engine pods were scaled to zero or crash-looping",
+          "List resources created during the gap that the policy would have rejected",
+          "Identify the identity that made the change and whether a ticket covers it"
+        ],
+        "containment": [
+          "Restore the webhook and policy objects from the GitOps repository",
+          "Scale the policy engine back up and confirm it is admitting requests",
+          "Suspend the identity that disabled the controls pending review"
+        ],
+        "eradication": [
+          "Delete or remediate non-compliant workloads admitted during the gap",
+          "Rerun the policy engine audit mode to report existing violations",
+          "Remove namespace exclusions or Ignore failure policies added to the webhook"
+        ],
+        "recovery": [
+          "Confirm a known-bad test manifest is rejected in each protected namespace",
+          "Confirm the GitOps controller self-heals policy objects on drift",
+          "Check policy engine resource limits to prevent future crash-loop gaps"
+        ],
+        "lessons": [
+          "Alert when policy webhook endpoints are unavailable for more than a few minutes",
+          "Review who can modify webhook configurations and why",
+          "Track admitted-during-gap resources as a metric"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Changes to webhook configurations and policy objects",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit objectRef.resource IN (validatingwebhookconfigurations,mutatingwebhookconfigurations,clusterpolicies,policies,constrainttemplates) verb IN (delete,patch,update) | table _time user.username verb objectRef.resource objectRef.name sourceIPs{}"
+        },
+        {
+          "title": "Policy engine deployment scaled or deleted",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit objectRef.namespace IN (kyverno,gatekeeper-system) objectRef.resource IN (deployments,pods) verb IN (delete,patch,update) | table _time user.username verb objectRef.name objectRef.subresource"
+        },
+        {
+          "title": "Privileged workloads created during the gap",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=kube:apiserver:audit verb=create objectRef.resource=pods earliest=<gap_start> latest=<gap_end> (\"privileged\\\":true\" OR \"hostPath\") | table _time user.username objectRef.namespace objectRef.name"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-audit-log-gap",
+      "name": "Gap in Kubernetes API server audit logs",
+      "summary": "Use when kube-apiserver audit events stop arriving, drop sharply, or the audit policy is weakened, leaving a window where cluster activity cannot be reconstructed.",
+      "tags": [
+        "kubernetes",
+        "audit-log",
+        "logging",
+        "defense-evasion"
+      ],
+      "attack": [
+        "T1562.008"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Alert when audit event volume per cluster drops below a baseline for 15 minutes",
+          "Keep the audit policy file under version control with change review",
+          "For managed clusters, enable control plane audit log export to the cloud logging service",
+          "Monitor the log forwarder DaemonSet or webhook backend health"
+        ],
+        "identification": [
+          "Chart audit event count per cluster to find the exact gap start and end",
+          "Check whether the audit policy file or API server flags changed before the gap",
+          "Check log forwarder pods, buffers, and SIEM ingestion errors for the same window",
+          "For EKS, AKS, or GKE, check whether control plane logging was disabled via the cloud API",
+          "Use other sources such as node logs, cloud trail, and GitOps history to cover the gap"
+        ],
+        "containment": [
+          "Restore the audit policy and logging configuration from version control",
+          "Re-enable managed control plane log export and confirm events arrive",
+          "Restrict who can modify cluster logging settings in the cloud account"
+        ],
+        "eradication": [
+          "Diff cluster state, RBAC, and workloads against GitOps to spot changes made in the gap",
+          "Remove resources created in the gap that have no change record",
+          "Revert unauthorised audit policy edits on control plane nodes and restart the API server"
+        ],
+        "recovery": [
+          "Backfill buffered audit logs from the forwarder or cloud log store if retained",
+          "Verify event volume and field parsing are back to normal",
+          "Document the unrecoverable window in the incident record"
+        ],
+        "lessons": [
+          "Add a heartbeat search for each cluster's audit stream",
+          "Add a detection for cloud API calls that disable cluster logging",
+          "Review buffer sizes so forwarder restarts do not lose events"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Audit event volume per cluster",
+          "phase": "identification",
+          "spl": "| tstats count where index=* sourcetype=kube:apiserver:audit by _time span=5m host | timechart span=5m sum(count) by host"
+        },
+        {
+          "title": "Managed cluster logging disabled via cloud API",
+          "phase": "identification",
+          "spl": "index=* sourcetype=aws:cloudtrail eventSource=eks.amazonaws.com eventName=UpdateClusterConfig | spath path=requestParameters.logging output=logging | table _time userIdentity.arn requestParameters.name logging sourceIPAddress"
+        },
+        {
+          "title": "Clusters with no audit events in the last 30 minutes",
+          "phase": "lessons",
+          "spl": "| tstats latest(_time) as last where index=* sourcetype=kube:apiserver:audit by host | eval mins_since=round((now()-last)/60) | where mins_since>30"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-exec-into-production-pod",
+      "name": "Interactive exec into a production pod",
+      "summary": "Use when someone runs kubectl exec or attach into a production pod outside break-glass procedure, possibly to read secrets, alter data, or install tools.",
+      "tags": [
+        "kubernetes",
+        "kubectl-exec",
+        "insider",
+        "production"
+      ],
+      "attack": [
+        "T1609"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Restrict pods/exec and pods/attach RBAC in production to a break-glass group",
+          "Log exec sessions with command capture through a session recording proxy or runtime sensor",
+          "Define a break-glass request process with ticket and approver"
+        ],
+        "identification": [
+          "Find pods/exec create events in production namespaces with user and source IP",
+          "Match the exec to a break-glass ticket or on-call incident",
+          "Pull runtime sensor events for commands run in the shell session",
+          "Check whether the session read mounted secrets or environment variables",
+          "Check whether files were written or packages installed in the container filesystem"
+        ],
+        "containment": [
+          "Restart the pod to discard any changes made in the container filesystem",
+          "Remove the user's exec permission until the review completes",
+          "Revoke the user's kubeconfig credential if the session is unexplained"
+        ],
+        "eradication": [
+          "Rotate secrets the session could read from mounts or environment",
+          "Revert data or configuration changes made through the shell",
+          "Remove tools or binaries the session left on persistent volumes"
+        ],
+        "recovery": [
+          "Confirm the restarted pod is healthy and running the expected image",
+          "Restore exec permission through the break-glass group only",
+          "Reconcile application data touched in the session against backups or replicas"
+        ],
+        "lessons": [
+          "Alert on any exec in production without a linked ticket",
+          "Review what task required a shell and provide a safer tool for it",
+          "Report exec counts per team monthly"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Exec and attach into production namespaces",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit objectRef.subresource IN (exec,attach) objectRef.namespace IN (<prod_namespaces>) verb=create | table _time user.username sourceIPs{} objectRef.namespace objectRef.name requestURI"
+        },
+        {
+          "title": "Commands spawned in the exec'd container",
+          "phase": "identification",
+          "spl": "index=* sourcetype=falco output_fields.k8s.pod.name=<pod_name> (rule=\"Terminal shell in container\" OR rule=\"*Read sensitive file*\" OR rule=\"*Package management*\") | table _time rule output_fields.proc.cmdline output_fields.user.name"
+        },
+        {
+          "title": "Exec users without matching break-glass tickets",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=kube:apiserver:audit objectRef.subresource=exec objectRef.namespace IN (<prod_namespaces>) | stats count by user.username | lookup breakglass_approvals user AS user.username OUTPUT ticket | where isnull(ticket)"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-sidecar-injection-backdoor",
+      "name": "Malicious sidecar injected through a mutating webhook",
+      "summary": "Use when pods gain unexpected containers, init containers, or env vars at admission because a mutating webhook was added or tampered with to inject a backdoor sidecar.",
+      "tags": [
+        "kubernetes",
+        "mutating-webhook",
+        "persistence",
+        "sidecar"
+      ],
+      "attack": [
+        "T1610",
+        "T1546"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Inventory approved mutating webhooks such as service mesh injectors with their CA bundles",
+          "Alert on create or patch of MutatingWebhookConfiguration objects",
+          "Compare running pod container lists against rendered manifests in CI"
+        ],
+        "identification": [
+          "List MutatingWebhookConfigurations and flag any not in the approved inventory",
+          "Diff a running pod's containers against its Deployment manifest in Git",
+          "Identify the webhook service endpoint and the pod serving it",
+          "Inspect the injected sidecar image, command, and network destinations",
+          "Determine how many namespaces and pods received the sidecar"
+        ],
+        "containment": [
+          "Delete the rogue MutatingWebhookConfiguration after exporting it",
+          "Scale down the webhook server deployment and preserve its image",
+          "Block egress from injected sidecars to their destinations"
+        ],
+        "eradication": [
+          "Rolling-restart every affected workload so pods are recreated without the sidecar",
+          "Rotate secrets and tokens visible to injected pods",
+          "Remove the RBAC that allowed creating webhook configurations"
+        ],
+        "recovery": [
+          "Confirm pod specs match Git-rendered manifests after restart",
+          "Verify legitimate injectors such as the service mesh still function",
+          "Confirm only approved webhooks remain in the cluster webhook inventory"
+        ],
+        "lessons": [
+          "Add a continuous check for pods with containers absent from their owner spec",
+          "Pin webhook configurations in GitOps with self-heal enabled",
+          "Review supply chain for the webhook server image"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Mutating webhook configuration changes",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit objectRef.resource=mutatingwebhookconfigurations verb IN (create,update,patch) | table _time user.username verb objectRef.name sourceIPs{}"
+        },
+        {
+          "title": "Pod creates mutated by an unexpected webhook",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit verb=create objectRef.resource=pods | spath path=annotations output=ann | search ann=\"*mutation.webhook.admission.k8s.io*\" | rex field=ann \"\\\"mutation.webhook.admission.k8s.io/round_\\d+_index_\\d+\\\":\\\"(?<mutation>[^\\\"]+)\" | stats count by mutation objectRef.namespace"
+        },
+        {
+          "title": "Network connections from the injected sidecar",
+          "phase": "containment",
+          "spl": "index=* sourcetype=falco output_fields.container.name=<sidecar_name> | stats count values(output_fields.fd.name) as conns by output_fields.k8s.ns.name output_fields.k8s.pod.name"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-helm-chart-tampering",
+      "name": "Helm chart or chart repository tampered with",
+      "summary": "Use when a Helm chart in an internal or third-party repository was modified to add malicious templates, hooks, or images, or a release was upgraded with unexpected values.",
+      "tags": [
+        "kubernetes",
+        "helm",
+        "supply-chain",
+        "tampering"
+      ],
+      "attack": [
+        "T1195.002",
+        "T1525"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Sign charts with Helm provenance or cosign and verify at install",
+          "Mirror third-party charts into an internal OCI registry with pinned versions",
+          "Restrict who can push to the internal chart repository"
+        ],
+        "identification": [
+          "Diff the deployed chart version against the last known good version from the repo",
+          "Inspect templates for new hooks, Jobs, ClusterRoles, or images",
+          "Check chart repository push logs for who uploaded the tampered version",
+          "List releases in all clusters using the tampered chart version",
+          "Review helm release history secrets for unexpected upgrades and values"
+        ],
+        "containment": [
+          "Remove the tampered chart version from the repository and block its digest",
+          "Roll back affected releases to the last known good revision",
+          "Revoke the credential used to push the chart"
+        ],
+        "eradication": [
+          "Delete resources created by malicious hooks, which helm rollback may not remove",
+          "Rotate secrets exposed to the malicious templates",
+          "Rebuild and re-sign the chart from verified source"
+        ],
+        "recovery": [
+          "Redeploy releases from the re-signed chart and confirm signature verification",
+          "Verify release workloads match expected images and RBAC",
+          "Restore chart repository push access only to the release pipeline identity"
+        ],
+        "lessons": [
+          "Enforce signature verification in CI and GitOps for every chart install",
+          "Add alerting on chart repo pushes outside the release pipeline",
+          "Review how many third-party charts are pulled directly from the internet"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Helm release secret changes",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit objectRef.resource=secrets objectRef.name=\"sh.helm.release.v1.*\" verb IN (create,update) | table _time user.username objectRef.namespace objectRef.name userAgent"
+        },
+        {
+          "title": "Resources created by helm hook Jobs",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=kube:apiserver:audit verb=create objectRef.namespace=<release_namespace> earliest=<upgrade_time> latest=<upgrade_time_plus_1h> | stats count by user.username objectRef.resource objectRef.name"
+        },
+        {
+          "title": "Pushes to the chart repository",
+          "phase": "identification",
+          "spl": "index=* sourcetype=<registry_sourcetype> action=push (artifact_type=helm OR repository=\"charts/*\") | table _time user repository tag digest src_ip"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-registry-credentials-leaked",
+      "name": "Container registry credentials leaked",
+      "summary": "Use when an imagePullSecret, registry robot account token, or cloud registry key is exposed in a repo, log, or image, risking image tampering or private image theft.",
+      "tags": [
+        "container-registry",
+        "credential-leak",
+        "supply-chain",
+        "secrets"
+      ],
+      "attack": [
+        "T1552.001",
+        "T1525"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Use short-lived registry auth via workload identity rather than static pull secrets",
+          "Scope robot accounts to pull-only per project",
+          "Enable registry audit logs for pull, push, and delete with source IP",
+          "Run secret scanning on repositories and container image layers"
+        ],
+        "identification": [
+          "Identify which registry account leaked and its permissions such as push or delete",
+          "Find where the credential was exposed and since when",
+          "Review registry audit logs for that account from unexpected IPs",
+          "Check for pushes that overwrote existing tags in the exposure window",
+          "List private repositories pulled by the account from unknown sources"
+        ],
+        "containment": [
+          "Revoke or rotate the leaked registry token or robot account",
+          "Enable tag immutability on production repositories",
+          "Remove the credential from the exposed repo, log, or image and purge history"
+        ],
+        "eradication": [
+          "Compare digests of production tags against CI build records and rebuild mismatches",
+          "Update imagePullSecrets in every namespace with the new credential",
+          "Delete any images pushed by the attacker"
+        ],
+        "recovery": [
+          "Restart workloads that pull with the new credential and confirm pulls succeed",
+          "Verify running pods use digests produced by CI",
+          "Confirm the old token returns unauthorised against the registry API"
+        ],
+        "lessons": [
+          "Add an alert on registry pushes from outside CI runners",
+          "Measure how many clusters still use static pull secrets",
+          "Review why the secret scanner did not catch the exposure"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Registry API activity by leaked identity",
+          "phase": "identification",
+          "spl": "index=* sourcetype=aws:cloudtrail eventSource=ecr.amazonaws.com userIdentity.arn=<leaked_identity_arn> | stats count by eventName sourceIPAddress requestParameters.repositoryName"
+        },
+        {
+          "title": "Image pushes overwriting existing tags",
+          "phase": "identification",
+          "spl": "index=* sourcetype=aws:cloudtrail eventSource=ecr.amazonaws.com eventName=PutImage | spath path=requestParameters.imageTag output=tag | stats dc(responseElements.image.imageId.imageDigest) as digests values(userIdentity.arn) as who by requestParameters.repositoryName tag | where digests>1"
+        },
+        {
+          "title": "Pull secrets referencing the leaked registry account",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=kube:apiserver:audit objectRef.resource=secrets verb IN (create,update) \"kubernetes.io/dockerconfigjson\" | table _time user.username objectRef.namespace objectRef.name"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-hostpath-node-compromise",
+      "name": "Node compromised through a hostPath volume mount",
+      "summary": "Use when a pod mounts sensitive host paths such as /, /etc, /var/lib/kubelet, or /root and uses them to read credentials or plant persistence on the node.",
+      "tags": [
+        "kubernetes",
+        "hostpath",
+        "node",
+        "privilege-escalation"
+      ],
+      "attack": [
+        "T1611",
+        "T1552.001",
+        "T1543.002"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Deny hostPath volumes in workload namespaces via Pod Security or policy engine",
+          "Allowlist the few system DaemonSets that need specific read-only host paths",
+          "Run file integrity monitoring on node paths such as /etc/systemd, /root/.ssh, and /etc/cron.d"
+        ],
+        "identification": [
+          "Find pods created with hostPath volumes and list the host paths and readOnly flags",
+          "Check runtime events for reads of /var/lib/kubelet/pki or other pods' token directories",
+          "Look for writes to host crontabs, systemd units, or authorized_keys from the container",
+          "Identify every node where pods with that spec were scheduled",
+          "Check for API calls using the node's kubelet credentials after the mount"
+        ],
+        "containment": [
+          "Delete the hostPath pod and cordon affected nodes",
+          "Revoke kubelet client certificates for affected nodes",
+          "Block SSH and outbound traffic from affected nodes except to forensics tooling"
+        ],
+        "eradication": [
+          "Replace affected nodes rather than cleaning them in place",
+          "Rotate tokens and secrets of every pod that ran on affected nodes",
+          "Remove the RBAC or namespace exemption that allowed hostPath"
+        ],
+        "recovery": [
+          "Reschedule workloads to fresh nodes and validate health",
+          "Confirm the policy rejects hostPath in a test namespace",
+          "Re-enable node autoscaling with the hardened node template"
+        ],
+        "lessons": [
+          "Add detection for hostPath mounts of root, kubelet, or runtime sockets",
+          "Review DaemonSets with broad host mounts and reduce them",
+          "Track time to replace a compromised node pool"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Pods created with hostPath volumes",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit verb=create objectRef.resource=pods \"hostPath\" | spath path=requestObject.spec.volumes{}.hostPath.path output=host_paths | table _time user.username objectRef.namespace objectRef.name host_paths"
+        },
+        {
+          "title": "Sensitive host file writes from containers",
+          "phase": "identification",
+          "spl": "index=* sourcetype=falco (output_fields.fd.name=\"/host/etc/*\" OR output_fields.fd.name=\"*/.ssh/authorized_keys\" OR output_fields.fd.name=\"*/var/lib/kubelet/*\" OR rule=\"*Write below etc*\") | table _time hostname rule output_fields.k8s.pod.name output_fields.fd.name output_fields.proc.cmdline"
+        },
+        {
+          "title": "Node identity API usage after the mount",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit user.username=\"system:node:*\" objectRef.resource=secrets | stats count dc(objectRef.namespace) as ns by user.username sourceIPs{}"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-gitops-repo-compromise",
+      "name": "Argo CD or GitOps repository compromised",
+      "summary": "Use when unauthorised commits land in a GitOps config repo, or the Argo CD or Flux controller is accessed, so the cluster syncs attacker-chosen manifests.",
+      "tags": [
+        "kubernetes",
+        "gitops",
+        "argocd",
+        "supply-chain"
+      ],
+      "attack": [
+        "T1195.002",
+        "T1078"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Require signed commits and protected branches with review on GitOps repos",
+          "Put the Argo CD UI and API behind SSO with MFA, not the local admin account",
+          "Forward Argo CD audit events and Git provider audit logs to the SIEM",
+          "Scope Argo CD Projects so each app can only deploy to its own namespaces"
+        ],
+        "identification": [
+          "Identify commits to the GitOps repo outside the normal pipeline or by unexpected authors",
+          "Check Argo CD logs for logins, especially the admin account, and app or project changes",
+          "Diff synced manifests to find new images, RBAC, webhooks, or CronJobs",
+          "Check whether Argo CD repository credentials or cluster secrets were viewed or exported",
+          "List clusters and namespaces that synced the malicious revision"
+        ],
+        "containment": [
+          "Disable auto-sync on affected Argo CD applications",
+          "Revert the malicious commits and force a sync to the last known good revision",
+          "Disable the local admin account and revoke compromised Git and Argo CD tokens",
+          "Restrict the Argo CD API endpoint to the corporate network or VPN"
+        ],
+        "eradication": [
+          "Delete orphaned resources created by the malicious sync that pruning missed",
+          "Rotate Git deploy keys, Argo CD repo credentials, and cluster bearer tokens it stores",
+          "Review the Git provider account that pushed the commits for wider compromise"
+        ],
+        "recovery": [
+          "Re-enable auto-sync after verifying every app is in sync with reviewed Git",
+          "Confirm branch protection and signature checks block an unsigned test commit",
+          "Validate application health across all synced clusters"
+        ],
+        "lessons": [
+          "Alert on commits to GitOps repos not signed by the pipeline or approved keys",
+          "Review Argo CD Project scoping that let one app deploy cluster-wide resources",
+          "Add Argo CD admin login detection"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Argo CD logins and application changes",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:container:argocd-server (\"login\" OR \"update\" OR \"sync\" OR \"delete\") | rex \"user=(?<user>\\S+)\" | rex \"application=(?<app>\\S+)\" | stats count values(app) as apps by user"
+        },
+        {
+          "title": "Resources applied by the Argo CD controller during the window",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit user.username=\"system:serviceaccount:argocd:argocd-application-controller\" verb IN (create,patch,update) earliest=<commit_time> | stats count by objectRef.resource objectRef.namespace objectRef.name"
+        },
+        {
+          "title": "Pushes to the GitOps repository",
+          "phase": "identification",
+          "spl": "index=* sourcetype=github:audit OR sourcetype=gitlab:audit repo=<gitops_repo> (action=git.push OR action=protected_branch.*) | table _time actor action repo branch actor_ip"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-managed-cluster-credential-leak",
+      "name": "Managed cluster (EKS, AKS, GKE) control-plane credential leaked",
+      "summary": "Use when a kubeconfig, cloud key, or IAM role with access to a managed Kubernetes control plane is exposed and may be used to gain cluster admin through the cloud identity mapping.",
+      "tags": [
+        "kubernetes",
+        "eks",
+        "aks",
+        "gke",
+        "cloud",
+        "credential-leak"
+      ],
+      "attack": [
+        "T1078.004",
+        "T1552.001"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Use EKS access entries, AKS Entra ID RBAC, or GKE IAM rather than shared static kubeconfigs",
+          "Make the managed API endpoint private or restrict public access CIDRs",
+          "Disable AKS local accounts and avoid GKE client certificate auth",
+          "Keep cloud audit logs for cluster API calls such as DescribeCluster and ListClusterUserCredential"
+        ],
+        "identification": [
+          "Identify the leaked credential type and which cloud principal and cluster it maps to",
+          "Search cloud audit logs for credential retrieval calls by the principal from unknown IPs",
+          "Search kube audit logs for the mapped username and groups from the same source IPs",
+          "Check for changes to access entries, aws-auth ConfigMap, or role assignments",
+          "List workloads, secrets, and RBAC changed by the identity"
+        ],
+        "containment": [
+          "Disable or rotate the cloud access key, or revoke the role session",
+          "Remove the principal's cluster access entry or role assignment",
+          "Restrict the public API endpoint to known CIDRs immediately",
+          "Rotate the cluster CA or reset credentials if a client certificate or local admin leaked"
+        ],
+        "eradication": [
+          "Remove persistence such as new access entries, aws-auth mappings, or ClusterRoleBindings",
+          "Delete attacker workloads and rotate secrets read during the session",
+          "Check the cloud account for other actions by the leaked principal beyond the cluster"
+        ],
+        "recovery": [
+          "Reissue kubeconfigs via SSO-backed cloud CLI auth to legitimate users",
+          "Confirm CI pipelines authenticate using workload identity federation",
+          "Verify the public endpoint restriction does not break operators"
+        ],
+        "lessons": [
+          "Alert on cluster credential retrieval from new IPs or ASNs",
+          "Inventory clusters with local accounts or static kubeconfigs and remove them",
+          "Review where the credential was stored and why it was long-lived"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "EKS credential and access entry calls by the principal",
+          "phase": "identification",
+          "spl": "index=* sourcetype=aws:cloudtrail eventSource=eks.amazonaws.com userIdentity.arn=<leaked_principal_arn> | stats count by eventName sourceIPAddress requestParameters.name | sort - count"
+        },
+        {
+          "title": "AKS user credential retrieval",
+          "phase": "identification",
+          "spl": "index=* sourcetype=azure:monitor:activity operationName.value=\"Microsoft.ContainerService/managedClusters/listClusterUserCredential/action\" OR operationName.value=\"Microsoft.ContainerService/managedClusters/listClusterAdminCredential/action\" | table _time caller callerIpAddress resourceId"
+        },
+        {
+          "title": "Cluster actions by mapped identity from new IPs",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit user.username=<mapped_username> | mvexpand sourceIPs{} | stats count values(verb) as verbs earliest(_time) as first by sourceIPs{} | convert ctime(first)"
+        },
+        {
+          "title": "aws-auth ConfigMap or access entry changes",
+          "phase": "eradication",
+          "spl": "index=* (sourcetype=kube:apiserver:audit objectRef.name=aws-auth objectRef.namespace=kube-system verb IN (update,patch)) OR (sourcetype=aws:cloudtrail eventName IN (CreateAccessEntry,AssociateAccessPolicy)) | table _time sourcetype user.username userIdentity.arn eventName"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-falco-runtime-alert",
+      "name": "Falco runtime alert: shell or suspicious process in container",
+      "summary": "Use to triage a Falco or similar runtime detection such as a shell spawned in a container, unexpected outbound connection, or sensitive file read, and decide if it is malicious.",
+      "tags": [
+        "kubernetes",
+        "falco",
+        "runtime",
+        "triage"
+      ],
+      "attack": [
+        "T1059.004",
+        "T1609"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Tune Falco rules with workload-specific allowlists to keep alert volume reviewable",
+          "Ship Falco events with Kubernetes metadata fields to the SIEM",
+          "Map each namespace to an owning team and on-call contact"
+        ],
+        "identification": [
+          "Read the Falco rule, output fields, process tree, and container image",
+          "Check whether the parent process is the app, an exec session, or a CronJob",
+          "Correlate with kube audit for exec events into the same pod at the same time",
+          "Look for follow-on alerts on the pod such as outbound connections or package installs",
+          "Ask the owning team whether the behaviour matches a known job or debug action"
+        ],
+        "containment": [
+          "Apply a deny-egress NetworkPolicy label to the pod if behaviour is unexplained",
+          "Capture container filesystem diff and process list before deletion",
+          "Delete the pod and let its controller recreate it from the clean image"
+        ],
+        "eradication": [
+          "Patch the application vulnerability if the shell came from the app process",
+          "Rebuild the image if malicious content is present in its layers",
+          "Rotate credentials mounted into the pod"
+        ],
+        "recovery": [
+          "Confirm the recreated pod shows no repeat alert",
+          "Remove the temporary deny-egress label once clean",
+          "Add a tuned exception if the alert was confirmed benign"
+        ],
+        "lessons": [
+          "Track true and false positive rates per Falco rule",
+          "Record time from runtime alert to owner acknowledgement",
+          "Consider read-only root filesystems to make shells less useful"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Falco alerts by rule, namespace, and image",
+          "phase": "identification",
+          "spl": "index=* sourcetype=falco priority IN (Critical,Error,Warning) | stats count values(output_fields.proc.cmdline) as cmds by rule output_fields.k8s.ns.name output_fields.container.image.repository | sort - count"
+        },
+        {
+          "title": "All runtime events for the alerting pod",
+          "phase": "identification",
+          "spl": "index=* sourcetype=falco output_fields.k8s.pod.name=<pod_name> | table _time rule output_fields.proc.pname output_fields.proc.cmdline output_fields.fd.name"
+        },
+        {
+          "title": "Exec events matching the alert time",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit objectRef.subresource=exec objectRef.name=<pod_name> | table _time user.username sourceIPs{} requestURI"
+        }
+      ]
+    },
+    {
+      "id": "lib-containers-k8s-namespace-mass-deletion",
+      "name": "Namespace deleted or mass resource deletion in the cluster",
+      "summary": "Use when namespaces, deployments, PVCs, or CRDs are deleted in bulk, by mistake or maliciously, causing outages or data loss in the cluster.",
+      "tags": [
+        "kubernetes",
+        "deletion",
+        "destruction",
+        "availability"
+      ],
+      "attack": [
+        "T1485",
+        "T1489"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Back up cluster resources and persistent volumes with Velero or a managed equivalent",
+          "Set PersistentVolume reclaim policy to Retain for stateful data",
+          "Restrict delete on namespaces and CRDs to a small platform group",
+          "Use GitOps so stateless workloads can be re-synced quickly"
+        ],
+        "identification": [
+          "Find delete and deletecollection events and the identity, source IP, and user agent",
+          "List deleted namespaces, PVCs, and CRDs and their owning services",
+          "Determine whether the actor is a person, CI job, operator, or stolen credential",
+          "Check whether retained PersistentVolumes or cloud disks still exist",
+          "Check for preceding malicious activity such as new bindings or secrets reads"
+        ],
+        "containment": [
+          "Revoke the deleting identity's credential or RBAC immediately",
+          "Pause GitOps pruning and CI pipelines that might delete more",
+          "Snapshot cloud disks backing released PersistentVolumes"
+        ],
+        "eradication": [
+          "Remove any attacker-created RBAC or workloads found during review",
+          "Fix the automation or script that issued the deletes if it was an error",
+          "Add finalizer or policy protection for critical namespaces"
+        ],
+        "recovery": [
+          "Restore namespaces and resources from the latest Velero backup",
+          "Rebind restored PVCs to retained volumes or restore data from snapshots",
+          "Re-sync stateless apps from GitOps and verify service health",
+          "Communicate data loss window to service owners"
+        ],
+        "lessons": [
+          "Measure restore time against the recovery time objective",
+          "Add an alert for deletes of more than a few resources by one identity in minutes",
+          "Run regular restore tests for cluster backups"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Bulk deletes by identity",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit verb IN (delete,deletecollection) | bin _time span=10m | stats count dc(objectRef.namespace) as namespaces values(objectRef.resource) as resources by _time user.username sourceIPs{} userAgent | where count>20 | sort - count"
+        },
+        {
+          "title": "Namespaces and PVCs deleted",
+          "phase": "identification",
+          "spl": "index=* sourcetype=kube:apiserver:audit verb=delete objectRef.resource IN (namespaces,persistentvolumeclaims,persistentvolumes,customresourcedefinitions) | table _time user.username objectRef.resource objectRef.namespace objectRef.name responseStatus.code"
+        },
+        {
+          "title": "Cloud disks deleted after PV release",
+          "phase": "recovery",
+          "spl": "index=* sourcetype=aws:cloudtrail eventName=DeleteVolume earliest=<deletion_time> | table _time userIdentity.arn requestParameters.volumeId sourceIPAddress"
+        }
+      ]
+    }
+  ]
+}

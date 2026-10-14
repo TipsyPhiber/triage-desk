@@ -42,3 +42,6 @@ test-results
 playwright-report
 e2e/.tmp
 dist-demo
+dist-connected
+dist-connected-single
+dist-e2e-connected

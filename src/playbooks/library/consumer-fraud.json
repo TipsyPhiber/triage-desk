@@ -1,0 +1,1295 @@
+{
+  "category": {
+    "id": "consumer-fraud",
+    "name": "Customer account takeover & fraud",
+    "description": "Abuse of customer-facing accounts and checkout: credential stuffing, takeover, payment and refund fraud, bots, brand impersonation, and fake accounts."
+  },
+  "playbooks": [
+    {
+      "id": "lib-consumer-fraud-credential-stuffing-customer-accounts",
+      "name": "Credential stuffing against customer login",
+      "summary": "Use when the customer login endpoint sees a surge of failed logins across many usernames from rotating IPs, with a small success rate that indicates reused breached passwords.",
+      "tags": [
+        "fraud",
+        "credential-stuffing",
+        "ato",
+        "bots",
+        "login"
+      ],
+      "attack": [
+        "T1110.004",
+        "T1078"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Log every customer login attempt with username, IP, ASN, user agent, and result",
+          "Put bot management or a WAF rate limit in front of login and token endpoints",
+          "Check new and changed customer passwords against a breached-password corpus",
+          "Agree with product who can turn on step-up challenges during an attack"
+        ],
+        "identification": [
+          "Chart login failure rate and distinct usernames per minute against the normal baseline",
+          "Group attacking traffic by ASN, user agent, and TLS fingerprint to find the tooling",
+          "List accounts with a successful login from attacking infrastructure",
+          "Check whether successful logins were followed by profile, payment, or address changes"
+        ],
+        "containment": [
+          "Enable CAPTCHA or proof-of-work challenges on the login endpoint",
+          "Block or challenge the attacking ASNs and fingerprints at the WAF",
+          "Force password reset and session revoke for accounts that were successfully accessed",
+          "Hold orders and withdrawals from compromised accounts pending customer confirmation"
+        ],
+        "eradication": [
+          "Add the attack's fingerprints to the bot management deny list",
+          "Remove attacker-added devices, emails, or phone numbers from compromised accounts",
+          "Reverse loyalty, stored value, or settings changes made by the attacker"
+        ],
+        "recovery": [
+          "Email affected customers with a reset link and guidance on password reuse",
+          "Relax challenge levels gradually while watching failure rates",
+          "Process refunds for fraudulent orders placed from compromised accounts"
+        ],
+        "lessons": [
+          "Measure attack duration, compromised account count, and losses",
+          "Add a detection on per-ASN login failure ratio",
+          "Offer passkeys or MFA to customers and track adoption",
+          "Review whether the login API had a weaker path than the web form"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Customer login failures and distinct users per minute",
+          "phase": "identification",
+          "spl": "index=web sourcetype=app:auth app=customer-portal action=login | timechart span=1m count(eval(result=\"failure\")) as failures dc(username) as users"
+        },
+        {
+          "title": "Attacking sources ranked by failed logins",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count(eval(Authentication.action=\"failure\")) as fail count(eval(Authentication.action=\"success\")) as ok dc(Authentication.user) as users from datamodel=Authentication where Authentication.app=customer-portal by Authentication.src | where users > 20 | sort - fail"
+        },
+        {
+          "title": "Successful logins from attacking IPs",
+          "phase": "containment",
+          "spl": "index=web sourcetype=app:auth app=customer-portal action=login result=success src_ip IN (<attack_ips>) | stats min(_time) as first values(src_ip) as ips by username | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-customer-ato-sim-swap",
+      "name": "Customer account takeover via SIM swap",
+      "summary": "Use when a customer reports their phone lost service and then their account was accessed via SMS one-time code, password reset, or SMS-based MFA.",
+      "tags": [
+        "fraud",
+        "sim-swap",
+        "ato",
+        "sms-otp",
+        "customer"
+      ],
+      "attack": [
+        "T1451",
+        "T1111"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Integrate a carrier SIM-change or number-porting risk signal into login and reset flows",
+          "Offer customers authenticator apps or passkeys as alternatives to SMS codes",
+          "Log OTP sends and verifications with phone number, carrier, and device ID"
+        ],
+        "identification": [
+          "Confirm the SIM change date with the customer or the carrier risk API",
+          "Review OTP sends and successful verifications for the customer's number after the swap",
+          "Identify the device and IP that logged in after OTP verification",
+          "Check for email, password, payout, or shipping address changes after takeover",
+          "Search for other accounts accessed from the same attacker device ID"
+        ],
+        "containment": [
+          "Lock the account and revoke every active session and device",
+          "Freeze payouts, withdrawals, and order fulfillment on the account",
+          "Remove the attacker-added contact details and recovery options"
+        ],
+        "eradication": [
+          "Block the attacker device fingerprint across the platform",
+          "Require a non-SMS factor for the customer before unlocking",
+          "Cancel or recall orders shipped to attacker addresses"
+        ],
+        "recovery": [
+          "Verify the customer through a strong identity check before restoring access",
+          "Reimburse losses per policy and record the case for fraud reporting",
+          "Apply a temporary hold on high-risk changes for 72 hours after recovery"
+        ],
+        "lessons": [
+          "Add SIM-change recency as a risk feature in step-up decisions",
+          "Count accounts relying solely on SMS for recovery",
+          "Review whether support could have blocked the takeover earlier"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "OTP sends and verifications for the customer number",
+          "phase": "identification",
+          "spl": "index=app sourcetype=app:otp phone_number=\"<customer_phone>\" | table _time event account_id device_id src_ip carrier result"
+        },
+        {
+          "title": "Account changes after OTP login",
+          "phase": "identification",
+          "spl": "index=app sourcetype=app:account_audit account_id=<account_id> event IN (\"email_change\", \"password_change\", \"payout_change\", \"address_add\", \"mfa_change\") | table _time event old_value new_value device_id src_ip"
+        },
+        {
+          "title": "Other accounts touched by the attacker device",
+          "phase": "eradication",
+          "spl": "index=app sourcetype=app:auth device_id=\"<attacker_device_id>\" | stats dc(account_id) as accounts values(account_id) as ids by device_id"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-loyalty-points-theft",
+      "name": "Loyalty points stolen from customer accounts",
+      "summary": "Use when customers report missing loyalty or rewards points, or analytics show points transferred, redeemed for gift cards, or spent on rapidly shipped goods from taken-over accounts.",
+      "tags": [
+        "fraud",
+        "loyalty",
+        "rewards",
+        "ato",
+        "redemption"
+      ],
+      "attack": [
+        "T1078",
+        "T1657"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Log every points transfer, redemption, and partner conversion with account and device",
+          "Require step-up verification before high-value redemptions or transfers",
+          "Notify members by email on each redemption or transfer"
+        ],
+        "identification": [
+          "List accounts with redemptions from devices never seen before on the account",
+          "Map points transfers to receiving accounts to find mule clusters",
+          "Identify redemption types used, such as gift cards, partner miles, or digital goods",
+          "Check whether redemptions followed a login from credential stuffing infrastructure"
+        ],
+        "containment": [
+          "Freeze the receiving mule accounts and pending partner conversions",
+          "Suspend instant digital redemptions for the affected member tier temporarily",
+          "Lock the victim accounts and force password resets"
+        ],
+        "eradication": [
+          "Cancel unfulfilled gift cards and vouchers issued from stolen points",
+          "Close the mule accounts and block their devices and payout details",
+          "Ask partners to reverse transferred miles or points where possible"
+        ],
+        "recovery": [
+          "Restore points to victim accounts per program terms",
+          "Send members a notice explaining the restoration and security steps",
+          "Re-enable instant redemptions with step-up verification in place"
+        ],
+        "lessons": [
+          "Quantify points liability lost and recovered",
+          "Add a detection for redemptions within an hour of a new-device login",
+          "Review partner conversion delays as a fraud control"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Redemptions from new devices",
+          "phase": "identification",
+          "spl": "index=app sourcetype=loyalty:events event=redeem | join type=left account_id device_id [search index=app sourcetype=app:auth result=success earliest=-90d latest=-1d | stats count as seen by account_id device_id] | where isnull(seen) | stats sum(points) as points by account_id device_id redemption_type"
+        },
+        {
+          "title": "Points transfer graph to receiving accounts",
+          "phase": "identification",
+          "spl": "index=app sourcetype=loyalty:events event=transfer | stats dc(from_account) as senders sum(points) as points by to_account | where senders > 3 | sort - points"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-gift-card-balance-draining",
+      "name": "Gift card balances drained by brute force or enumeration",
+      "summary": "Use when gift card balance check or redemption endpoints are hit with many card number and PIN guesses, or customers report gift cards emptied before use.",
+      "tags": [
+        "fraud",
+        "gift-card",
+        "enumeration",
+        "bots",
+        "stored-value"
+      ],
+      "attack": [
+        "T1110",
+        "T1657"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Use long random gift card numbers and PINs with no sequential patterns",
+          "Rate limit and bot-protect the balance check and redemption endpoints",
+          "Log balance checks with card number hash, IP, device, and result"
+        ],
+        "identification": [
+          "Chart balance check volume and the ratio of invalid to valid card lookups",
+          "Identify sources that check many distinct card numbers",
+          "List cards with a successful balance check followed by redemption on a new account",
+          "Check whether drained cards share a print batch, retailer, or number range"
+        ],
+        "containment": [
+          "Add CAPTCHA and strict per-IP limits on the balance check endpoint",
+          "Freeze balances on cards that were successfully enumerated but not yet redeemed",
+          "Block accounts and devices that redeemed enumerated cards"
+        ],
+        "eradication": [
+          "Cancel and reissue cards from compromised number ranges",
+          "Retire the predictable card numbering scheme if it was the cause",
+          "Pull physical cards from stores if packaging was tampered with"
+        ],
+        "recovery": [
+          "Restore balances to legitimate cardholders who present proof of purchase",
+          "Reopen the balance checker with bot protection and monitor guess rates",
+          "Coordinate with store operations on customer messaging"
+        ],
+        "lessons": [
+          "Quantify drained value and how much was recovered",
+          "Add an alert for invalid balance check ratios above baseline",
+          "Review whether gift card entropy meets current guidance"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Balance check failure ratio by source",
+          "phase": "identification",
+          "spl": "index=web sourcetype=app:giftcard action=balance_check | stats count(eval(result=\"invalid\")) as invalid count(eval(result=\"valid\")) as valid dc(card_hash) as cards by src_ip | where cards > 50 | eval ratio=round(invalid/(valid+1),1) | sort - cards"
+        },
+        {
+          "title": "Valid lookups followed by redemption",
+          "phase": "identification",
+          "spl": "index=web sourcetype=app:giftcard action IN (balance_check, redeem) result!=invalid | stats values(action) as actions min(_time) as first values(account_id) as accounts by card_hash | where mvcount(actions)=2 | convert ctime(first)"
+        },
+        {
+          "title": "Gift card endpoint traffic in the Web data model",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.uri_path=\"/api/giftcard/*\" by Web.src Web.http_user_agent Web.status _time span=5m"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-card-testing-checkout",
+      "name": "Card testing attack on checkout",
+      "summary": "Use when checkout or payment authorization sees bursts of small-value attempts with high decline rates, as stolen card numbers are validated through your payment flow.",
+      "tags": [
+        "fraud",
+        "card-testing",
+        "payments",
+        "checkout",
+        "bots"
+      ],
+      "attack": [
+        "T1657"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Monitor authorization decline rates and decline codes per merchant ID in real time",
+          "Enable the payment processor's card testing protections and velocity rules",
+          "Keep a contact at the acquirer for attack notification and fee disputes"
+        ],
+        "identification": [
+          "Chart authorization attempts, decline rate, and average amount per minute",
+          "Group attempts by BIN, IP, device fingerprint, and guest versus logged-in checkout",
+          "Identify the endpoint used, such as add-card, donation, or zero-dollar auth",
+          "List any approved test transactions that would later become chargebacks"
+        ],
+        "containment": [
+          "Turn on CAPTCHA or 3-D Secure for the targeted payment flow",
+          "Block the attacking BIN ranges, IPs, and device fingerprints temporarily",
+          "Raise the minimum order value or disable guest checkout during the attack"
+        ],
+        "eradication": [
+          "Void or refund approved test authorizations before they settle",
+          "Close the throwaway accounts created to run the tests",
+          "Remove unauthenticated card verification paths that were abused"
+        ],
+        "recovery": [
+          "Restore normal checkout rules after decline rates return to baseline",
+          "Report attack details and tested card ranges to the acquirer",
+          "Dispute excess authorization fees with the processor if allowed"
+        ],
+        "lessons": [
+          "Calculate fees and network fines risked by the attack",
+          "Add an alert for decline rate spikes per BIN",
+          "Review which payment endpoints lacked bot protection"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Authorization attempts and decline rate per minute",
+          "phase": "identification",
+          "spl": "index=payments sourcetype=psp:authorizations | timechart span=1m count as attempts count(eval(status=\"declined\")) as declines avg(amount) as avg_amount"
+        },
+        {
+          "title": "Card testing sources by BIN and device",
+          "phase": "identification",
+          "spl": "index=payments sourcetype=psp:authorizations status=declined | stats dc(card_fingerprint) as cards count by src_ip device_id card_bin | where cards > 10 | sort - cards"
+        },
+        {
+          "title": "Approved low-value auths during the attack window",
+          "phase": "eradication",
+          "spl": "index=payments sourcetype=psp:authorizations status=approved amount<5 src_ip IN (<attack_ips>) | table _time transaction_id amount card_bin account_id"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-promo-coupon-abuse-ring",
+      "name": "Promo and coupon abuse ring",
+      "summary": "Use when a promotion is being redeemed far above forecast by clusters of new accounts, leaked single-use codes, or scripted code guessing that shares devices and addresses.",
+      "tags": [
+        "fraud",
+        "promo-abuse",
+        "coupons",
+        "multi-accounting",
+        "marketing"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Log every promo redemption with account age, device fingerprint, and shipping address",
+          "Set per-device and per-address limits on new-customer promotions",
+          "Have marketing share promo terms and expected redemption volumes with fraud"
+        ],
+        "identification": [
+          "Compare redemptions per hour with the campaign's forecast",
+          "Cluster redeeming accounts by device ID, normalized address, and payment fingerprint",
+          "Check coupon sites and forums for leaked single-use or employee codes",
+          "Detect guessing by counting invalid code attempts per source"
+        ],
+        "containment": [
+          "Deactivate leaked codes and issue new ones to legitimate recipients",
+          "Hold unshipped orders from clustered accounts for review",
+          "Enforce one redemption per device and address at checkout"
+        ],
+        "eradication": [
+          "Cancel orders and revoke credit from accounts in confirmed abuse clusters",
+          "Ban the cluster's devices and payment fingerprints from future promos",
+          "Replace guessable code formats with long random codes"
+        ],
+        "recovery": [
+          "Relaunch the promotion with tightened eligibility rules",
+          "Honor redemptions for customers wrongly caught in the cluster",
+          "Report final promo cost versus budget to marketing"
+        ],
+        "lessons": [
+          "Measure abuse share of total promo redemptions",
+          "Add a pre-launch fraud review step to the campaign process",
+          "Track device-cluster detection precision"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Promo redemptions per device and address",
+          "phase": "identification",
+          "spl": "index=app sourcetype=app:orders promo_code=\"<promo_code>\" | eval addr=lower(replace(ship_address, \"[^a-zA-Z0-9]\", \"\")) | stats dc(account_id) as accounts by device_id addr | where accounts > 2 | sort - accounts"
+        },
+        {
+          "title": "Invalid promo code attempts by source",
+          "phase": "identification",
+          "spl": "index=web sourcetype=app:checkout event=promo_apply result=invalid | stats dc(promo_code) as codes count by src_ip device_id | where codes > 20"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-fake-account-creation-scale",
+      "name": "Fake customer accounts created at scale",
+      "summary": "Use when signups spike from scripted registration using disposable emails, VoIP numbers, or aliasing, to farm bonuses, spam, review fraud, or stage future abuse.",
+      "tags": [
+        "fraud",
+        "fake-accounts",
+        "signup",
+        "bots",
+        "abuse"
+      ],
+      "attack": [
+        "T1585"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Score signups using email domain age, disposable domain lists, and phone type",
+          "Rate limit and bot-protect the registration and email verification endpoints",
+          "Log registration with IP, ASN, device fingerprint, and form fill timing"
+        ],
+        "identification": [
+          "Chart signups per minute and the share using disposable or aliased emails",
+          "Cluster new accounts by device fingerprint, IP range, and name patterns",
+          "Identify what the accounts do next: promos, messaging, reviews, or listings",
+          "Check whether email or SMS verification is being completed automatically"
+        ],
+        "containment": [
+          "Add CAPTCHA and email or phone verification before account activation",
+          "Block disposable domains and the attacking ASNs at registration",
+          "Suspend clustered accounts before they act"
+        ],
+        "eradication": [
+          "Delete or disable confirmed fake accounts in bulk",
+          "Remove spam messages, reviews, or listings the accounts created",
+          "Revoke bonuses or credits granted on signup"
+        ],
+        "recovery": [
+          "Review appeals from legitimate users caught in the sweep",
+          "Remove temporary signup friction once rates normalize",
+          "Correct marketing and growth metrics inflated by fake signups"
+        ],
+        "lessons": [
+          "Measure fake account share of signups during the attack",
+          "Add a detection for form fill times below human thresholds",
+          "Decide whether signup bonuses should vest after real activity"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Signup rate and disposable email share",
+          "phase": "identification",
+          "spl": "index=app sourcetype=app:signup | eval disposable=if(match(email_domain, \"(?i)(mailinator|tempmail|guerrillamail)\\.example$\") OR disposable_flag=1,1,0) | timechart span=5m count sum(disposable) as disposable"
+        },
+        {
+          "title": "Accounts per device fingerprint at signup",
+          "phase": "identification",
+          "spl": "index=app sourcetype=app:signup earliest=-24h | stats dc(account_id) as accounts values(email_domain) as domains by device_id | where accounts > 5 | sort - accounts"
+        },
+        {
+          "title": "Registration endpoint traffic by ASN",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.uri_path=\"/register\" Web.http_method=POST by Web.src | iplocation Web.src | stats sum(count) as posts by Country Web.src | sort - posts"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-refund-fraud",
+      "name": "Refund fraud or refund-as-a-service abuse",
+      "summary": "Use when refunds are claimed for items reported not received, empty boxes, or returns of different items, often by organized refund services working on buyers' behalf.",
+      "tags": [
+        "fraud",
+        "refund-fraud",
+        "returns",
+        "customer-support",
+        "ecommerce"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Track refund rate, claim type, and carrier delivery proof per customer",
+          "Weigh return parcels at the warehouse and record weight against expected",
+          "Give support agents a refund risk score visible in the case tool"
+        ],
+        "identification": [
+          "List customers whose refund claims exceed peer thresholds in 90 days",
+          "Compare item-not-received claims against carrier GPS and photo delivery proof",
+          "Find shared scripts, phrasing, or contact numbers in support chats that suggest a refund service",
+          "Cluster claimants by device, address, and payment method"
+        ],
+        "containment": [
+          "Route claims from flagged customers to a specialist review queue",
+          "Require returned-item verification before refunding flagged accounts",
+          "Pause instant refunds for high-value SKUs being targeted"
+        ],
+        "eradication": [
+          "Close accounts confirmed to be part of refund fraud per terms of service",
+          "File carrier claims or law enforcement reports for organized rings",
+          "Update support macros to stop answering known refund-service scripts"
+        ],
+        "recovery": [
+          "Recover funds through chargeback representment or collections where possible",
+          "Re-enable instant refunds with risk-based limits",
+          "Brief support agents on the patterns observed"
+        ],
+        "lessons": [
+          "Calculate refund loss attributable to the ring",
+          "Add a detection for weight mismatches on returns",
+          "Review whether support incentives encouraged refunds without checks"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Customers with high refund claim counts",
+          "phase": "identification",
+          "spl": "index=app sourcetype=support:refunds earliest=-90d | stats count sum(amount) as total values(claim_type) as claim_types by account_id | where count >= 4 | sort - total"
+        },
+        {
+          "title": "Item-not-received claims with confirmed delivery",
+          "phase": "identification",
+          "spl": "index=app sourcetype=support:refunds claim_type=\"not_received\" | join order_id [search index=logistics sourcetype=carrier:tracking status=delivered | fields order_id delivery_photo gps_match] | where gps_match=\"true\" | table _time account_id order_id amount delivery_photo"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-support-desk-social-engineering",
+      "name": "Support desk socially engineered into handing over a customer account",
+      "summary": "Use when an attacker impersonates a customer to support by chat, phone, or email and gets the email, phone, or MFA changed, then takes over the account.",
+      "tags": [
+        "fraud",
+        "social-engineering",
+        "customer-support",
+        "ato",
+        "vishing"
+      ],
+      "attack": [
+        "T1656",
+        "T1598"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Define identity verification steps support must complete before changing contact details",
+          "Log every agent-initiated account change with agent ID and case number",
+          "Notify the old email and phone whenever support changes account contact details",
+          "Record support calls and retain chat transcripts for investigation"
+        ],
+        "identification": [
+          "Pull the support case, transcript, and recording that led to the change",
+          "Identify which verification steps the agent performed or skipped",
+          "Check for other cases from the same caller number, email, or chat IP",
+          "Review actions taken on the account after support handed over access"
+        ],
+        "containment": [
+          "Revert the email, phone, and MFA changes and lock the account",
+          "Flag the caller's identifiers in the support platform so they are blocked",
+          "Freeze balances, payouts, and orders on the account"
+        ],
+        "eradication": [
+          "Review all changes made by the same agent in the past 30 days for similar cases",
+          "Remove any devices the attacker registered after takeover",
+          "Close loopholes in verification scripts the attacker exploited"
+        ],
+        "recovery": [
+          "Restore the real customer's access after strong verification",
+          "Reimburse losses and apologize with a clear explanation",
+          "Coach the agent and team using the anonymized transcript"
+        ],
+        "lessons": [
+          "Measure how many attempts the attacker made before succeeding",
+          "Add a cooling-off period before high-risk actions after a support change",
+          "Track agent override rates of verification failures"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Agent-initiated contact detail changes",
+          "phase": "identification",
+          "spl": "index=app sourcetype=app:account_audit actor_type=agent event IN (\"email_change\", \"phone_change\", \"mfa_reset\") | stats count values(account_id) as accounts by agent_id case_channel | sort - count"
+        },
+        {
+          "title": "Support contacts from the attacker's identifiers",
+          "phase": "eradication",
+          "spl": "index=support sourcetype=support:cases (caller_number=\"<attacker_phone>\" OR contact_email=\"<attacker_email>\" OR chat_ip=<ioc_ip>) | table _time case_id account_id channel agent_id outcome"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-api-data-scraping",
+      "name": "Customer data scraped through a public or mobile API",
+      "summary": "Use when an API endpoint is enumerated to harvest customer profiles, contact details, or listings, often through an object ID or search endpoint lacking proper authorization.",
+      "tags": [
+        "fraud",
+        "scraping",
+        "api",
+        "bola",
+        "data-exposure"
+      ],
+      "attack": [
+        "T1119",
+        "T1213"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Log API requests with API key, account, endpoint, object ID, and response size",
+          "Enforce per-key and per-account rate limits on profile and search endpoints",
+          "Run authorization tests for object-level access on every API release"
+        ],
+        "identification": [
+          "Identify API keys or accounts requesting unusually many distinct object IDs",
+          "Check whether requested IDs are sequential, which signals enumeration",
+          "Confirm which fields the endpoint returned and whether any were private",
+          "Estimate the number of customer records retrieved"
+        ],
+        "containment": [
+          "Revoke the scraping API keys and suspend the associated accounts",
+          "Apply strict rate limits or temporarily disable the abused endpoint",
+          "Block scraping infrastructure IPs at the API gateway"
+        ],
+        "eradication": [
+          "Fix the authorization flaw so callers can only read objects they own",
+          "Remove private fields from public API responses",
+          "Replace sequential IDs with non-guessable identifiers"
+        ],
+        "recovery": [
+          "Deploy the fix and re-enable the endpoint behind monitoring",
+          "Send takedown requests where scraped data is published",
+          "Work with legal on customer and regulator notification for private fields"
+        ],
+        "lessons": [
+          "Add a detection on distinct object IDs per key per hour",
+          "Include the endpoint in an API security testing backlog",
+          "Review whether the mobile app exposed undocumented endpoints"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Distinct object IDs requested per API key",
+          "phase": "identification",
+          "spl": "index=api sourcetype=apigw:access uri_path=\"/v1/users/*\" | rex field=uri_path \"/v1/users/(?<obj_id>\\d+)\" | bin _time span=1h | stats dc(obj_id) as ids sum(bytes_out) as bytes by _time api_key src_ip | where ids > 500"
+        },
+        {
+          "title": "API traffic volume by client",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count sum(Web.bytes_out) as bytes from datamodel=Web where Web.site=\"api.shop.example\" by Web.src Web.http_user_agent | sort - count | head 50"
+        },
+        {
+          "title": "Unauthorized object access responses after the fix",
+          "phase": "recovery",
+          "spl": "index=api sourcetype=apigw:access uri_path=\"/v1/users/*\" status IN (403, 404) | timechart span=15m count by api_key limit=10"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-fraudulent-password-resets",
+      "name": "Fraudulent password resets on customer accounts",
+      "summary": "Use when attackers abuse the forgot-password flow through weak security questions, reset link leakage, host header poisoning, or compromised customer email to take over accounts.",
+      "tags": [
+        "fraud",
+        "password-reset",
+        "ato",
+        "account-recovery",
+        "web"
+      ],
+      "attack": [
+        "T1098",
+        "T1078"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Log reset requests, token issuance, and token use with IP and device",
+          "Make reset tokens single-use, short-lived, and bound to the requesting session",
+          "Notify customers on every completed password reset"
+        ],
+        "identification": [
+          "Chart reset requests and completions per hour against baseline",
+          "Find resets completed from a different IP or device than the request",
+          "Test whether the reset flow honors a spoofed Host or X-Forwarded-Host header",
+          "Check whether victim email providers or inboxes were compromised first"
+        ],
+        "containment": [
+          "Invalidate all outstanding reset tokens",
+          "Lock accounts reset by attacker infrastructure and revoke sessions",
+          "Add step-up verification to the reset flow for risky requests"
+        ],
+        "eradication": [
+          "Fix any reset link generation that trusts client-supplied host headers",
+          "Retire knowledge-based security questions as a sole reset factor",
+          "Remove attacker devices and contact changes from affected accounts"
+        ],
+        "recovery": [
+          "Help customers regain access through verified email or identity check",
+          "Reverse orders or transfers made after the fraudulent reset",
+          "Monitor reset completion ratios after the fix"
+        ],
+        "lessons": [
+          "Record how the reset flow was abused and add a regression test",
+          "Add a detection for reset completion from a new device and country",
+          "Track the share of customers with a second recovery factor"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Reset requested and completed from different IPs",
+          "phase": "identification",
+          "spl": "index=app sourcetype=app:password_reset event IN (requested, completed) | stats values(eval(if(event=\"requested\", src_ip, null()))) as req_ip values(eval(if(event=\"completed\", src_ip, null()))) as done_ip by reset_token_id account_id | where isnotnull(done_ip) AND req_ip!=done_ip"
+        },
+        {
+          "title": "Reset links generated with unexpected host headers",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.uri_path=\"/forgot-password\" Web.http_method=POST by Web.src Web.dest Web.site | where 'Web.site'!=\"www.shop.example\""
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-payment-method-change-hijacked",
+      "name": "Payment or payout method changed on hijacked accounts",
+      "summary": "Use when attackers add cards, bank accounts, or wallets to taken-over customer accounts, or redirect seller or creator payouts to accounts they control.",
+      "tags": [
+        "fraud",
+        "payout-fraud",
+        "payments",
+        "ato",
+        "banking"
+      ],
+      "attack": [
+        "T1657",
+        "T1098"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Require step-up verification for adding or changing payout and payment methods",
+          "Hold the first payout to a newly added bank account for a review period",
+          "Notify customers by email and push when payment details change"
+        ],
+        "identification": [
+          "List accounts with payout destination changes in the attack window",
+          "Find bank accounts or wallets added to multiple unrelated customer accounts",
+          "Check whether changes followed new-device logins or contact detail changes",
+          "Identify payouts already sent to the new destinations"
+        ],
+        "containment": [
+          "Freeze pending payouts to the suspicious destinations",
+          "Revert payout methods to the last verified destination",
+          "Lock affected accounts and revoke sessions"
+        ],
+        "eradication": [
+          "Block the attacker bank accounts and wallets platform-wide",
+          "Request recalls of sent payouts through the payout provider",
+          "Report mule accounts to the receiving bank's fraud team"
+        ],
+        "recovery": [
+          "Pay customers the amounts that were misdirected per policy",
+          "Restore access after verification and enrollment in MFA",
+          "Release legitimate payouts held during the freeze"
+        ],
+        "lessons": [
+          "Measure time between payout change and first payout",
+          "Add detection for a bank account shared across many customers",
+          "Review whether payout change notifications reached customers"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Payout destinations shared by many accounts",
+          "phase": "identification",
+          "spl": "index=app sourcetype=app:account_audit event IN (\"payout_method_add\", \"payout_method_change\") | stats dc(account_id) as accounts values(account_id) as ids by payout_fingerprint | where accounts > 1 | sort - accounts"
+        },
+        {
+          "title": "Payout changes following new-device logins",
+          "phase": "identification",
+          "spl": "index=app sourcetype=app:account_audit event=\"payout_method_change\" | join account_id [search index=app sourcetype=app:auth result=success new_device=true | stats latest(_time) as login_time by account_id] | where _time - login_time < 3600 | table _time account_id payout_fingerprint login_time"
+        },
+        {
+          "title": "Payouts sent to flagged destinations",
+          "phase": "eradication",
+          "spl": "index=payments sourcetype=payouts:events payout_fingerprint IN (<flagged_fingerprints>) status IN (sent, pending) | table _time payout_id account_id amount status"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-marketplace-seller-ato",
+      "name": "Marketplace seller account takeover",
+      "summary": "Use when a third-party seller's account on your marketplace is taken over to change payout details, list fake bargain items, or message buyers off-platform.",
+      "tags": [
+        "fraud",
+        "marketplace",
+        "seller",
+        "ato",
+        "listings"
+      ],
+      "attack": [
+        "T1078",
+        "T1656"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Require MFA for seller accounts and seller API keys",
+          "Hold seller payouts after bank detail changes until verified",
+          "Monitor sudden listing changes such as price drops and new categories"
+        ],
+        "identification": [
+          "Review seller logins, API key creation, and contact detail changes",
+          "Find newly created or edited listings with prices far below market",
+          "Check buyer messages for links or contact details pushing off-platform payment",
+          "List orders placed against the hijacked listings"
+        ],
+        "containment": [
+          "Suspend new listings and the seller's ability to message buyers",
+          "Freeze payouts and revert payout details to the verified bank account",
+          "Revoke seller sessions and API keys"
+        ],
+        "eradication": [
+          "Remove fraudulent listings and restore original catalog data",
+          "Warn buyers who received off-platform payment messages",
+          "Block attacker devices and IPs across seller and buyer accounts"
+        ],
+        "recovery": [
+          "Refund buyers of fraudulent orders under marketplace guarantee",
+          "Restore the seller's account after verification and MFA enrollment",
+          "Reinstate seller ratings affected by fraudulent orders"
+        ],
+        "lessons": [
+          "Track how many sellers lack MFA and push enrollment",
+          "Add detection for listing price drops above a threshold",
+          "Review buyer messaging filters for off-platform contact details"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Seller account security changes",
+          "phase": "identification",
+          "spl": "index=app sourcetype=seller:audit seller_id=<seller_id> event IN (\"login\", \"api_key_create\", \"email_change\", \"bank_change\", \"mfa_disable\") | table _time event src_ip device_id user_agent"
+        },
+        {
+          "title": "Listings with large price drops",
+          "phase": "identification",
+          "spl": "index=app sourcetype=catalog:changes field=price | eval drop=round((old_value-new_value)/old_value*100,0) | where drop > 50 | stats count values(listing_id) as listings by seller_id | sort - count"
+        },
+        {
+          "title": "Buyer messages with off-platform contact patterns",
+          "phase": "eradication",
+          "spl": "index=app sourcetype=messaging:events sender_id=<seller_id> | regex body=\"(?i)(whatsapp|telegram|wire transfer|https?://)\" | table _time recipient_id conversation_id"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-brand-phishing-site",
+      "name": "Phishing site impersonating your brand targets customers",
+      "summary": "Use when a lookalike domain or cloned login page is harvesting your customers' credentials or payment data, discovered via referrer logs, brand monitoring, or customer reports.",
+      "tags": [
+        "fraud",
+        "phishing",
+        "brand-protection",
+        "takedown",
+        "lookalike-domain"
+      ],
+      "attack": [
+        "T1583.001",
+        "T1566.002",
+        "T1656"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Monitor new domain registrations and certificate transparency logs for brand lookalikes",
+          "Embed canary assets or referrer checks so cloned pages show up in web logs",
+          "Keep a takedown vendor or registrar abuse contacts ready",
+          "Set up DMARC enforcement so the phishing cannot spoof your sending domain"
+        ],
+        "identification": [
+          "Capture the phishing page screenshot, URL, hosting IP, and registrar details",
+          "Search web logs for requests with the phishing domain as referrer",
+          "Identify customer accounts that logged in from the phishing site's backend IPs",
+          "Determine how the lure is delivered: SMS, email, search ads, or social media"
+        ],
+        "containment": [
+          "Submit takedown requests to the registrar, host, and certificate authority",
+          "Report the URL to browser safe-browsing services and email providers",
+          "Force password reset for customers seen authenticating from phishing infrastructure",
+          "Block the backend IPs from logging into customer accounts"
+        ],
+        "eradication": [
+          "Confirm the site is down and track any mirror domains that appear",
+          "Request removal of fraudulent search ads using your trademark",
+          "Disable canary-asset hotlinking from the cloned page"
+        ],
+        "recovery": [
+          "Publish a customer notice on known phishing and how to spot it",
+          "Reimburse confirmed fraud losses per policy",
+          "Continue monitoring for re-registration of similar domains"
+        ],
+        "lessons": [
+          "Measure time from site launch to takedown",
+          "Register high-risk lookalike domains defensively",
+          "Add a detection for logins from IPs seen loading the phishing site"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Requests referred from the phishing domain",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.http_referrer=\"*<phish_domain>*\" by Web.src Web.uri_path Web.http_referrer"
+        },
+        {
+          "title": "Customer logins from phishing backend IPs",
+          "phase": "containment",
+          "spl": "index=web sourcetype=app:auth app=customer-portal src_ip IN (<phish_backend_ips>) | stats count values(result) as results by username src_ip | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-fake-mobile-app-impersonation",
+      "name": "Fake mobile app impersonating your brand",
+      "summary": "Use when a counterfeit app using your name or logo appears in an app store or sideload site and collects customer logins, payment data, or pushes malware.",
+      "tags": [
+        "fraud",
+        "fake-app",
+        "brand-protection",
+        "mobile",
+        "takedown"
+      ],
+      "attack": [
+        "T1655",
+        "T1656"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Monitor Google Play, the App Store, and third-party stores for apps using your brand",
+          "Register trademarks so store intellectual property complaints can be filed fast",
+          "Use app attestation so your API can tell your genuine app from clones"
+        ],
+        "identification": [
+          "Record the fake app's store listing, developer name, package ID, and install count",
+          "Analyze the app in a sandbox to find credential capture or backend endpoints",
+          "Check API logs for requests with the fake app's package ID or failed attestation",
+          "Identify customer accounts that logged in through the fake app"
+        ],
+        "containment": [
+          "File impersonation and IP complaints with the app store",
+          "Block API requests that fail app attestation or use the clone's signature",
+          "Reset credentials for customers who used the fake app"
+        ],
+        "eradication": [
+          "Request takedown of the backend domains the fake app talks to",
+          "Report sideload hosting sites to their providers",
+          "Rotate any API keys the fake app extracted from your genuine app"
+        ],
+        "recovery": [
+          "Tell customers which app is official and link to the genuine listing",
+          "Confirm the fake listing is removed and watch for re-uploads",
+          "Reimburse losses for customers defrauded through the app"
+        ],
+        "lessons": [
+          "Measure installs before takedown and time to removal",
+          "Add brand monitoring alerts for new developer accounts using your name",
+          "Review whether embedded secrets in your app helped the clone"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "API calls from non-genuine app builds",
+          "phase": "identification",
+          "spl": "index=api sourcetype=apigw:access (app_package!=\"com.shop.example\" OR attestation_result!=\"pass\") | stats count dc(account_id) as accounts by app_package app_signature attestation_result"
+        },
+        {
+          "title": "Customers logging in through the fake app",
+          "phase": "containment",
+          "spl": "index=web sourcetype=app:auth client_package=\"<fake_package_id>\" result=success | stats min(_time) as first by username src_ip | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-chargeback-spike",
+      "name": "Sudden spike in chargebacks",
+      "summary": "Use when chargeback or dispute counts jump above normal, risking card network monitoring programs, and the cause could be stolen cards, friendly fraud, or a billing problem.",
+      "tags": [
+        "fraud",
+        "chargebacks",
+        "payments",
+        "disputes",
+        "card-networks"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Report chargeback ratio per merchant ID daily against network thresholds",
+          "Store order evidence such as IP, device, delivery proof, and 3-D Secure results",
+          "Keep a clear billing descriptor and customer service contact on statements"
+        ],
+        "identification": [
+          "Break disputes down by reason code, BIN country, product, and order date",
+          "Check whether disputed orders share devices, IPs, or shipping addresses",
+          "Rule out a billing bug such as duplicate charges or unclear subscription renewals",
+          "Compare the dispute timeline with known card testing or ATO incidents"
+        ],
+        "containment": [
+          "Turn on 3-D Secure for the risky BINs, products, or regions driving disputes",
+          "Hold shipment of orders matching the fraud pattern for manual review",
+          "Refund likely-fraudulent recent orders before they become chargebacks"
+        ],
+        "eradication": [
+          "Block the devices, cards, and addresses linked to fraud disputes",
+          "Fix billing descriptors or renewal emails if friendly fraud is the cause",
+          "Close accounts confirmed to be part of the fraud pattern"
+        ],
+        "recovery": [
+          "Submit representment evidence for disputes that can be won",
+          "Inform the acquirer of the remediation plan if near a monitoring threshold",
+          "Track the chargeback ratio daily until it is back under target"
+        ],
+        "lessons": [
+          "Measure dispute loss and fees for the period",
+          "Add an alert when the daily dispute ratio crosses an internal threshold",
+          "Review whether fraud screening rules missed the pattern"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Disputes by reason code and BIN country",
+          "phase": "identification",
+          "spl": "index=payments sourcetype=psp:disputes earliest=-30d | stats count sum(amount) as amount by reason_code card_country | sort - count"
+        },
+        {
+          "title": "Daily chargeback ratio",
+          "phase": "recovery",
+          "spl": "index=payments (sourcetype=psp:disputes OR sourcetype=psp:authorizations status=approved) earliest=-60d | eval kind=if(sourcetype=\"psp:disputes\", \"dispute\", \"sale\") | timechart span=1d count(eval(kind=\"dispute\")) as disputes count(eval(kind=\"sale\")) as sales | eval ratio_pct=round(disputes/sales*100,2)"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-crypto-withdrawal-hijacked",
+      "name": "Crypto withdrawals from hijacked customer accounts",
+      "summary": "Use when a crypto exchange or wallet platform sees taken-over customer accounts whitelisting new addresses and withdrawing assets, often after API key creation or MFA reset.",
+      "tags": [
+        "fraud",
+        "crypto",
+        "withdrawal",
+        "ato",
+        "exchange"
+      ],
+      "attack": [
+        "T1657",
+        "T1078"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Apply a time lock after new withdrawal address whitelisting or security setting changes",
+          "Require hardware key or passkey confirmation for withdrawals above limits",
+          "Subscribe to a blockchain analytics service for address risk and tracing",
+          "Keep contacts at other exchanges for freeze requests"
+        ],
+        "identification": [
+          "List accounts that added withdrawal addresses or created API keys from new devices",
+          "Trace withdrawal transactions on-chain to destination clusters",
+          "Check whether withdrawals followed MFA reset, email change, or support interaction",
+          "Identify the attacker's common destination addresses across victims"
+        ],
+        "containment": [
+          "Pause withdrawals for accounts showing the takeover pattern",
+          "Disable API keys created during the attack window",
+          "Block the destination addresses platform-wide"
+        ],
+        "eradication": [
+          "Remove attacker-added whitelist addresses and devices from accounts",
+          "Request freezes from exchanges where funds landed, with transaction hashes",
+          "Report the theft to law enforcement with on-chain tracing evidence"
+        ],
+        "recovery": [
+          "Restore account access after identity verification and new MFA",
+          "Decide on customer reimbursement per terms and insurance",
+          "Lift withdrawal pauses once each account is verified"
+        ],
+        "lessons": [
+          "Quantify assets lost and frozen",
+          "Add detection for whitelist changes followed by max withdrawals",
+          "Review whether the address time lock was long enough"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Whitelist additions followed by withdrawals",
+          "phase": "identification",
+          "spl": "index=app sourcetype=exchange:audit event IN (\"address_whitelist_add\", \"withdrawal_request\") | stats values(event) as events min(_time) as first max(_time) as last sum(amount_usd) as usd by account_id | where mvcount(events)=2 AND last-first < 86400 | sort - usd"
+        },
+        {
+          "title": "Common destination addresses across accounts",
+          "phase": "identification",
+          "spl": "index=app sourcetype=exchange:withdrawals status IN (sent, pending) earliest=-7d | stats dc(account_id) as victims sum(amount_usd) as usd by dest_address asset | where victims > 1 | sort - usd"
+        },
+        {
+          "title": "API keys created from new devices",
+          "phase": "containment",
+          "spl": "index=app sourcetype=exchange:audit event=\"api_key_create\" new_device=true | table _time account_id key_id permissions src_ip device_id"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-account-sharing-resale",
+      "name": "Account sharing and resale of customer accounts",
+      "summary": "Use when subscription or premium accounts are shared beyond terms or resold on marketplaces, shown by many concurrent devices, geographies, or bulk-created premium accounts.",
+      "tags": [
+        "fraud",
+        "account-sharing",
+        "subscription",
+        "resale",
+        "abuse"
+      ],
+      "attack": [],
+      "severity": "Low",
+      "tasks": {
+        "preparation": [
+          "Track concurrent sessions and distinct devices per account",
+          "Define the sharing limits in terms of service and the enforcement steps",
+          "Monitor resale marketplaces and forums for listings of your accounts"
+        ],
+        "identification": [
+          "Identify accounts with concurrent streams or sessions from distant locations",
+          "Find accounts with device counts far above the plan limit",
+          "Match accounts against resale listings using trial patterns or credentials posted",
+          "Check whether resold accounts were obtained by ATO or by stolen payment cards"
+        ],
+        "containment": [
+          "Enforce concurrent session limits on flagged accounts",
+          "Sign out all devices on accounts confirmed as resold",
+          "Report resale listings to the marketplace hosting them"
+        ],
+        "eradication": [
+          "Return taken-over accounts to their real owners with a forced reset",
+          "Cancel accounts paid for with stolen cards and refund cardholders",
+          "Block bulk-creation payment fingerprints tied to resellers"
+        ],
+        "recovery": [
+          "Offer legitimate sharers an upgrade path to family or multi-seat plans",
+          "Monitor complaints from customers affected by enforcement",
+          "Relax concurrent session enforcement for accounts cleared on appeal"
+        ],
+        "lessons": [
+          "Estimate revenue lost to sharing and resale",
+          "Add a detection for impossible-travel concurrent sessions per account",
+          "Decide whether device limits should be tightened per plan"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Accounts with many devices and countries",
+          "phase": "identification",
+          "spl": "index=app sourcetype=app:sessions earliest=-7d | iplocation src_ip | stats dc(device_id) as devices dc(Country) as countries by account_id plan | where devices > 10 OR countries > 3 | sort - devices"
+        },
+        {
+          "title": "Concurrent sessions per account",
+          "phase": "identification",
+          "spl": "index=app sourcetype=app:sessions event=heartbeat | bin _time span=5m | stats dc(device_id) as concurrent by _time account_id | where concurrent > 4 | stats max(concurrent) as peak by account_id"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-bot-limited-item-purchase",
+      "name": "Bots buying up tickets or limited-release items",
+      "summary": "Use when scalper bots buy most of a ticket drop or limited product release, shown by checkout bursts, queue bypass, many accounts per payment instrument, or resale listings minutes later.",
+      "tags": [
+        "fraud",
+        "bots",
+        "scalping",
+        "checkout",
+        "limited-release"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Put a virtual waiting room and bot management in front of drop pages and checkout",
+          "Set per-customer, per-card, and per-address purchase limits for limited items",
+          "Pre-agree with merchandising when orders may be cancelled for bot activity"
+        ],
+        "identification": [
+          "Measure time from drop start to checkout for each order",
+          "Find orders that bypassed the waiting room or called checkout APIs directly",
+          "Cluster buyers by payment fingerprint, address variations, and device",
+          "Check resale marketplaces for listings that appeared during the drop"
+        ],
+        "containment": [
+          "Raise bot challenge levels on checkout and add-to-cart endpoints",
+          "Hold fulfillment of orders in suspicious clusters",
+          "Block direct API calls that skip the queue token"
+        ],
+        "eradication": [
+          "Cancel bot-driven orders and release inventory back to the queue",
+          "Ban accounts and payment fingerprints confirmed as bots",
+          "Fix the queue bypass so checkout requires a valid waiting room token"
+        ],
+        "recovery": [
+          "Re-sell released inventory through a verified fan or raffle process",
+          "Communicate with customers about fair access measures",
+          "Return waiting room and bot challenge settings to normal after the drop closes"
+        ],
+        "lessons": [
+          "Measure bot share of purchases during the drop",
+          "Add pre-drop load and bot testing to the release checklist",
+          "Review address normalization so variants are caught"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Checkout speed after drop start",
+          "phase": "identification",
+          "spl": "index=app sourcetype=app:orders sku IN (<limited_skus>) | eval secs_after_drop=_time-strptime(\"<drop_time>\", \"%Y-%m-%dT%H:%M:%S\") | stats count by account_id device_id secs_after_drop | where secs_after_drop < 10"
+        },
+        {
+          "title": "Checkout requests without a queue token",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.uri_path=\"/api/checkout\" Web.http_method=POST by Web.src Web.http_user_agent | join type=left Web.src [search index=web sourcetype=waitingroom:events event=token_issued | rename src_ip as Web.src | stats count as tokens by Web.src] | where isnull(tokens)"
+        },
+        {
+          "title": "Orders per payment fingerprint",
+          "phase": "eradication",
+          "spl": "index=app sourcetype=app:orders sku IN (<limited_skus>) | stats dc(account_id) as accounts sum(quantity) as units by card_fingerprint | where accounts > 2 | sort - units"
+        }
+      ]
+    },
+    {
+      "id": "lib-consumer-fraud-synthetic-identity-onboarding",
+      "name": "Synthetic identities passing customer onboarding",
+      "summary": "Use when KYC or credit onboarding approves applicants built from mixed real and fake identity data, often surfaced by bust-out losses, shared SSNs or phones, or document verification gaps.",
+      "tags": [
+        "fraud",
+        "synthetic-identity",
+        "kyc",
+        "onboarding",
+        "credit"
+      ],
+      "attack": [
+        "T1585"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Use document verification with liveness checks for regulated onboarding",
+          "Check identity attributes against consortium data and SSA eCBSV where available",
+          "Log all onboarding attributes and verification vendor results for later linkage"
+        ],
+        "identification": [
+          "Link approved applicants that share SSNs, phones, emails, addresses, or devices",
+          "Find identities with thin credit files that grew quickly and then maxed out",
+          "Review document verification results for template reuse or edited images",
+          "Estimate exposure: credit lines, balances, and pending transactions"
+        ],
+        "containment": [
+          "Freeze credit lines and outbound transfers on linked suspect accounts",
+          "Pause automated approvals for the onboarding segment being abused",
+          "Flag the shared attributes so new applications using them go to manual review"
+        ],
+        "eradication": [
+          "Close confirmed synthetic accounts and file suspicious activity reports as required",
+          "Report synthetic identities to credit bureaus and fraud consortiums",
+          "Tune onboarding rules to reject the identified attribute patterns"
+        ],
+        "recovery": [
+          "Resume automated approvals with the new linkage checks in place",
+          "Handle real individuals whose SSNs were misused and correct their records",
+          "Charge off unrecoverable balances and record them as fraud losses"
+        ],
+        "lessons": [
+          "Quantify losses and how long synthetic accounts aged before bust-out",
+          "Add a graph detection for attributes shared across approved customers",
+          "Review vendor verification performance on the confirmed cases"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Approved applicants sharing identity attributes",
+          "phase": "identification",
+          "spl": "index=onboarding sourcetype=kyc:applications decision=approved | stats dc(customer_id) as customers values(customer_id) as ids by ssn_hash | where customers > 1 | append [search index=onboarding sourcetype=kyc:applications decision=approved | stats dc(customer_id) as customers values(customer_id) as ids by phone_hash | where customers > 2]"
+        },
+        {
+          "title": "Rapid credit utilization after account aging",
+          "phase": "identification",
+          "spl": "index=lending sourcetype=credit:accounts | eval age_days=round((now()-open_time)/86400) | where utilization_pct > 90 AND age_days < 365 | table customer_id age_days credit_limit balance utilization_pct"
+        },
+        {
+          "title": "Document verification results with reused templates",
+          "phase": "eradication",
+          "spl": "index=onboarding sourcetype=idv:results | stats dc(customer_id) as customers by document_template_hash result | where customers > 3"
+        }
+      ]
+    }
+  ]
+}

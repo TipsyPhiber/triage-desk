@@ -96,7 +96,7 @@ export function IocExtractor({ sev, onAppend, onExtracted }) {
             placeholder="Paste a log line, alert payload, or phishing email here."
             aria-label="IOC extractor input"
             rows={5}
-            className="w-full bg-canvas border border-line-2 rounded-lg p-3 text-[12.5px] leading-relaxed text-ink placeholder-ink-4 outline-none focus:border-ink-3 resize-y font-mono"
+            className="w-full bg-canvas border border-line-2 rounded-lg p-3 text-[12.5px] leading-relaxed text-ink placeholder-ink-4 outline-none focus:border-signal resize-y font-mono"
           />
 
           <div className="flex items-center gap-2">
@@ -114,7 +114,7 @@ export function IocExtractor({ sev, onAppend, onExtracted }) {
           </div>
 
           {error && (
-            <div className="text-sm text-rose-300 border border-rose-500/30 bg-rose-500/10 rounded-lg px-3 py-2">{error}</div>
+            <div className="text-sm text-danger border border-danger/30 bg-danger/10 rounded-lg px-3 py-2">{error}</div>
           )}
 
           {grouped && results.length === 0 && !error && (

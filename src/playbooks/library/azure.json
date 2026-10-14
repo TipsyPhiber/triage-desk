@@ -1,0 +1,1623 @@
+{
+  "category": {
+    "id": "azure",
+    "name": "Azure",
+    "description": "Incidents in Azure resources: storage, Key Vault, compute, AKS, App Service, monitoring and subscription-level control plane abuse."
+  },
+  "playbooks": [
+    {
+      "id": "lib-azure-storage-public-sas-leak",
+      "name": "Storage account exposed by public container or leaked SAS token",
+      "summary": "Use when a blob container was found with anonymous access enabled, or an account-level SAS token or storage key appears in a repo, ticket, paste site, or client-side code.",
+      "tags": [
+        "azure",
+        "storage",
+        "sas-token",
+        "data-exposure",
+        "secrets"
+      ],
+      "attack": [
+        "T1530",
+        "T1552.001",
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable StorageRead, StorageWrite and StorageDelete diagnostic logs on every storage account to Log Analytics or Event Hub",
+          "Assign Azure Policy to deny allowBlobPublicAccess=true and audit allowSharedKeyAccess on storage accounts",
+          "Keep an inventory of which apps legitimately issue SAS tokens and their expected expiry and permissions",
+          "Confirm the IR role can run az storage account keys renew and rotate user delegation keys"
+        ],
+        "identification": [
+          "Parse the leaked SAS token for sv, ss, srt, sp, se and sip to learn scope, permissions and expiry",
+          "Determine whether the SAS is account-level, service-level, or user-delegation by its signing key (skoid present or not)",
+          "List containers with publicAccess set to blob or container using az storage container list --query",
+          "Search StorageBlobLogs for AuthenticationType SAS or Anonymous from IPs outside the known app ranges",
+          "Identify where the token was published and the earliest timestamp it was publicly reachable"
+        ],
+        "containment": [
+          "Set publicAccess to off on exposed containers and disable allowBlobPublicAccess on the account",
+          "Rotate the storage account key that signed the leaked SAS (key1 or key2) to invalidate every token it issued",
+          "Revoke user delegation keys with az storage account revoke-delegation-keys if the SAS was user-delegation",
+          "Restrict the account network rules to selected VNets and trusted IPs while apps are re-keyed"
+        ],
+        "eradication": [
+          "Remove the token or key from the repo history, paste, or ticket and request takedown where third-party hosted",
+          "Replace hard-coded SAS in client code with short-lived user-delegation SAS issued by a backend",
+          "Update every app connection string that used the rotated key, sourcing it from Key Vault references"
+        ],
+        "recovery": [
+          "Verify apps reconnect after key rotation by checking 403 rates in StorageBlobLogs",
+          "Re-enable public access only for containers with a documented business need and static public content",
+          "Compare blob inventory against a pre-incident inventory to confirm no blobs were overwritten or added"
+        ],
+        "lessons": [
+          "Add a detection for anonymous GetBlob or ListBlobs on accounts that are not tagged as public content",
+          "Record which data classifications were readable and feed the count into the privacy impact assessment",
+          "Evaluate disabling shared key authorization so only Entra-authorized access and user-delegation SAS remain",
+          "Add secret scanning for sig= and AccountKey= patterns in source control pre-commit and CI"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Anonymous and SAS blob reads by caller IP",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=StorageRead properties.accountName=<storage_account> (properties.authenticationType=SAS OR properties.authenticationType=Anonymous) | stats count sum(properties.responseBodySize) as bytes values(operationName) as ops by callerIpAddress, properties.authenticationType | sort - bytes"
+        },
+        {
+          "title": "Storage key regeneration and public access changes",
+          "phase": "containment",
+          "spl": "index=azure sourcetype=azure:monitor:activity (operationName.value=\"Microsoft.Storage/storageAccounts/regenerateKey/action\" OR operationName.value=\"Microsoft.Storage/storageAccounts/write\" OR operationName.value=\"Microsoft.Storage/storageAccounts/listKeys/action\") resourceId=\"*<storage_account>*\" | table _time caller operationName.value status.value resourceId"
+        },
+        {
+          "title": "First and last use of the leaked SAS signature",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=StorageRead properties.accountName=<storage_account> uri=\"*sig=*\" | rex field=uri \"se=(?<sas_expiry>[^&]+)\" | stats min(_time) as first max(_time) as last dc(callerIpAddress) as ips by sas_expiry | convert ctime(first) ctime(last)"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-storage-mass-download",
+      "name": "Mass blob download from a storage account",
+      "summary": "Use when egress or GetBlob volume from a storage account spikes far above baseline, suggesting bulk exfiltration with a valid key, SAS, or Entra identity.",
+      "tags": [
+        "azure",
+        "storage",
+        "exfiltration",
+        "data-theft"
+      ],
+      "attack": [
+        "T1530",
+        "T1567",
+        "T1048"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Baseline daily Egress and Transactions metrics per storage account in Azure Monitor",
+          "Create a metric alert on Egress greater than three times the 14-day average for sensitive accounts",
+          "Tag storage accounts with data classification so responders can prioritize which spikes matter",
+          "Retain StorageBlobLogs for at least 90 days to reconstruct object-level access"
+        ],
+        "identification": [
+          "Chart the Egress metric for the account to bound the start and end of the spike",
+          "Group StorageBlobLogs GetBlob events by requesterObjectId, callerIpAddress and userAgentHeader",
+          "Check whether the user agent is AzCopy, Storage Explorer, rclone or a custom SDK client",
+          "Build the list of container and blob paths read during the window and their classification",
+          "Correlate the requesterObjectId with Entra sign-ins or service principal activity in the same window"
+        ],
+        "containment": [
+          "Remove the RBAC data-plane role (Storage Blob Data Reader or higher) from the identity performing the download",
+          "Rotate account keys if the access used SharedKey authentication",
+          "Add a firewall rule denying the destination caller IPs and switch default action to Deny"
+        ],
+        "eradication": [
+          "Disable or reset the credentials of the identity that performed the download",
+          "Remove any lifecycle, replication, or object replication policy that copies data to an unknown account",
+          "Delete any stored access policies on containers that were created during the incident window"
+        ],
+        "recovery": [
+          "Re-grant data-plane access only to identities that still need it, scoped to specific containers",
+          "Enable private endpoints for the account and remove public network access where feasible",
+          "Monitor Egress for two weeks after closure to confirm it returns to baseline"
+        ],
+        "lessons": [
+          "Measure time from egress spike to alert acknowledgement and tune the threshold",
+          "Assess whether Defender for Storage would have flagged the unusual data extraction",
+          "Document the exact blob list exposed and hand it to legal for notification analysis"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Top downloaders by bytes from a storage account",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=StorageRead operationName=GetBlob properties.accountName=<storage_account> | eval mb=round('properties.responseBodySize'/1048576,1) | stats sum(mb) as total_mb count as reads dc(uri) as blobs values(properties.userAgentHeader) as ua by callerIpAddress, identity.requester.objectId | sort - total_mb"
+        },
+        {
+          "title": "Hourly GetBlob volume to bound the exfil window",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=StorageRead operationName=GetBlob properties.accountName=<storage_account> | timechart span=1h count sum(properties.responseBodySize) as bytes"
+        },
+        {
+          "title": "RBAC data-plane role assignments on the account",
+          "phase": "containment",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value=\"Microsoft.Authorization/roleAssignments/write\" resourceId=\"*<storage_account>*\" | table _time caller properties.requestbody status.value"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-vm-run-command-abuse",
+      "name": "VM Run Command used to execute code on Azure VMs",
+      "summary": "Use when Activity Log shows runCommand actions or the Custom Script Extension deployed on VMs by an unexpected identity, indicating remote code execution through the control plane.",
+      "tags": [
+        "azure",
+        "vm",
+        "execution",
+        "control-plane"
+      ],
+      "attack": [
+        "T1651",
+        "T1059.001",
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Send Activity Log for all subscriptions to the SIEM and alert on virtualMachines/runCommand/action",
+          "Restrict Virtual Machine Contributor and custom roles that include runCommand to a small admin group",
+          "Ensure Defender for Servers or EDR is onboarded so in-guest execution is recorded"
+        ],
+        "identification": [
+          "List runCommand/action and extensions/write operations by caller and target VM in Activity Log",
+          "Retrieve the script content from C:\\Packages\\Plugins\\Microsoft.CPlat.Core.RunCommandWindows on Windows guests",
+          "Check /var/lib/waagent/run-command/download on Linux guests for the executed script and output",
+          "Determine whether the caller is a user, service principal, or managed identity and where it signed in from",
+          "Review EDR process trees under the guest agent for child processes spawned by the script"
+        ],
+        "containment": [
+          "Remove the caller's role assignment that grants Microsoft.Compute/virtualMachines/runCommand/action",
+          "Isolate affected VMs with an NSG deny rule or Defender for Endpoint device isolation",
+          "Delete any managed run command resources (runCommands/write) left attached to the VM"
+        ],
+        "eradication": [
+          "Remove persistence created by the script such as new local users, scheduled tasks, or cron entries",
+          "Uninstall any Custom Script Extension added during the incident with az vm extension delete",
+          "Reset local admin credentials on affected VMs via the VMAccess extension from a trusted admin"
+        ],
+        "recovery": [
+          "Rebuild VMs from a known-good image if the script installed tooling you cannot fully enumerate",
+          "Re-enable network access only after EDR scans of the guest come back clean",
+          "Confirm no further runCommand events occur from the removed identity"
+        ],
+        "lessons": [
+          "Create a custom role baseline that excludes runCommand from general contributor roles",
+          "Add a detection for runCommand executed outside change windows or by non-admin identities",
+          "Review whether just-in-time privileged access would have blocked the caller"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Run Command and extension deployments by caller",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity (operationName.value=\"Microsoft.Compute/virtualMachines/runCommand/action\" OR operationName.value=\"Microsoft.Compute/virtualMachines/extensions/write\" OR operationName.value=\"Microsoft.Compute/virtualMachines/runCommands/write\") | stats count values(resourceId) as vms min(_time) as first by caller, callerIpAddress | convert ctime(first)"
+        },
+        {
+          "title": "Processes spawned by the Azure guest agent run command handler",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Processes.process) as cmd from datamodel=Endpoint.Processes where Processes.parent_process_name IN (\"RunCommandExtension.exe\",\"CustomScriptHandler.exe\",\"waagent\") by Processes.dest Processes.process_name Processes.user | `drop_dm_object_name(Processes)`"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-cryptomining-vms",
+      "name": "Unauthorized VMs or scale sets deployed for cryptomining",
+      "summary": "Use when GPU or high-core VMs, scale sets, or quota increases appear in unusual regions, or Defender alerts on mining pool traffic, indicating a compromised identity is mining on your bill.",
+      "tags": [
+        "azure",
+        "cryptomining",
+        "resource-hijacking",
+        "vm",
+        "cost"
+      ],
+      "attack": [
+        "T1496",
+        "T1578.002",
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Apply an Azure Policy allowed-locations and allowed-VM-SKU list to every production subscription",
+          "Set budget alerts per subscription that notify security as well as finance",
+          "Keep a list of regions and GPU SKUs the business actually uses"
+        ],
+        "identification": [
+          "Query Activity Log for virtualMachines/write and virtualMachineScaleSets/write in unexpected regions",
+          "Check for Microsoft.Capacity quota increase requests submitted by the same caller",
+          "Inspect VM custom data or cloud-init for miner download commands and pool URLs",
+          "Look for outbound traffic to mining pool ports such as 3333, 4444, 5555 and 14444 in NSG flow logs",
+          "Identify the identity that created the resources and how it authenticated"
+        ],
+        "containment": [
+          "Stop and deallocate the mining VMs and scale sets to halt spend while preserving disks",
+          "Snapshot one OS disk for forensics before deleting the rest",
+          "Disable the creating identity and revoke its sessions or client secrets"
+        ],
+        "eradication": [
+          "Delete the attacker-created resource groups, VMs, NICs, public IPs and disks after evidence capture",
+          "Remove any new service principals, role assignments, or subscriptions the identity created",
+          "Revert quota increases that were requested by the attacker"
+        ],
+        "recovery": [
+          "File a billing support case with Microsoft documenting the fraudulent consumption",
+          "Confirm cost per day returns to baseline in Cost Management over the following week",
+          "Re-enable the legitimate identity with new credentials and narrowed scope if it was a real workload"
+        ],
+        "lessons": [
+          "Measure hours of mining before detection and the total cost incurred",
+          "Add a detection for first-time VM SKU families or regions per subscription",
+          "Decide whether GPU SKUs require an approval workflow before quota is granted"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "VM and scale set creation by region and caller",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity (operationName.value=\"Microsoft.Compute/virtualMachines/write\" OR operationName.value=\"Microsoft.Compute/virtualMachineScaleSets/write\") status.value=Succeeded | rex field=resourceId \"(?i)resourceGroups/(?<rg>[^/]+)\" | stats count dc(resourceId) as resources values(rg) as rgs by caller, callerIpAddress | sort - resources"
+        },
+        {
+          "title": "Outbound connections to common mining pool ports",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest_port IN (3333,4444,5555,7777,14444) by All_Traffic.src All_Traffic.dest All_Traffic.dest_port | `drop_dm_object_name(All_Traffic)` | sort - count"
+        },
+        {
+          "title": "Quota increase requests",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value=\"Microsoft.Capacity/*\" OR operationName.value=\"Microsoft.Quota/quotas/write\" | table _time caller operationName.value resourceId status.value"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-keyvault-secret-mass-read",
+      "name": "Key Vault secrets read in bulk by an unusual identity",
+      "summary": "Use when Key Vault AuditEvent logs show one identity listing and reading many secrets, keys, or certificates in a short window, especially from a new IP or a user rather than an app.",
+      "tags": [
+        "azure",
+        "key-vault",
+        "credential-access",
+        "secrets"
+      ],
+      "attack": [
+        "T1555.006",
+        "T1552",
+        "T1078.004"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable AuditEvent diagnostic logs on every Key Vault and send them to the SIEM",
+          "Use Azure RBAC permission model on vaults so access changes appear in Activity Log",
+          "Record which applications read which secrets so per-identity baselines are possible",
+          "Document owners for each secret so rotation can be coordinated quickly"
+        ],
+        "identification": [
+          "Count SecretGet, SecretList, KeyGet and CertificateGet operations per identity per vault",
+          "Identify the full list of secret names read by the suspect identity",
+          "Check whether the vault access policy or RBAC assignment was changed shortly before the reads",
+          "Map each read secret to the system it unlocks (database, API, storage key, certificate private key)",
+          "Correlate the caller IP with sign-in logs to see if it is a stolen session or app credential"
+        ],
+        "containment": [
+          "Remove the identity's Key Vault Secrets User or access policy on the vault",
+          "Enable vault firewall to selected networks and private endpoint only",
+          "Prioritize rotating secrets that grant production data access or signing ability"
+        ],
+        "eradication": [
+          "Rotate every secret, key and certificate the identity read, starting with highest impact",
+          "Revoke and reissue certificates whose private keys were exportable and read",
+          "Reset the suspect identity's credentials and remove any federated credential it added"
+        ],
+        "recovery": [
+          "Confirm dependent apps pick up new secret versions and disable old versions",
+          "Watch the downstream systems for use of the old credentials as a sign of attacker reuse",
+          "Restore normal vault network rules only after the access review is complete"
+        ],
+        "lessons": [
+          "Add an alert on more than N distinct secrets read by one identity in an hour",
+          "Review whether humans need data-plane read access to production vaults at all",
+          "Track mean time to rotate all exposed secrets as a recovery metric"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Distinct secrets read per identity",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=AuditEvent resourceType=VAULTS (operationName=SecretGet OR operationName=SecretList OR operationName=KeyGet OR operationName=CertificateGet) | stats dc(id) as items count values(operationName) as ops by identity.claim.upn, identity.claim.appid, callerIpAddress, Resource | sort - items"
+        },
+        {
+          "title": "Key Vault access policy and role changes",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity (operationName.value=\"Microsoft.KeyVault/vaults/accessPolicies/write\" OR operationName.value=\"Microsoft.KeyVault/vaults/write\" OR (operationName.value=\"Microsoft.Authorization/roleAssignments/write\" resourceId=\"*Microsoft.KeyVault*\")) | table _time caller operationName.value resourceId"
+        },
+        {
+          "title": "Use of rotated secrets after containment (401s from old creds)",
+          "phase": "recovery",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=AuditEvent Resource=<vault_name> httpStatusCode=403 | stats count by callerIpAddress, identity.claim.appid, operationName"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-keyvault-purge",
+      "name": "Key Vault or its secrets deleted and purged",
+      "summary": "Use when a Key Vault, keys, or secrets are deleted and purged, or purge protection is being bypassed, which can destroy encryption keys and break dependent services permanently.",
+      "tags": [
+        "azure",
+        "key-vault",
+        "destruction",
+        "impact"
+      ],
+      "attack": [
+        "T1485",
+        "T1490",
+        "T1078.004"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enforce soft delete with 90-day retention and purge protection on all vaults via Azure Policy",
+          "Back up customer-managed keys used for disk, storage, and SQL encryption to a separate vault",
+          "Limit Key Vault Purge Operator and Key Vault Contributor roles to break-glass admins"
+        ],
+        "identification": [
+          "Find SecretDelete, KeyDelete, SecretPurge, KeyPurge and VaultDelete events and their caller",
+          "List soft-deleted vaults with az keyvault list-deleted and soft-deleted secrets with az keyvault secret list-deleted",
+          "Identify which disks, storage accounts, or SQL TDE protectors used the deleted keys",
+          "Check whether purge protection was enabled or whether the vault was created without it"
+        ],
+        "containment": [
+          "Remove delete and purge permissions from the caller identity immediately",
+          "Place a CanNotDelete resource lock on the vault and its resource group",
+          "Pause automation pipelines that might recreate or overwrite the vault with an empty one"
+        ],
+        "eradication": [
+          "Recover the soft-deleted vault with az keyvault recover before retention expires",
+          "Recover individual soft-deleted keys and secrets with az keyvault key recover and secret recover",
+          "Revoke the caller's sessions and rotate any credentials it could have used"
+        ],
+        "recovery": [
+          "Restore purged keys from backup blobs using az keyvault key restore into the recovered vault",
+          "Validate encrypted VMs, storage accounts and databases can unwrap their keys again",
+          "Enable purge protection on the recovered vault if it was missing"
+        ],
+        "lessons": [
+          "Inventory any data that is permanently unrecoverable due to purged keys and report it",
+          "Alert on any SecretPurge or KeyPurge operation regardless of caller",
+          "Review why the caller had purge rights and remove them from standing roles"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Key Vault delete and purge operations",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=AuditEvent (operationName=SecretDelete OR operationName=SecretPurge OR operationName=KeyDelete OR operationName=KeyPurge OR operationName=CertificatePurge) | stats count values(id) as items by Resource, identity.claim.upn, callerIpAddress, operationName"
+        },
+        {
+          "title": "Vault-level delete and purge in Activity Log",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity (operationName.value=\"Microsoft.KeyVault/vaults/delete\" OR operationName.value=\"Microsoft.KeyVault/locations/deletedVaults/purge/action\") | table _time caller callerIpAddress resourceId status.value"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-managed-identity-token-theft",
+      "name": "Managed identity token stolen from IMDS and used elsewhere",
+      "summary": "Use when a managed identity's access token appears in use from outside its host resource, or a compromised VM, container or app may have queried IMDS to steal identity tokens.",
+      "tags": [
+        "azure",
+        "managed-identity",
+        "imds",
+        "token-theft",
+        "credential-access"
+      ],
+      "attack": [
+        "T1552.005",
+        "T1528",
+        "T1550.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable Entra service principal sign-in logs (ManagedIdentitySignInLogs) export to the SIEM",
+          "Scope each managed identity to the minimum resources it needs instead of subscription-wide roles",
+          "Record which resources host each user-assigned managed identity"
+        ],
+        "identification": [
+          "Pull ManagedIdentitySignInLogs for the identity and note resource requested and source resource",
+          "Compare callerIpAddress on Activity Log actions by the identity against the host resource's egress IPs",
+          "On the host, look for processes calling 169.254.169.254/metadata/identity/oauth2/token unexpectedly",
+          "Check App Service and Functions for requests to IDENTITY_ENDPOINT with the X-IDENTITY-HEADER value",
+          "List every action the identity performed during the window across subscriptions"
+        ],
+        "containment": [
+          "Remove role assignments from the managed identity to cut access while tokens are still valid",
+          "Isolate the host resource that leaked the token for forensic review",
+          "Block the external IPs seen using the token with Conditional Access for workload identities where licensed"
+        ],
+        "eradication": [
+          "Fix the SSRF or code execution flaw on the host that allowed IMDS access",
+          "Replace the user-assigned identity with a new one if the old one is suspected of long-term abuse",
+          "Remove any resources or role assignments the stolen token created"
+        ],
+        "recovery": [
+          "Reassign minimal roles to the new identity and redeploy the workload",
+          "Confirm no further activity from the old identity's object ID after tokens expire",
+          "Add egress filtering to block IMDS from application containers that do not need it"
+        ],
+        "lessons": [
+          "Detect managed identity Activity Log calls whose IP is not an Azure IP of the host",
+          "Review application code for SSRF paths that can reach link-local addresses",
+          "Document how long a stolen managed identity token stays valid in your tenant (default 24h)"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Managed identity actions with source IPs",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity caller=<mi_object_id> | stats count values(operationName.value) as ops min(_time) as first by callerIpAddress | convert ctime(first) | sort - count"
+        },
+        {
+          "title": "Managed identity sign-ins by resource",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:aad:signin category=ManagedIdentitySignInLogs properties.servicePrincipalId=<mi_object_id> | stats count by properties.resourceDisplayName, properties.ipAddress"
+        },
+        {
+          "title": "Host processes reaching IMDS token endpoint",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.url=\"*169.254.169.254/metadata/identity*\" by Web.src Web.http_user_agent Web.url | `drop_dm_object_name(Web)`"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-automation-runbook-backdoor",
+      "name": "Automation account runbook or webhook added as a backdoor",
+      "summary": "Use when a new or modified Azure Automation runbook, schedule, or webhook appears, especially one running as a privileged Run As or managed identity, giving the attacker persistent execution.",
+      "tags": [
+        "azure",
+        "automation",
+        "persistence",
+        "runbook"
+      ],
+      "attack": [
+        "T1053",
+        "T1098",
+        "T1059.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable JobLogs, JobStreams and AuditEvent diagnostics on every Automation account",
+          "Keep runbooks in source control with sync so unexpected edits are visible",
+          "Review which identity each Automation account runs as and its role scope"
+        ],
+        "identification": [
+          "List runbooks/write, runbooks/draft/write, webhooks/write and schedules/write in Activity Log",
+          "Export the runbook content with az automation runbook show-content and review it for credential theft or new accounts",
+          "Check webhook URIs and creation dates since a webhook lets anyone with the URL trigger the runbook",
+          "Review JobStreams for output from jobs that ran the suspect runbook",
+          "Identify hybrid runbook workers the runbook can execute on"
+        ],
+        "containment": [
+          "Unpublish or delete the suspect runbook and disable linked schedules",
+          "Delete webhooks created during the incident window",
+          "Remove privileged roles from the Automation account's managed identity temporarily"
+        ],
+        "eradication": [
+          "Revert remaining runbooks to the versions in source control",
+          "Remove any credentials, certificates, or variables added to the Automation account by the attacker",
+          "Hunt for resources or identities created by the backdoor runbook jobs"
+        ],
+        "recovery": [
+          "Restore legitimate schedules and reassign least-privilege roles to the account identity",
+          "Confirm hybrid workers show no residual jobs from the backdoor",
+          "Monitor JobLogs for unexpected runbook names over the next month"
+        ],
+        "lessons": [
+          "Alert on any runbook publish outside the source control sync identity",
+          "Assess retiring Run As accounts in favor of scoped managed identities",
+          "Add Automation accounts to the privileged resource review cycle"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Runbook, webhook and schedule changes",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value IN (\"Microsoft.Automation/automationAccounts/runbooks/write\",\"Microsoft.Automation/automationAccounts/runbooks/publish/action\",\"Microsoft.Automation/automationAccounts/webhooks/write\",\"Microsoft.Automation/automationAccounts/schedules/write\") | table _time caller callerIpAddress operationName.value resourceId"
+        },
+        {
+          "title": "Automation jobs by runbook name",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=JobLogs | stats count min(_time) as first max(_time) as last values(ResultType) as results by RunbookName_s, Caller_s | convert ctime(first) ctime(last)"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-diagnostic-setting-deleted",
+      "name": "Activity Log or resource diagnostic settings deleted",
+      "summary": "Use when diagnostic settings that export Activity Log or resource logs are deleted or redirected, a common defense evasion step that blinds the SOC before further actions.",
+      "tags": [
+        "azure",
+        "defense-evasion",
+        "logging",
+        "monitor"
+      ],
+      "attack": [
+        "T1562.008",
+        "T1070"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Deploy diagnostic settings via Azure Policy DeployIfNotExists so deletions are remediated",
+          "Alert in the SIEM when a subscription's Activity Log stops arriving for more than 30 minutes",
+          "Keep a secondary log path such as a management group level diagnostic setting"
+        ],
+        "identification": [
+          "Find Microsoft.Insights/diagnosticSettings/delete and write operations and their caller",
+          "Check whether a setting was modified to send logs to a workspace or storage account outside your tenant",
+          "Determine the gap window per subscription by finding the last event received before deletion",
+          "Review all other actions the caller performed during and after the gap"
+        ],
+        "containment": [
+          "Recreate the deleted diagnostic settings pointing to the approved workspace and Event Hub",
+          "Remove Monitoring Contributor or Owner rights from the caller",
+          "Apply a deny assignment or policy blocking diagnosticSettings/delete for non-platform identities"
+        ],
+        "eradication": [
+          "Delete any attacker-controlled destination added to diagnostic settings",
+          "Run a Resource Graph query to confirm every subscription and key resource has the approved settings",
+          "Disable the credentials of the identity that removed logging"
+        ],
+        "recovery": [
+          "Pull the 90-day Activity Log from the portal or REST API to fill the gap in the SIEM",
+          "Verify new events from each subscription are arriving in Splunk again",
+          "Trigger a Policy remediation task for any non-compliant resources"
+        ],
+        "lessons": [
+          "Track the duration of the logging gap and what could not be reconstructed",
+          "Add a heartbeat search per subscription for Activity Log ingestion",
+          "Restrict who can modify diagnostic settings to the platform pipeline identity"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Diagnostic settings deleted or changed",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity (operationName.value=\"Microsoft.Insights/diagnosticSettings/delete\" OR operationName.value=\"Microsoft.Insights/diagnosticSettings/write\") | table _time caller callerIpAddress resourceId operationName.value properties.requestbody"
+        },
+        {
+          "title": "Subscriptions that went quiet (ingestion gap)",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false latest(_time) as last_seen where index=azure sourcetype=azure:monitor:activity by subscriptionId | eval minutes_silent=round((now()-last_seen)/60) | where minutes_silent>30 | convert ctime(last_seen)"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-defender-disabled",
+      "name": "Defender for Cloud plans disabled or alerts suppressed",
+      "summary": "Use when Defender for Cloud pricing tiers are set to Free, auto-provisioning is disabled, or suppression rules are added that hide alerts, suggesting an attacker is disabling detection.",
+      "tags": [
+        "azure",
+        "defender",
+        "defense-evasion",
+        "security-tooling"
+      ],
+      "attack": [
+        "T1562.001",
+        "T1562"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enforce required Defender plans with Azure Policy at the management group level",
+          "Restrict Security Admin role to the security team and monitor its assignment",
+          "Export Defender alerts continuously to the SIEM so suppression is visible"
+        ],
+        "identification": [
+          "Search Activity Log for Microsoft.Security/pricings/write setting pricingTier to Free",
+          "Look for Microsoft.Security/alertsSuppressionRules/write and review the rule criteria",
+          "Check for autoProvisioningSettings or Defender for Endpoint integration being turned off",
+          "Review Defender alerts generated just before the plan change for the activity being hidden"
+        ],
+        "containment": [
+          "Re-enable the disabled Defender plans on each affected subscription",
+          "Delete suppression rules not created by the security team",
+          "Remove Security Admin or Owner from the identity that made the changes"
+        ],
+        "eradication": [
+          "Re-run Defender recommendations and investigate any alerts on resources during the blind window",
+          "Reinstall Defender for Endpoint on servers where the extension was removed",
+          "Reset credentials and sessions for the caller identity"
+        ],
+        "recovery": [
+          "Confirm Defender plans show Standard tier for all required resource types",
+          "Verify alert flow into the SIEM with a Defender sample alert",
+          "Review Secure Score for regressions introduced during the incident"
+        ],
+        "lessons": [
+          "Add a high-priority detection on any pricings/write that lowers a tier",
+          "Require approval for new suppression rules via change management",
+          "Measure the time Defender coverage was off and what it would have caught"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Defender plan downgrades and suppression rules",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity (operationName.value=\"Microsoft.Security/pricings/write\" OR operationName.value=\"Microsoft.Security/alertsSuppressionRules/write\" OR operationName.value=\"Microsoft.Security/autoProvisioningSettings/write\") | table _time caller subscriptionId operationName.value properties.requestbody"
+        },
+        {
+          "title": "Defender alerts preceding the change",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:security:alert earliest=-7d | stats count values(AlertDisplayName) as alerts by CompromisedEntity, Severity | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-nsg-opened-to-internet",
+      "name": "Network security group rule opened management ports to the internet",
+      "summary": "Use when an NSG or Azure Firewall rule is created or changed to allow RDP, SSH, WinRM or database ports from Any or 0.0.0.0/0, exposing workloads to scanning and brute force.",
+      "tags": [
+        "azure",
+        "nsg",
+        "network",
+        "exposure",
+        "misconfiguration"
+      ],
+      "attack": [
+        "T1562.007",
+        "T1133",
+        "T1021"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Assign Azure Policy to deny inbound NSG rules from Internet on ports 22, 3389, 5985 and 1433",
+          "Enable NSG or VNet flow logs and Traffic Analytics for production VNets",
+          "Offer Azure Bastion and just-in-time VM access so admins do not need open ports"
+        ],
+        "identification": [
+          "Find networkSecurityGroups/securityRules/write events and extract sourceAddressPrefix and destinationPortRange",
+          "List VMs and NICs attached to the modified NSG and their public IPs",
+          "Query flow logs for inbound connections allowed by the new rule since it was created",
+          "Check Windows Security 4625 and 4624 logon type 10, or sshd auth logs, on exposed hosts",
+          "Determine whether the change was made by a pipeline, an admin, or an unknown identity"
+        ],
+        "containment": [
+          "Delete the permissive rule or narrow its source to the admin IP range",
+          "Enable JIT access on affected VMs so ports open only on request",
+          "Block source IPs that successfully authenticated during the exposure window"
+        ],
+        "eradication": [
+          "Review exposed hosts for new accounts, services, or malware if any external logon succeeded",
+          "Reset local administrator passwords on hosts that received brute-force attempts",
+          "Revert any other network changes made by the same caller"
+        ],
+        "recovery": [
+          "Confirm flow logs show no further inbound traffic from the internet on management ports",
+          "Re-scan public IPs with your external attack surface tool to confirm closure",
+          "Document the approved remote access path for the team that opened the port"
+        ],
+        "lessons": [
+          "Measure exposure time and count of distinct scanning IPs observed",
+          "Move NSG rules into infrastructure as code with PR review",
+          "Add a detection on any NSG rule with source Internet or * and a management port"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "NSG rules allowing inbound from any source",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value=\"Microsoft.Network/networkSecurityGroups/securityRules/write\" status.value=Succeeded | spath input=properties.requestbody path=properties.sourceAddressPrefix output=src_prefix | spath input=properties.requestbody path=properties.destinationPortRange output=dport | search src_prefix IN (\"*\",\"0.0.0.0/0\",\"Internet\",\"Any\") | table _time caller resourceId src_prefix dport"
+        },
+        {
+          "title": "Inbound allowed flows on management ports",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count dc(All_Traffic.src) as sources from datamodel=Network_Traffic where All_Traffic.action=allowed All_Traffic.dest_port IN (22,3389,5985,5986,1433) All_Traffic.dest=<host_ip> by All_Traffic.dest_port | `drop_dm_object_name(All_Traffic)`"
+        },
+        {
+          "title": "Remote logons on exposed Windows hosts",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=WinEventLog:Security (EventCode=4624 Logon_Type=10) OR EventCode=4625 host=<host> | stats count by EventCode, Source_Network_Address, Account_Name | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-subscription-ownership-transfer",
+      "name": "Subscription transferred out of the tenant or Owner granted externally",
+      "summary": "Use when an Azure subscription is moved to another directory, billing ownership changes, or Owner is assigned to an external or guest account, risking loss of control over all its resources.",
+      "tags": [
+        "azure",
+        "subscription",
+        "privilege-escalation",
+        "impact"
+      ],
+      "attack": [
+        "T1098",
+        "T1078.004",
+        "T1531"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Set the tenant subscription policy to block subscriptions leaving or entering the directory",
+          "Restrict billing account owner and Global Administrator roles and monitor their use",
+          "Keep a current list of subscription IDs, their billing owners and management group placement"
+        ],
+        "identification": [
+          "Check Activity Log for Microsoft.Subscription/changeTenantRequest or rename and alias operations",
+          "Search for roleAssignments/write at subscription scope granting Owner to a guest or external object ID",
+          "Review billing account audit logs for transfer requests or accepted billing ownership changes",
+          "Confirm whether the subscription still appears under your tenant's management groups",
+          "Identify who initiated elevated access via Microsoft.Authorization/elevateAccess/action"
+        ],
+        "containment": [
+          "Remove Owner and User Access Administrator assignments that were not approved",
+          "Decline or cancel pending billing transfer requests in the billing portal",
+          "Disable the Global Administrator or billing admin account that initiated the change"
+        ],
+        "eradication": [
+          "Open a Microsoft support severity A case to reverse a completed directory transfer",
+          "Remove elevated access at root scope for any Global Admin who toggled it",
+          "Review the subscription for new resources, identities and keys created after the transfer"
+        ],
+        "recovery": [
+          "Move the subscription back under the correct management group and reapply policies",
+          "Re-establish RBAC from your documented baseline and re-enable diagnostics",
+          "Verify billing ownership and payment method are correct"
+        ],
+        "lessons": [
+          "Add a critical alert for elevateAccess/action and subscription directory changes",
+          "Evaluate privileged identity management for billing and tenant root roles",
+          "Document the time it took to regain control and the support escalation path"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Subscription-scope Owner grants and elevate access",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity (operationName.value=\"Microsoft.Authorization/elevateAccess/action\" OR (operationName.value=\"Microsoft.Authorization/roleAssignments/write\" resourceId=\"/subscriptions/*/providers/Microsoft.Authorization/roleAssignments/*\")) | spath input=properties.requestbody | table _time caller callerIpAddress resourceId properties.roleDefinitionId properties.principalId"
+        },
+        {
+          "title": "Subscription transfer and tenant change operations",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value IN (\"Microsoft.Subscription/*\",\"Microsoft.Billing/*/transfers/*\",\"Microsoft.Management/managementGroups/subscriptions/delete\") | table _time caller operationName.value subscriptionId status.value"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-locks-removed-mass-deletion",
+      "name": "Resource locks removed followed by mass resource deletion",
+      "summary": "Use when CanNotDelete or ReadOnly locks are removed and resource groups, VMs, databases, or storage are deleted in bulk, indicating destructive activity by an attacker or rogue insider.",
+      "tags": [
+        "azure",
+        "destruction",
+        "resource-locks",
+        "impact"
+      ],
+      "attack": [
+        "T1485",
+        "T1489",
+        "T1531"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Apply CanNotDelete locks to production resource groups and restrict locks/delete to a small role",
+          "Keep backups and soft delete for VMs, SQL, storage and Key Vault in separate subscriptions",
+          "Export resource inventory daily via Azure Resource Graph for rebuild reference"
+        ],
+        "identification": [
+          "Find Microsoft.Authorization/locks/delete events and the identity that removed them",
+          "Count resourceGroups/delete and other delete operations by caller over the incident window",
+          "Build the list of deleted resources from Activity Log and compare to yesterday's inventory",
+          "Check whether delete operations are still in progress (status Accepted or Started)"
+        ],
+        "containment": [
+          "Disable the deleting identity and revoke its refresh tokens and secrets",
+          "Re-add CanNotDelete locks on remaining production resource groups",
+          "Assign a deny policy or deny assignment blocking delete actions at management group scope temporarily"
+        ],
+        "eradication": [
+          "Remove any role assignments the identity added for itself or others before the deletion",
+          "Check automation accounts, pipelines and Logic Apps for scheduled destructive jobs",
+          "Rotate credentials for the service connection used if deletes came from a pipeline"
+        ],
+        "recovery": [
+          "Restore VMs and disks from Recovery Services vault in priority order",
+          "Recover deleted SQL databases from point-in-time restore and storage from soft delete",
+          "Redeploy networking and app infrastructure from infrastructure as code templates",
+          "Validate business services end to end before reopening traffic"
+        ],
+        "lessons": [
+          "Alert on any locks/delete followed by more than five deletes from the same caller in an hour",
+          "Measure recovery time per tier and compare to RTO targets",
+          "Review separation between backup administrators and production owners"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Lock removals followed by deletes by the same caller",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity (operationName.value=\"Microsoft.Authorization/locks/delete\" OR operationName.value=\"*/delete\") status.value IN (Succeeded,Accepted) | eval is_lock=if(like('operationName.value',\"%locks/delete\"),1,0) | stats sum(is_lock) as locks_removed count as deletes dc(resourceId) as resources min(_time) as first by caller | where locks_removed>0 AND deletes>5 | convert ctime(first)"
+        },
+        {
+          "title": "Deleted resources list for rebuild",
+          "phase": "recovery",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value=\"*/delete\" status.value=Succeeded caller=<suspect_user> | table _time resourceId operationName.value | sort _time"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-aks-cluster-compromise",
+      "name": "AKS cluster compromised via exposed API or stolen kubeconfig",
+      "summary": "Use when an AKS cluster shows unknown kubectl activity, privileged pods, listClusterAdminCredential calls, or containers running unexpected images in kube-system or default namespaces.",
+      "tags": [
+        "azure",
+        "aks",
+        "kubernetes",
+        "containers"
+      ],
+      "attack": [
+        "T1609",
+        "T1610",
+        "T1613",
+        "T1552.007"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable kube-audit-admin and guard diagnostic categories on AKS clusters to the SIEM",
+          "Use Entra integration with local accounts disabled so listClusterAdminCredential is not usable",
+          "Restrict API server access with authorized IP ranges or private cluster"
+        ],
+        "identification": [
+          "Search Activity Log for managedClusters/listClusterAdminCredential/action and listClusterUserCredential",
+          "Review kube-audit for create pods, exec and attach requests by unknown users or service accounts",
+          "List pods with privileged, hostPID, hostNetwork or hostPath mounts across namespaces",
+          "Check images running in the cluster against your approved ACR registry list",
+          "Look for new ClusterRoleBindings granting cluster-admin"
+        ],
+        "containment": [
+          "Rotate cluster certificates with az aks rotate-certs to invalidate stolen admin kubeconfigs",
+          "Cordon nodes that ran attacker pods and apply a deny-all NetworkPolicy to affected namespaces",
+          "Restrict authorized IP ranges on the API server to the admin network"
+        ],
+        "eradication": [
+          "Delete attacker pods, DaemonSets, CronJobs and ClusterRoleBindings",
+          "Reimage or replace node pools that ran privileged attacker containers",
+          "Rotate secrets mounted into compromised namespaces and the kubelet managed identity's access"
+        ],
+        "recovery": [
+          "Redeploy workloads from GitOps or pipeline to a clean node pool",
+          "Enable Azure Policy for AKS to block privileged pods and unapproved registries",
+          "Confirm audit logs show only expected identities over the following week"
+        ],
+        "lessons": [
+          "Disable local accounts on every AKS cluster and track exceptions",
+          "Add detections for exec into pods in production namespaces",
+          "Review how the kubeconfig or token left a trusted device"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "AKS admin credential retrieval",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value IN (\"Microsoft.ContainerService/managedClusters/listClusterAdminCredential/action\",\"Microsoft.ContainerService/managedClusters/listClusterUserCredential/action\") | table _time caller callerIpAddress resourceId"
+        },
+        {
+          "title": "Pod exec and privileged pod creation in kube-audit",
+          "phase": "identification",
+          "spl": "index=k8s sourcetype=kube:apiserver:audit (objectRef.subresource=exec OR (verb=create objectRef.resource=pods requestObject.spec.containers{}.securityContext.privileged=true)) | stats count values(objectRef.name) as pods by user.username, objectRef.namespace, sourceIPs{}"
+        },
+        {
+          "title": "New cluster-admin bindings",
+          "phase": "identification",
+          "spl": "index=k8s sourcetype=kube:apiserver:audit verb=create objectRef.resource=clusterrolebindings requestObject.roleRef.name=cluster-admin | table _time user.username requestObject.metadata.name requestObject.subjects{}.name"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-function-app-backdoor",
+      "name": "Function App code or settings modified to add a backdoor",
+      "summary": "Use when an Azure Function's code, deployment package, app settings, or function keys change unexpectedly, possibly turning it into an HTTP-triggered backdoor using its managed identity.",
+      "tags": [
+        "azure",
+        "functions",
+        "serverless",
+        "persistence"
+      ],
+      "attack": [
+        "T1505",
+        "T1098",
+        "T1059"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Deploy Function Apps only from pipelines with run-from-package and disable portal editing",
+          "Send FunctionAppLogs and App Service audit logs to the SIEM",
+          "Track function keys and host keys as secrets with owners"
+        ],
+        "identification": [
+          "Find sites/config/write, sites/functions/write, and publishxml or zipdeploy events in Activity Log",
+          "Download the current package from WEBSITE_RUN_FROM_PACKAGE or Kudu and diff it against the release artifact",
+          "List function keys and host keys and check for keys created during the window",
+          "Review app settings for changed WEBSITE_RUN_FROM_PACKAGE URLs pointing to external storage",
+          "Query FunctionAppLogs and Application Insights requests for invocations from unusual IPs"
+        ],
+        "containment": [
+          "Stop the Function App or disable the suspicious function",
+          "Regenerate host and function keys and the master key",
+          "Remove role assignments from the app's managed identity until code is verified"
+        ],
+        "eradication": [
+          "Redeploy the last known-good release from the pipeline",
+          "Remove deployment credentials (publishing profile, FTP) and disable basic auth publishing",
+          "Delete any extra deployment slots added by the attacker"
+        ],
+        "recovery": [
+          "Restore managed identity roles to the documented minimum",
+          "Confirm the running package hash matches the pipeline artifact",
+          "Watch invocation logs for calls to the removed function route"
+        ],
+        "lessons": [
+          "Alert on zipdeploy or publish events not originating from the pipeline identity",
+          "Disable SCM basic auth across all App Service plans by policy",
+          "Review what the managed identity could reach and reduce it"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Function App code and config changes",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity resourceId=\"*Microsoft.Web/sites/<function_app>*\" operationName.value IN (\"Microsoft.Web/sites/config/write\",\"Microsoft.Web/sites/functions/write\",\"Microsoft.Web/sites/publishxml/action\",\"Microsoft.Web/sites/host/functionkeys/write\",\"Microsoft.Web/sites/slots/write\") | table _time caller callerIpAddress operationName.value"
+        },
+        {
+          "title": "Function invocations by client IP",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=FunctionAppLogs properties.appName=<function_app> | stats count by properties.functionName, properties.clientIp | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-app-service-web-shell",
+      "name": "Web shell dropped on an Azure App Service",
+      "summary": "Use when an App Service shows new script files in wwwroot, Kudu console use, or HTTP requests to unexpected .aspx, .php, or .jsp paths that return 200, suggesting a web shell.",
+      "tags": [
+        "azure",
+        "app-service",
+        "web-shell",
+        "persistence"
+      ],
+      "attack": [
+        "T1505.003",
+        "T1190"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable AppServiceHTTPLogs, AppServiceFileAuditLogs and AppServiceConsoleLogs diagnostics",
+          "Put internet-facing App Services behind Front Door or Application Gateway WAF",
+          "Restrict SCM (Kudu) site access with access restrictions to admin networks"
+        ],
+        "identification": [
+          "Review AppServiceFileAuditLogs for files created or modified under site/wwwroot outside deployments",
+          "Search AppServiceHTTPLogs for POST requests to rarely requested script paths returning 200",
+          "Check Kudu /api/command and /DebugConsole usage in AppServiceAuditLogs",
+          "Download the site content via Kudu and diff it against the release artifact",
+          "Identify the initial entry point such as a vulnerable upload handler or framework CVE"
+        ],
+        "containment": [
+          "Add an access restriction or WAF rule blocking the web shell path",
+          "Stop the app or swap traffic to a clean staging slot",
+          "Reset publishing credentials and disable FTP and SCM basic auth"
+        ],
+        "eradication": [
+          "Delete the web shell and any other unknown files under wwwroot",
+          "Patch the vulnerable component that allowed the upload",
+          "Rotate connection strings and app settings secrets the shell could read from environment variables"
+        ],
+        "recovery": [
+          "Redeploy from a clean pipeline build with run-from-package to make wwwroot read-only",
+          "Confirm HTTP logs show no further requests reaching the shell path",
+          "Review outbound connections from the app to detect lateral movement through VNet integration"
+        ],
+        "lessons": [
+          "Add a detection for file writes to wwwroot not from the deployment engine",
+          "Track the time between shell creation and first detection",
+          "Evaluate WAF rule sets for the exploit used"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Rare script paths returning 200 on POST",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=AppServiceHTTPLogs properties.CsHost=<app_host> properties.CsMethod=POST properties.ScStatus=200 (properties.CsUriStem=\"*.aspx\" OR properties.CsUriStem=\"*.php\" OR properties.CsUriStem=\"*.jsp\" OR properties.CsUriStem=\"*.ashx\") | stats count dc(properties.CIp) as clients values(properties.CIp) as ips by properties.CsUriStem | where count<50 | sort count"
+        },
+        {
+          "title": "File changes under wwwroot",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=AppServiceFileAuditLogs | search properties.Path=\"*wwwroot*\" | table _time properties.Path properties.Process properties.Operation"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-sql-firewall-opened",
+      "name": "Azure SQL server firewall opened to all IPs or Azure services",
+      "summary": "Use when an Azure SQL or SQL Managed Instance firewall rule allows 0.0.0.0–255.255.255.255, public network access is enabled, or Allow Azure services is toggled, exposing databases.",
+      "tags": [
+        "azure",
+        "sql",
+        "database",
+        "exposure"
+      ],
+      "attack": [
+        "T1562.007",
+        "T1190",
+        "T1078"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enforce private endpoints and deny public network access on SQL servers via Azure Policy",
+          "Enable SQL auditing to Log Analytics or Event Hub and Defender for SQL",
+          "Require Entra-only authentication on SQL servers where possible"
+        ],
+        "identification": [
+          "Find servers/firewallRules/write events and extract startIpAddress and endIpAddress",
+          "Check servers/write for publicNetworkAccess changed to Enabled",
+          "Review SQLSecurityAuditEvents for logins from IPs outside your ranges after the change",
+          "Look for failed login bursts against the sa or SQL admin login in audit logs",
+          "List queries run by external sessions, especially SELECT on large tables and BACKUP or export actions"
+        ],
+        "containment": [
+          "Delete the permissive firewall rule and disable Allow Azure services access",
+          "Set publicNetworkAccess to Disabled if private endpoints are available",
+          "Reset the SQL admin password and disable SQL authentication if Entra auth is in use"
+        ],
+        "eradication": [
+          "Remove database users, logins or contained users created from external sessions",
+          "Check for new server-level firewall rules or virtual network rules added by the attacker",
+          "Review for exported BACPACs to unknown storage accounts"
+        ],
+        "recovery": [
+          "Confirm application connectivity through private endpoint or approved IPs",
+          "Verify audit logs show no external logins after closure",
+          "Run a vulnerability assessment on the database"
+        ],
+        "lessons": [
+          "Alert on firewall rules wider than a /24 or including 0.0.0.0",
+          "Record whether sensitive tables were queried for the privacy assessment",
+          "Move SQL network configuration into reviewed infrastructure as code"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "SQL firewall rules and public access changes",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity (operationName.value=\"Microsoft.Sql/servers/firewallRules/write\" OR operationName.value=\"Microsoft.Sql/servers/write\") | spath input=properties.requestbody | table _time caller resourceId properties.startIpAddress properties.endIpAddress properties.publicNetworkAccess"
+        },
+        {
+          "title": "SQL logins from external IPs",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=SQLSecurityAuditEvents properties.action_name IN (\"DATABASE AUTHENTICATION SUCCEEDED\",\"DATABASE AUTHENTICATION FAILED\") | stats count by properties.client_ip, properties.server_principal_name, properties.action_name | sort - count"
+        },
+        {
+          "title": "Large selects by external sessions",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=SQLSecurityAuditEvents properties.client_ip=<ioc_ip> | stats sum(properties.affected_rows) as rows count by properties.database_name, properties.statement | sort - rows"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-logic-app-data-exfil",
+      "name": "Logic App workflow created to exfiltrate data",
+      "summary": "Use when a Logic App is created or modified with connectors that read mailboxes, SharePoint, SQL, or storage and post data to an external HTTP endpoint or personal account.",
+      "tags": [
+        "azure",
+        "logic-apps",
+        "exfiltration",
+        "automation"
+      ],
+      "attack": [
+        "T1567",
+        "T1020",
+        "T1537"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable WorkflowRuntime diagnostic logs for Logic Apps to the SIEM",
+          "Restrict who can create API connections (Microsoft.Web/connections) to approved teams",
+          "Maintain an allow list of outbound HTTP endpoints used by integrations"
+        ],
+        "identification": [
+          "Search Activity Log for Microsoft.Logic/workflows/write and Microsoft.Web/connections/write events",
+          "Export the workflow definition and identify triggers, data sources and HTTP or SMTP actions",
+          "List API connections the workflow uses and which user account authorized each one",
+          "Review run history for run count, inputs and outputs size since creation",
+          "Resolve destination URLs or email addresses and check their ownership"
+        ],
+        "containment": [
+          "Disable the Logic App workflow",
+          "Delete or revoke the API connections it uses so stored OAuth tokens stop working",
+          "Block the destination endpoint at the egress proxy or firewall"
+        ],
+        "eradication": [
+          "Delete the attacker workflow and its connections after exporting definitions as evidence",
+          "Reset credentials for the user whose consent backed the API connections",
+          "Check for sibling workflows in other resource groups created by the same caller"
+        ],
+        "recovery": [
+          "Restore legitimate integrations that shared connections with new authorizations",
+          "Confirm no runs occur after disablement",
+          "Quantify the records or files sent from run history outputs"
+        ],
+        "lessons": [
+          "Alert on new Logic Apps with HTTP actions to domains outside the allow list",
+          "Use Azure Policy to restrict connectors per environment",
+          "Review run history retention so exfil volume can be measured next time"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Logic App and API connection creation",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value IN (\"Microsoft.Logic/workflows/write\",\"Microsoft.Web/connections/write\",\"Microsoft.Logic/workflows/enable/action\") | table _time caller callerIpAddress resourceId operationName.value"
+        },
+        {
+          "title": "Workflow run counts by Logic App",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=WorkflowRuntime operationName=\"Microsoft.Logic/workflows/workflowRunCompleted\" | stats count min(_time) as first max(_time) as last by resource_workflowName_s, status_s | convert ctime(first) ctime(last)"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-devops-pat-leak",
+      "name": "Azure DevOps personal access token leaked and used",
+      "summary": "Use when an Azure DevOps PAT is found in code, logs, or a public repo, or the organization audit log shows token use from new IPs cloning repos or editing pipelines and service connections.",
+      "tags": [
+        "azure",
+        "azure-devops",
+        "pat",
+        "secrets",
+        "source-code"
+      ],
+      "attack": [
+        "T1552.001",
+        "T1213.003",
+        "T1078"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable Azure DevOps audit streaming to Splunk or Event Hub",
+          "Set organization policies limiting PAT lifetime and restricting full-scope PATs",
+          "Turn on IP conditional access policy for Azure DevOps via Entra"
+        ],
+        "identification": [
+          "Identify the PAT owner, scopes and expiry in the organization's PAT admin view",
+          "Search audit logs for Git.RepositoryCloned, Pipelines and Security events from the leaked token's user",
+          "Check for service connection edits or new pipeline variables containing secrets",
+          "Review pipeline runs queued by the user in the window for modified YAML",
+          "Determine where the PAT leaked and since when it was reachable"
+        ],
+        "containment": [
+          "Revoke the PAT through the PAT lifecycle API or organization settings",
+          "Suspend the user's access to the organization pending review",
+          "Rotate secrets in service connections and variable groups the user could read"
+        ],
+        "eradication": [
+          "Revert unauthorized pipeline, branch policy or repo permission changes",
+          "Remove additional PATs or SSH keys the user created during the window",
+          "Scrub the PAT from source history and build logs"
+        ],
+        "recovery": [
+          "Reissue a scoped, short-lived PAT or move the workflow to a service principal with workload identity federation",
+          "Confirm audit logs show no use of the revoked token",
+          "Review cloned repositories for embedded secrets and rotate them"
+        ],
+        "lessons": [
+          "Enable automatic PAT revocation when secret scanning finds a token",
+          "Add a detection for repository clones from IPs not in the corporate range",
+          "Track the number of full-scope PATs in the organization and drive it down"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Azure DevOps audit actions by suspect user",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:devops:audit actorUPN=<suspect_user> | stats count values(actionId) as actions by ipAddress, authenticationMechanism | sort - count"
+        },
+        {
+          "title": "Repository clones and service connection changes",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:devops:audit (actionId=Git.RepositoryCloned OR actionId=Library.ServiceConnection* OR actionId=Token.PatCreateEvent) | table _time actorUPN ipAddress actionId details"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-arc-server-abuse",
+      "name": "Azure Arc-connected server abused for remote execution",
+      "summary": "Use when Arc-enabled on-prem or multicloud servers receive unexpected extensions, run commands, or machine identity token use, giving a cloud identity a path into your datacenter.",
+      "tags": [
+        "azure",
+        "azure-arc",
+        "hybrid",
+        "lateral-movement"
+      ],
+      "attack": [
+        "T1651",
+        "T1072",
+        "T1021"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Restrict Azure Connected Machine Resource Administrator role to infrastructure admins",
+          "Configure the Arc agent extension allowlist with azcmagent config set extensions.allowlist",
+          "Forward himds and azcmagent logs from Arc servers to the SIEM"
+        ],
+        "identification": [
+          "Find Microsoft.HybridCompute/machines/extensions/write and runCommands/write in Activity Log",
+          "Review the extension type and settings, especially CustomScriptExtension script URIs",
+          "Check the server's local %ProgramData%\\GuestConfig\\extension_logs for executed commands",
+          "Identify who requested the Arc machine's managed identity token via the local himds endpoint",
+          "List other Arc machines the same caller targeted"
+        ],
+        "containment": [
+          "Remove the extension from the Arc machine and revoke the caller's role",
+          "Set extensions.blocklist or disable remote extension management on the agent",
+          "Isolate the on-prem server with EDR network containment"
+        ],
+        "eradication": [
+          "Remove persistence created by the extension script on the server",
+          "Rotate local admin and service account passwords on affected servers",
+          "Reonboard the machine with a new Arc resource if its machine identity was abused"
+        ],
+        "recovery": [
+          "Restore the agent configuration to the approved allowlist",
+          "Confirm the server's EDR telemetry shows no further unknown processes",
+          "Re-enable extension management only for required extensions"
+        ],
+        "lessons": [
+          "Alert on any extension installation on Arc machines outside patch windows",
+          "Treat Arc RBAC as Tier 0 if Arc reaches domain controllers",
+          "Document which Arc servers can reach sensitive on-prem networks"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Arc machine extensions and run commands",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value IN (\"Microsoft.HybridCompute/machines/extensions/write\",\"Microsoft.HybridCompute/machines/runCommands/write\") | table _time caller callerIpAddress resourceId properties.requestbody"
+        },
+        {
+          "title": "Processes launched by Arc extension handlers",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Processes.process) as cmd from datamodel=Endpoint.Processes where Processes.parent_process_name IN (\"gc_service.exe\",\"gc_worker.exe\",\"gc_arc_service.exe\",\"CustomScriptHandler.exe\") by Processes.dest Processes.process_name | `drop_dm_object_name(Processes)`"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-backup-soft-delete-disabled",
+      "name": "Backup vault soft delete disabled or backups deleted",
+      "summary": "Use when soft delete or immutability is turned off on a Recovery Services or Backup vault, backup items are stopped with data deletion, or policies are shortened, often a pre-ransomware step.",
+      "tags": [
+        "azure",
+        "backup",
+        "ransomware",
+        "impact"
+      ],
+      "attack": [
+        "T1490",
+        "T1485"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable always-on soft delete and immutable vaults on Recovery Services and Backup vaults",
+          "Configure Multi-user authorization with Resource Guard in a separate subscription",
+          "Route Azure Backup alerts and diagnostics to the SIEM"
+        ],
+        "identification": [
+          "Find vaults/backupconfig/write changing softDeleteFeatureState to Disabled",
+          "Search for protectedItems/delete and backupPolicies/write that shorten retention",
+          "List backup items in soft-deleted state with their remaining retention days",
+          "Check whether Resource Guard operations were requested or bypassed",
+          "Look for parallel signs of ransomware staging like mass VM shutdowns or new admin roles"
+        ],
+        "containment": [
+          "Re-enable soft delete and set immutability on affected vaults",
+          "Remove Backup Contributor and Owner from the identity that made the change",
+          "Lock the vault resource group with CanNotDelete"
+        ],
+        "eradication": [
+          "Undelete soft-deleted backup items and resume protection",
+          "Revert backup policy retention to the approved values",
+          "Disable the caller identity and review its other control-plane activity"
+        ],
+        "recovery": [
+          "Run an on-demand backup of critical VMs and databases once protection resumes",
+          "Perform a test restore to confirm backup integrity",
+          "Validate cross-region restore and vault redundancy settings"
+        ],
+        "lessons": [
+          "Escalate any soft-delete disable as a critical, ransomware-precursor alert",
+          "Move backup administration to a separate identity tier from production owners",
+          "Measure how many restore points were lost"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Backup vault security setting changes",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value IN (\"Microsoft.RecoveryServices/vaults/backupconfig/write\",\"Microsoft.RecoveryServices/vaults/write\",\"Microsoft.DataProtection/backupVaults/write\") | spath input=properties.requestbody | table _time caller resourceId properties.softDeleteFeatureState properties.securitySettings.immutabilitySettings.state"
+        },
+        {
+          "title": "Protected item deletions and policy edits",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity (operationName.value=\"*/protectedItems/delete\" OR operationName.value=\"Microsoft.RecoveryServices/vaults/backupPolicies/write\") | stats count values(resourceId) as items by caller, operationName.value"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-snapshot-export-sas",
+      "name": "Managed disk or snapshot exported via SAS URL",
+      "summary": "Use when a managed disk or snapshot is granted export access (beginGetAccess), or snapshots are created and shared, enabling an attacker to download a full VM disk including credentials and data.",
+      "tags": [
+        "azure",
+        "disk",
+        "snapshot",
+        "exfiltration"
+      ],
+      "attack": [
+        "T1537",
+        "T1578.001",
+        "T1005"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Set disk networkAccessPolicy to DenyAll or AllowPrivate for sensitive VMs by policy",
+          "Restrict Microsoft.Compute/disks/beginGetAccess/action to backup and DR roles",
+          "Encrypt disks with customer-managed keys so exported VHDs are less useful"
+        ],
+        "identification": [
+          "Find snapshots/write, disks/beginGetAccess/action and snapshots/beginGetAccess/action events",
+          "Map each exported disk or snapshot to its source VM and data classification",
+          "Determine the SAS duration requested in the beginGetAccess request body",
+          "Check whether snapshots were copied to another subscription or region",
+          "Identify the caller and confirm whether a DR or backup job explains the export"
+        ],
+        "containment": [
+          "Revoke export access with az disk revoke-access or az snapshot revoke-access",
+          "Delete attacker-created snapshots after preserving metadata",
+          "Remove the caller's Disk Snapshot Contributor or VM Contributor role"
+        ],
+        "eradication": [
+          "Assume credentials on the disk are compromised and rotate local and cached domain accounts",
+          "Rotate application secrets stored on the exported VM filesystem",
+          "Remove any copy of the snapshot in other subscriptions the caller controls"
+        ],
+        "recovery": [
+          "Apply disk access policies and private endpoints to remaining sensitive disks",
+          "Confirm no further beginGetAccess events from non-approved identities",
+          "Notify data owners of the potential full-disk exposure"
+        ],
+        "lessons": [
+          "Alert on beginGetAccess by any identity not in the backup allow list",
+          "Review whether domain controllers or database servers had exportable disks",
+          "Document the full list of secrets that lived on the exported disk"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Disk and snapshot export grants",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value IN (\"Microsoft.Compute/disks/beginGetAccess/action\",\"Microsoft.Compute/snapshots/beginGetAccess/action\",\"Microsoft.Compute/snapshots/write\") | table _time caller callerIpAddress resourceId operationName.value properties.requestbody"
+        },
+        {
+          "title": "Callers exporting disks for the first time",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value=\"*/beginGetAccess/action\" earliest=-90d | stats min(_time) as first count by caller | where first>relative_time(now(),\"-7d\") | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-lighthouse-delegation-added",
+      "name": "Azure Lighthouse delegation added to an unknown managing tenant",
+      "summary": "Use when a registrationDefinition or registrationAssignment grants an external tenant delegated access to subscriptions or resource groups, a stealthy persistence path for attackers.",
+      "tags": [
+        "azure",
+        "lighthouse",
+        "persistence",
+        "third-party"
+      ],
+      "attack": [
+        "T1098",
+        "T1199"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Maintain a list of approved managing tenant IDs for MSPs and partners",
+          "Use Azure Policy to allow Lighthouse delegations only to approved tenant IDs",
+          "Alert on Microsoft.ManagedServices writes in every subscription"
+        ],
+        "identification": [
+          "List registrationDefinitions and registrationAssignments with az managedservices definition list",
+          "Compare managedByTenantId against the approved partner list",
+          "Review the authorizations array for roles granted, such as Contributor or User Access Administrator",
+          "Identify the local caller that deployed the delegation and how they authenticated",
+          "Check Activity Log for operations by the managing tenant's principals since delegation"
+        ],
+        "containment": [
+          "Delete the unauthorized registrationAssignment to remove delegated access",
+          "Disable the local identity that created the delegation",
+          "Apply the Lighthouse allowed-tenants policy to prevent re-creation"
+        ],
+        "eradication": [
+          "Remove resources and role assignments created by the managing tenant",
+          "Search all subscriptions for additional delegations to the same tenant",
+          "Rotate secrets readable by the delegated roles"
+        ],
+        "recovery": [
+          "Confirm approved MSP delegations still function",
+          "Verify no Activity Log entries carry the removed managedByTenantId afterward",
+          "Inform the account owners of each affected subscription"
+        ],
+        "lessons": [
+          "Review Lighthouse delegations quarterly with the vendor management team",
+          "Add a detection on any registrationAssignments/write",
+          "Document how attacker access via delegation appears in logs for future hunts"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Lighthouse delegation writes",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value IN (\"Microsoft.ManagedServices/registrationDefinitions/write\",\"Microsoft.ManagedServices/registrationAssignments/write\") | spath input=properties.requestbody path=properties.managedByTenantId output=managing_tenant | table _time caller subscriptionId managing_tenant status.value"
+        },
+        {
+          "title": "Activity by principals from the managing tenant",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity \"claims.http://schemas.microsoft.com/identity/claims/tenantid\"=<managing_tenant_id> | stats count values(operationName.value) as ops by caller, subscriptionId"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-policy-exemption-abuse",
+      "name": "Azure Policy exemptions or assignments altered to bypass guardrails",
+      "summary": "Use when policy exemptions are created, assignments deleted, or enforcement mode set to DoNotEnforce, which can silently allow public storage, open NSGs or disabled logging.",
+      "tags": [
+        "azure",
+        "azure-policy",
+        "defense-evasion",
+        "governance"
+      ],
+      "attack": [
+        "T1562",
+        "T1484"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Manage policy assignments and exemptions as code from a single pipeline",
+          "Restrict Resource Policy Contributor to the governance team",
+          "Report policy compliance state daily to the SOC"
+        ],
+        "identification": [
+          "Find policyExemptions/write, policyAssignments/delete and policyAssignments/write with enforcementMode changes",
+          "Review exemption scope, exemptionCategory, expiry and the policies it waives",
+          "Check what non-compliant resources were created under the exemption",
+          "Correlate the caller with change tickets for governance exceptions"
+        ],
+        "containment": [
+          "Delete unauthorized exemptions and set enforcement back to Default",
+          "Reassign deleted policy assignments from source control",
+          "Remove Resource Policy Contributor from the caller"
+        ],
+        "eradication": [
+          "Run remediation tasks for DeployIfNotExists and Modify policies",
+          "Remediate or delete non-compliant resources created during the bypass",
+          "Review the caller's other actions for related attack steps"
+        ],
+        "recovery": [
+          "Confirm compliance percentage is back to its pre-incident baseline",
+          "Validate deny policies block a test non-compliant deployment",
+          "Notify subscription owners of reinstated guardrails"
+        ],
+        "lessons": [
+          "Require expiry dates and tickets on all exemptions",
+          "Alert on enforcementMode DoNotEnforce for security-critical initiatives",
+          "Measure how long guardrails were off"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Policy exemptions and assignment changes",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value IN (\"Microsoft.Authorization/policyExemptions/write\",\"Microsoft.Authorization/policyAssignments/delete\",\"Microsoft.Authorization/policyAssignments/write\") | spath input=properties.requestbody | table _time caller resourceId operationName.value properties.enforcementMode properties.exemptionCategory properties.expiresOn"
+        },
+        {
+          "title": "Resources created during the bypass window",
+          "phase": "eradication",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value=\"*/write\" status.value=Succeeded earliest=<exemption_time> latest=<restore_time> | stats count by caller, operationName.value | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-azure-cost-anomaly",
+      "name": "Unexplained Azure cost anomaly",
+      "summary": "Use when Cost Management flags a sudden spend increase that no team claims, which may come from abused compute, data egress, leaked API keys for AI services, or misconfiguration.",
+      "tags": [
+        "azure",
+        "cost",
+        "resource-hijacking",
+        "anomaly"
+      ],
+      "attack": [
+        "T1496"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Enable Cost Management anomaly alerts per subscription with security as a recipient",
+          "Tag resources with owner and cost center so unclaimed spend stands out",
+          "Export daily cost data to storage for SIEM or BI correlation"
+        ],
+        "identification": [
+          "Break down the anomaly in Cost analysis by service, meter, resource group and location",
+          "Identify new resources behind the top meters and their creation time and caller",
+          "Check Azure OpenAI and Cognitive Services usage for key-based calls from unknown IPs",
+          "Review bandwidth meters for egress spikes pointing to data exfiltration",
+          "Ask resource owners to confirm or deny the workload"
+        ],
+        "containment": [
+          "Stop or scale down the resources driving unauthorized spend",
+          "Regenerate API keys for AI or Cognitive Services accounts with abnormal usage",
+          "Apply a budget action group to notify and trigger automation if spend continues"
+        ],
+        "eradication": [
+          "Delete unauthorized resources after evidence capture",
+          "Disable the identity or key that created or used them",
+          "Fix the misconfiguration if the cause was benign, such as an autoscale loop"
+        ],
+        "recovery": [
+          "Request a billing adjustment for fraudulent usage from Microsoft support",
+          "Confirm daily spend returns to baseline",
+          "Hand off non-security root causes to FinOps with a summary"
+        ],
+        "lessons": [
+          "Track how many hours elapsed between the cost spike and detection",
+          "Add Activity Log detection for first-seen services or meters in a subscription",
+          "Require local auth disabled on AI services so keys cannot be abused"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Resources created in the anomaly window by caller",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=azure:monitor:activity operationName.value=\"*/write\" status.value=Succeeded subscriptionId=<subscription_id> | rex field=resourceId \"(?i)providers/(?<provider>[^/]+/[^/]+)\" | stats dc(resourceId) as resources by caller, provider | sort - resources"
+        },
+        {
+          "title": "Azure OpenAI key-based calls by IP",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=mscs:azure:eventhub category=RequestResponse properties.accountName=<cognitive_account> | stats count by callerIpAddress, operationName | sort - count"
+        }
+      ]
+    }
+  ]
+}

@@ -8,6 +8,8 @@ import { defineConfig, devices } from '@playwright/test';
 // Edge is added on Windows, where CI runners have it preinstalled.
 
 const PORT = 4180;
+const CONNECTED_PORT = 4181;
+const SPLUNK_PORT = 4190;
 
 const projects = [
   { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
@@ -29,11 +31,24 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   projects,
-  webServer: {
-    command: `npx vite preview --outDir dist-e2e --port ${PORT} --strictPort`,
-    url: `http://localhost:${PORT}/`,
-    reuseExistingServer: !process.env.CI,
-  },
+  webServer: [
+    {
+      command: `npx vite preview --outDir dist-e2e --port ${PORT} --strictPort`,
+      url: `http://localhost:${PORT}/`,
+      reuseExistingServer: !process.env.CI,
+    },
+    {
+      command: `npx vite preview --outDir dist-e2e-connected --port ${CONNECTED_PORT} --strictPort`,
+      url: `http://localhost:${CONNECTED_PORT}/`,
+      reuseExistingServer: !process.env.CI,
+    },
+    {
+      // Stand-in for a customer's Splunk (REST search + HEC) with CORS.
+      command: `node e2e/mock-splunk.mjs ${SPLUNK_PORT}`,
+      url: `http://localhost:${SPLUNK_PORT}/__health`,
+      reuseExistingServer: !process.env.CI,
+    },
+  ],
 });
 
-export { PORT };
+export { PORT, CONNECTED_PORT, SPLUNK_PORT };

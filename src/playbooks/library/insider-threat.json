@@ -1,0 +1,1318 @@
+{
+  "category": {
+    "id": "insider-threat",
+    "name": "Insider threat",
+    "description": "Malicious, negligent or compromised insiders: departing staff, privileged misuse, fraud, sabotage and fraudulent workers, with HR and legal coordination."
+  },
+  "playbooks": [
+    {
+      "id": "lib-insider-threat-departing-employee-data-theft",
+      "name": "Departing employee suspected of taking company data",
+      "summary": "Use when an employee who has resigned or been given notice shows signs of collecting company data. Coordinates HR, Legal and Security on a proportionate, documented review.",
+      "tags": [
+        "departing-employee",
+        "insider",
+        "hr",
+        "legal"
+      ],
+      "attack": [
+        "T1052",
+        "T1567",
+        "T1213"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Agree an HR-to-Security notification for resignations from high-risk roles within one business day",
+          "Have Legal approve a standard departure monitoring scope that respects local employee privacy law",
+          "Include return-of-property and data clauses in offboarding checklists"
+        ],
+        "identification": [
+          "Open a restricted-access case with need-to-know limited to HR, Legal and named investigators",
+          "Review the 30 days before notice for USB writes, personal email sends and cloud uploads",
+          "Check whether the employee is joining a competitor, using only HR-supplied information",
+          "Compare file access volume with the employee's own historic baseline",
+          "Document every search performed and its business justification for the privacy record"
+        ],
+        "containment": [
+          "Agree with HR whether to place the employee on garden leave and remove access early",
+          "Disable external sharing and USB write on the employee's account and device",
+          "Place the mailbox, OneDrive and device on legal hold before offboarding wipes them"
+        ],
+        "eradication": [
+          "Collect company devices at exit and image them before reassignment",
+          "Have Legal issue a letter requesting return or deletion of identified data",
+          "Revoke all SSO sessions, tokens and VPN certificates on the last day"
+        ],
+        "recovery": [
+          "Obtain a signed exit certification that no company data is retained",
+          "Brief the manager on accounts and projects that need transition handling",
+          "Close the case with a factual findings memo shared only with HR and Legal"
+        ],
+        "lessons": [
+          "Measure lag between resignation and Security notification",
+          "Decide whether departure-risk reviews should be automatic for named roles",
+          "Review privacy feedback on the proportionality of monitoring used"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Departing user data movement summary",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(Web.bytes_out) as upload from datamodel=Web where Web.user=\"<suspect_user>\" Web.category IN (\"online-storage*\",\"personal-email*\",\"web-based-email*\") earliest=-30d by Web.dest _time span=1d"
+        },
+        {
+          "title": "Personal email forwarding of attachments",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(All_Email.file_name) as files from datamodel=Email where All_Email.src_user=\"<suspect_user>\" All_Email.recipient IN (\"*@gmail.com\",\"*@outlook.com\",\"*@yahoo.com\",\"*@proton.me\") earliest=-30d by All_Email.recipient"
+        },
+        {
+          "title": "Access revocation verification after exit",
+          "phase": "eradication",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.user=\"<suspect_user>\" Authentication.action=success earliest=<exit_date> by Authentication.app Authentication.src"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-disgruntled-admin-sabotage",
+      "name": "Disgruntled administrator sabotaging systems",
+      "summary": "Use when a privileged administrator in conflict with the organization deletes data, changes passwords, disables backups or alters configurations to cause damage.",
+      "tags": [
+        "sabotage",
+        "privileged-access",
+        "admin",
+        "destruction"
+      ],
+      "attack": [
+        "T1485",
+        "T1531",
+        "T1490",
+        "T1489"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Store break-glass admin credentials in a vault the administrators cannot change alone",
+          "Keep immutable or offline backups that admins cannot delete without dual approval",
+          "Forward admin audit logs to a SIEM tenant administered by a different team"
+        ],
+        "identification": [
+          "Confirm the scope of destructive actions: deleted VMs, dropped databases, disabled accounts, changed passwords",
+          "Attribute each action to the admin account, source host and time from audit logs",
+          "Check for backdoor accounts, new SSH keys or scheduled jobs created by the admin",
+          "Verify backup integrity and whether retention or snapshots were altered",
+          "Get HR context on the dispute, termination timing or grievances without sharing technical details widely"
+        ],
+        "containment": [
+          "Disable all the admin's accounts, including service and cloud console identities, in one coordinated action",
+          "Rotate shared admin, root and break-glass passwords the admin knew",
+          "Revoke the admin's VPN, SSH keys and hardware tokens",
+          "Coordinate with HR and Legal on removing the person from premises and whether to involve police"
+        ],
+        "eradication": [
+          "Remove backdoor accounts, cron jobs and authorized_keys entries the admin added",
+          "Revert configuration changes using version control or config backups",
+          "Audit firewall rules and DNS records for malicious edits"
+        ],
+        "recovery": [
+          "Restore deleted systems and data from immutable backups in business priority order",
+          "Validate restored systems with service owners before reopening to users",
+          "Preserve evidence with chain of custody for civil or criminal action"
+        ],
+        "lessons": [
+          "Introduce dual control for destructive operations on production and backups",
+          "Require HR to alert Security before adverse action against privileged staff",
+          "Review how many shared admin credentials existed and eliminate them"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Destructive and account changes by the admin",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(All_Changes.object) as objects from datamodel=Change where All_Changes.user=\"<suspect_admin>\" All_Changes.action IN (\"deleted\",\"modified\",\"disabled\") by All_Changes.object_category All_Changes.command All_Changes.dest _time span=10m"
+        },
+        {
+          "title": "Password resets and account disables in AD",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"WinEventLog:Security\" EventCode IN (4724,4725,4726,4720,4728,4732) Subject_Account_Name=\"<suspect_admin>\" | stats count values(Target_Account_Name) as targets by EventCode host"
+        },
+        {
+          "title": "Backup job and snapshot deletions",
+          "phase": "identification",
+          "spl": "index=* (sourcetype=\"aws:cloudtrail\" eventName IN (\"DeleteSnapshot\",\"DeleteBackupVault\",\"DeleteRecoveryPoint\",\"PutBackupVaultAccessPolicy\")) OR (sourcetype=\"veeam:*\" action IN (\"delete*\",\"retention*\")) | stats count by user eventName"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-privileged-user-record-snooping",
+      "name": "Privileged user snooping on HR or medical records",
+      "summary": "Use when access audits show an employee viewing HR files, patient charts or customer accounts of colleagues, celebrities or relatives without a work reason.",
+      "tags": [
+        "snooping",
+        "privacy",
+        "ehr",
+        "hr-records"
+      ],
+      "attack": [
+        "T1213"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable read-access auditing in the EHR, HRIS and customer support systems",
+          "Run proactive access monitoring for VIP, employee and same-surname record views",
+          "Agree a sanctions policy for inappropriate access with HR and the Privacy Officer"
+        ],
+        "identification": [
+          "Pull the access log for the user: records viewed, screens opened, timestamps and workstation",
+          "Check each viewed record against the user's assignments, tickets or care team to find unjustified views",
+          "Identify relationships between the user and the subjects such as same address, surname or manager chain",
+          "Determine whether data was printed, exported or screenshotted after viewing",
+          "Interview the user with HR present and record their explanation"
+        ],
+        "containment": [
+          "Restrict the user's role to the minimum needed for their current duties",
+          "Enable break-the-glass justification prompts for sensitive record access",
+          "Preserve the access logs and any exports under legal hold"
+        ],
+        "eradication": [
+          "Remove standing access to VIP and employee records from the user's role",
+          "Delete any exports or printouts recovered from the user",
+          "Remove shared or generic logins on clinical workstations that hid who viewed records"
+        ],
+        "recovery": [
+          "Provide the Privacy Officer the list of affected individuals for notification assessment",
+          "Prepare notification letters to affected individuals if required by the risk assessment",
+          "Apply HR sanctions according to the documented policy"
+        ],
+        "lessons": [
+          "Add automated alerts for employees viewing other employees' records",
+          "Review whether role-based access in the system is too broad",
+          "Track the number of inappropriate access cases per quarter"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Records viewed by the user in the EHR",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"epic:access\" OR sourcetype=\"ehr:audit\" user=\"<suspect_user>\" action IN (\"view\",\"print\",\"export\") | stats count values(action) as actions earliest(_time) as first by patient_id workstation | convert ctime(first)"
+        },
+        {
+          "title": "Employees viewing records of other employees",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=\"ehr:audit\" action=view | lookup employee_patients.csv patient_id OUTPUT employee_name | where isnotnull(employee_name) | stats count dc(patient_id) as records by user"
+        },
+        {
+          "title": "HRIS sensitive page views",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"workday:audit\" OR sourcetype=\"hris:audit\" actor=\"<suspect_user>\" task IN (\"View Compensation\",\"View Personal Data\",\"View Medical Leave\") | stats count by target_worker task"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-employee-selling-access",
+      "name": "Employee selling network access or credentials",
+      "summary": "Use when intel, a tip or anomalous logins suggest an employee is selling their VPN, SSO or admin access to outsiders, for example via forums or messaging channels.",
+      "tags": [
+        "access-broker",
+        "insider",
+        "credentials",
+        "threat-intel"
+      ],
+      "attack": [
+        "T1078",
+        "T1133"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Subscribe to intel monitoring for initial access listings that mention the company or its sector and size",
+          "Log VPN sessions with device posture, source IP and concurrent session counts",
+          "Keep a law enforcement liaison contact for insider criminal cases"
+        ],
+        "identification": [
+          "Correlate the listing details such as country, revenue band and access type with the company's footprint",
+          "Look for the employee's account logging in from hosting providers, new countries or unmanaged devices",
+          "Check for concurrent sessions where the employee is in the office while VPN sessions run elsewhere",
+          "Review recent MFA device registrations or resets on the account",
+          "Keep investigation confidential and limited to named investigators, HR and Legal"
+        ],
+        "containment": [
+          "Revoke all sessions and require MFA re-registration with identity verification",
+          "Block the external source IPs used by the buyer",
+          "Decide with Legal whether to monitor briefly for attribution or disable the account immediately"
+        ],
+        "eradication": [
+          "Hunt for persistence the buyer may have established: new accounts, implants, tunnels",
+          "Remove MFA methods registered by the outside party",
+          "Rotate credentials for any systems the buyer reached"
+        ],
+        "recovery": [
+          "Provide evidence packages to Legal for termination and possible referral to police",
+          "Re-validate that the access path is closed by testing with the old credential",
+          "Notify affected system owners of the access the buyer had"
+        ],
+        "lessons": [
+          "Add detection for concurrent sessions from geographically distant locations",
+          "Bind VPN access to managed devices with certificates",
+          "Review whether financial stress indicators are part of insider risk referral criteria"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "VPN sessions for the user by source and device",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"pan:globalprotect\" OR sourcetype=\"cisco:asa\" user=\"<suspect_user>\" | iplocation src_ip | stats count earliest(_time) as first latest(_time) as last values(Country) as countries values(host_id) as devices by src_ip"
+        },
+        {
+          "title": "Badge in office while remote session active",
+          "phase": "identification",
+          "spl": "index=* (sourcetype=\"badge:access\" user=\"<suspect_user>\") OR (sourcetype=\"pan:globalprotect\" user=\"<suspect_user>\" event_id=\"gateway-connected\") | eval kind=if(sourcetype=\"badge:access\",\"badge\",\"vpn\") | timechart span=15m count by kind"
+        },
+        {
+          "title": "MFA method changes on the account",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=\"azure:aad:audit\" activityDisplayName IN (\"User registered security info\",\"User deleted security info\",\"Admin registered security info\") targetResources{}.userPrincipalName=\"<suspect_user>\" | table _time activityDisplayName initiatedBy.user.ipAddress result"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-contractor-overreach",
+      "name": "Contractor accessing systems beyond their engagement scope",
+      "summary": "Use when a contractor or consultant account browses repositories, shares or systems not covered by their statement of work, or keeps access after the engagement ends.",
+      "tags": [
+        "contractor",
+        "third-party",
+        "least-privilege",
+        "access-review"
+      ],
+      "attack": [
+        "T1078",
+        "T1083"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Record each contractor's sponsor, scope and end date in the identity system",
+          "Expire contractor accounts automatically at the contract end date",
+          "Put contractors in a distinct group so their access can be monitored and reviewed"
+        ],
+        "identification": [
+          "Obtain the statement of work and sponsor's description of approved systems",
+          "List systems, repositories and shares the contractor accessed in the last 60 days",
+          "Flag access outside approved scope and check how permissions were granted",
+          "Check whether data was downloaded from out-of-scope locations",
+          "Notify the contractor's firm through Procurement and Legal per contract terms when appropriate"
+        ],
+        "containment": [
+          "Remove group memberships and permissions not required by the statement of work",
+          "Restrict the contractor to a jump host or VDI for remaining work",
+          "Preserve access logs for contractual dispute or claims"
+        ],
+        "eradication": [
+          "Recover or confirm deletion of any out-of-scope data with the contractor firm",
+          "Revoke personal access tokens and API keys issued to the contractor",
+          "Close inherited access from nested groups that caused the overreach"
+        ],
+        "recovery": [
+          "Confirm the sponsor re-approves the reduced access list",
+          "Schedule access recertification before any contract extension",
+          "Record the outcome with Procurement for vendor performance review"
+        ],
+        "lessons": [
+          "Measure how many contractor accounts exceed scope at quarterly reviews",
+          "Require sponsors to attest to contractor access every 90 days",
+          "Fix the provisioning template that granted broad default groups"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Systems accessed by contractor accounts",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count dc(Authentication.dest) as systems values(Authentication.dest) as dests from datamodel=Authentication where Authentication.user=\"<contractor_user>\" Authentication.action=success earliest=-60d by Authentication.app"
+        },
+        {
+          "title": "File share access outside approved paths",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"WinEventLog:Security\" EventCode=5145 Account_Name=\"<contractor_user>\" | stats count values(Relative_Target_Name) as files by Share_Name | lookup contractor_scope.csv share as Share_Name OUTPUT approved | where isnull(approved)"
+        },
+        {
+          "title": "Contractor accounts active past end date",
+          "phase": "lessons",
+          "spl": "| tstats summariesonly=false latest(_time) as last from datamodel=Authentication where Authentication.action=success by Authentication.user | lookup contractors.csv user as Authentication.user OUTPUT end_date | where isnotnull(end_date) AND last > strptime(end_date, \"%Y-%m-%d\")"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-finance-employee-fraud",
+      "name": "Fraud by a finance employee (payments or vendor records)",
+      "summary": "Use when a finance or accounts payable employee is suspected of creating fake vendors, changing bank details, or approving their own payments to divert funds.",
+      "tags": [
+        "fraud",
+        "finance",
+        "erp",
+        "segregation-of-duties"
+      ],
+      "attack": [
+        "T1565.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable ERP audit trails for vendor master changes, bank detail edits and payment approvals",
+          "Enforce segregation of duties so no one can create a vendor and approve its payment",
+          "Agree with Internal Audit and Legal who leads fraud investigations and when Security assists"
+        ],
+        "identification": [
+          "Extract vendor master changes made by the employee, especially bank account and address edits",
+          "Match new vendor bank accounts against employee payroll bank accounts and addresses",
+          "List payments the employee created or approved and flag round amounts or split invoices below approval limits",
+          "Review email for invoice PDFs created by the employee rather than received from vendors",
+          "Keep the case restricted to Internal Audit, Legal, HR and named investigators"
+        ],
+        "containment": [
+          "Remove the employee's ERP vendor maintenance and payment approval roles",
+          "Place a hold on pending payments to the suspicious vendors",
+          "Ask Treasury to contact the bank about recalling recent transfers"
+        ],
+        "eradication": [
+          "Block the fraudulent vendor records in the ERP",
+          "Revert bank detail changes after verifying with vendors by known phone numbers",
+          "Image the employee's laptop and preserve mailbox under legal hold"
+        ],
+        "recovery": [
+          "Quantify the loss with Internal Audit for insurance and recovery claims",
+          "Notify the crime or fidelity insurer under policy conditions",
+          "Support Legal in any referral to law enforcement"
+        ],
+        "lessons": [
+          "Add a monthly match of vendor bank accounts against payroll accounts",
+          "Fix the SoD conflict in ERP roles that enabled the fraud",
+          "Require callback verification for all vendor bank detail changes"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Vendor master changes by the employee",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"sap:audit\" OR sourcetype=\"erp:audit\" user=\"<suspect_user>\" tcode IN (\"XK01\",\"XK02\",\"FK02\",\"FK01\") | stats count values(field_changed) as fields values(vendor_id) as vendors by tcode"
+        },
+        {
+          "title": "Payments created and approved by the same user",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"erp:payments\" | where created_by=approved_by | stats count sum(amount) as total values(vendor_id) as vendors by created_by"
+        },
+        {
+          "title": "Vendor bank accounts matching payroll",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=\"erp:vendor_master\" | lookup payroll_bank_accounts.csv iban OUTPUT employee_id | where isnotnull(employee_id) | table vendor_id vendor_name iban employee_id"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-unauthorized-crypto-mining",
+      "name": "Staff member running unauthorized cryptocurrency mining",
+      "summary": "Use when an employee uses company servers, GPUs, cloud accounts or workstations to mine cryptocurrency for personal gain.",
+      "tags": [
+        "cryptomining",
+        "resource-abuse",
+        "cloud",
+        "insider"
+      ],
+      "attack": [
+        "T1496"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Block known mining pool domains and Stratum ports at the proxy and firewall",
+          "Alert on sustained high GPU or CPU utilization on hosts without a declared workload",
+          "Set budget alerts on GPU instance families in cloud accounts"
+        ],
+        "identification": [
+          "Identify miner binaries (xmrig, ethminer, nbminer) and their command lines including wallet address",
+          "Record the mining pool host and port from network connections",
+          "Determine who deployed the miner from login records, cloud API calls or container registries",
+          "Calculate compute hours and cost consumed by the miner",
+          "Confirm with HR before interviewing the employee"
+        ],
+        "containment": [
+          "Kill the miner processes and stop or scale down mining instances",
+          "Block the mining pool domains and IPs",
+          "Remove the employee's ability to launch compute in the affected accounts"
+        ],
+        "eradication": [
+          "Delete miner binaries, containers, scheduled tasks and startup scripts",
+          "Remove the cloud instances, launch templates or Kubernetes deployments used for mining",
+          "Rotate any credentials the employee embedded in mining scripts"
+        ],
+        "recovery": [
+          "Return GPUs and servers to their legitimate workloads after a clean scan",
+          "Provide Finance the cost estimate for any recovery from the employee",
+          "Document outcome for HR disciplinary process"
+        ],
+        "lessons": [
+          "Add Stratum protocol detection on the IDS",
+          "Restrict GPU instance types with service control policies",
+          "Review why the utilization anomaly was not acted on sooner"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Miner process execution",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Processes.process) as cmd from datamodel=Endpoint.Processes where (Processes.process_name IN (\"xmrig*\",\"ethminer*\",\"nbminer*\",\"t-rex*\",\"lolminer*\") OR Processes.process=\"*stratum+tcp*\") by Processes.dest Processes.user"
+        },
+        {
+          "title": "Connections to mining pools",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count sum(All_Traffic.bytes) as bytes from datamodel=Network_Traffic where All_Traffic.dest_port IN (3333,4444,5555,7777,14444,45700) by All_Traffic.src All_Traffic.dest All_Traffic.dest_port"
+        },
+        {
+          "title": "GPU instance launches in cloud",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"aws:cloudtrail\" eventName=RunInstances | spath requestParameters.instanceType output=itype | search itype IN (\"p3*\",\"p4*\",\"g4*\",\"g5*\") | stats count by userIdentity.arn itype awsRegion"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-unauthorized-remote-access-tool",
+      "name": "Employee installed remote access software to work from elsewhere",
+      "summary": "Use when an employee installs AnyDesk, TeamViewer, Chrome Remote Desktop or similar on their work machine to reach it from home or abroad, bypassing VPN and location policy.",
+      "tags": [
+        "remote-access",
+        "rmm",
+        "policy-violation",
+        "endpoint"
+      ],
+      "attack": [
+        "T1219",
+        "T1133"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Maintain an allowlist of approved remote support tools and block others via application control",
+          "Detect remote access tool installs and outbound connections to their relay networks",
+          "Publish a remote and overseas working policy that states approved access methods"
+        ],
+        "identification": [
+          "Identify the tool, version, install time and installing user on the endpoint",
+          "Pull the tool's connection logs to find remote peer IDs and source IPs",
+          "Geolocate the remote sessions to check whether the employee was working from an unapproved country",
+          "Check whether any session originated from someone other than the employee",
+          "Review data accessed during remote sessions for export-control or data-residency concerns"
+        ],
+        "containment": [
+          "Uninstall the remote access tool and block its hash and relay domains",
+          "Terminate any active remote sessions",
+          "Reset the employee's password in case the tool stored unattended access credentials"
+        ],
+        "eradication": [
+          "Remove unattended-access services and startup entries the tool created",
+          "Hunt for the same tool on other endpoints",
+          "Confirm the employee has a supported VPN or VDI path for remote work"
+        ],
+        "recovery": [
+          "Return the endpoint to service after EDR scan",
+          "Have HR address the policy breach and any location-related tax or legal issues",
+          "Document whether any third party accessed the machine"
+        ],
+        "lessons": [
+          "Measure how many unapproved remote tools are discovered per quarter",
+          "Close local admin rights that allowed installation",
+          "Clarify the overseas working approval process to reduce workarounds"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Remote access tools executed on endpoints",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count earliest(_time) as first from datamodel=Endpoint.Processes where Processes.process_name IN (\"AnyDesk.exe\",\"TeamViewer.exe\",\"remoting_host.exe\",\"rustdesk.exe\",\"Splashtop*.exe\",\"ScreenConnect*.exe\") by Processes.dest Processes.user Processes.process_name | convert ctime(first)"
+        },
+        {
+          "title": "Connections to remote access relay networks",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Resolution where DNS.query IN (\"*.anydesk.com\",\"*.teamviewer.com\",\"remotedesktop-pa.googleapis.com\",\"*.rustdesk.com\") by DNS.src DNS.query"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-credential-sharing",
+      "name": "Employees sharing account credentials",
+      "summary": "Use when evidence shows staff sharing passwords or MFA codes with colleagues, assistants or family members, breaking accountability and audit trails.",
+      "tags": [
+        "credential-sharing",
+        "accountability",
+        "mfa",
+        "policy-violation"
+      ],
+      "attack": [
+        "T1078"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Provide delegated access features (mailbox delegation, shared mailboxes) so sharing is unnecessary",
+          "Log device fingerprint and source for every sign-in",
+          "State in the acceptable-use policy that credential sharing is prohibited"
+        ],
+        "identification": [
+          "Find concurrent sign-ins for the account from different devices or locations",
+          "Identify who else used the credential through device names, badge data or interviews",
+          "Check whether MFA push approvals came from a device owned by someone else",
+          "Determine whether the second person had their own account with lesser privileges",
+          "Assess what actions were performed under the shared identity"
+        ],
+        "containment": [
+          "Reset the password and revoke all sessions for the shared account",
+          "Re-register MFA on a device verified as owned by the account holder",
+          "Provision proper delegated access for the colleague who needed it"
+        ],
+        "eradication": [
+          "Remove the shared credential from notes, browser profiles or password managers of the other person",
+          "Delete MFA methods registered to devices not owned by the account holder",
+          "Convert any team-shared login into named accounts or a vaulted shared credential with checkout logging"
+        ],
+        "recovery": [
+          "Correct audit records where actions are attributed to the wrong person, with Legal guidance",
+          "Coach both employees with HR on policy and the reason for it",
+          "Confirm the account now signs in only from the owner's devices"
+        ],
+        "lessons": [
+          "Detect MFA approvals from devices registered to another user",
+          "Review why delegation was not used, such as missing training or tooling",
+          "Track repeat offenders for escalation"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Concurrent sign-ins from different devices",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"azure:aad:signin\" userPrincipalName=\"<suspect_user>\" status.errorCode=0 | bin _time span=15m | stats dc(deviceDetail.deviceId) as devices dc(ipAddress) as ips values(deviceDetail.displayName) as names by _time | where devices > 1"
+        },
+        {
+          "title": "Okta sessions from multiple user agents",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"okta:im2\" eventType=\"user.session.start\" actor.alternateId=\"<suspect_user>\" outcome.result=SUCCESS | stats count values(client.userAgent.rawUserAgent) as ua values(client.ipAddress) as ips by client.device"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-recruited-by-ransomware-gang",
+      "name": "Employee approached or recruited by a ransomware group",
+      "summary": "Use when an employee reports, or intel reveals, that a ransomware affiliate offered them money to run malware or provide access, whether or not they accepted.",
+      "tags": [
+        "ransomware",
+        "insider-recruitment",
+        "threat-intel",
+        "law-enforcement"
+      ],
+      "attack": [
+        "T1078",
+        "T1204.002"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Publish a confidential channel and reassurance that staff who report approaches will be protected",
+          "Brief high-access roles such as IT admins and help desk on insider recruitment tactics",
+          "Have law enforcement cyber unit contacts ready"
+        ],
+        "identification": [
+          "Collect the approach messages, handles, platforms and any files or links sent, without interacting further",
+          "Determine whether the employee ran any provided file or shared credentials",
+          "Check the employee's endpoint for the provided payload hash or URLs",
+          "Review the employee's account for unusual logins since first contact",
+          "Assess whether other staff were approached by the same handles"
+        ],
+        "containment": [
+          "Block the payload hash, URLs and contact domains enterprise-wide",
+          "Reset the employee's credentials and MFA as a precaution",
+          "Increase monitoring on the employee's privileged systems for 30 days"
+        ],
+        "eradication": [
+          "Remove any payload or remote tool found on the endpoint",
+          "Hunt for the payload and indicators across all endpoints",
+          "Review and remove access the employee does not need, framed as protective not punitive"
+        ],
+        "recovery": [
+          "Report the approach to law enforcement with Legal's approval",
+          "Thank and support the reporting employee and document protection measures",
+          "If the employee cooperated with the group, hand over to HR and Legal with full evidence"
+        ],
+        "lessons": [
+          "Share sanitized indicators with industry ISAC peers",
+          "Add recruitment scenarios to insider awareness training",
+          "Measure time between approach and report"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Execution of the payload offered to the employee",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count earliest(_time) as first from datamodel=Endpoint.Processes where Processes.process_hash=\"<payload_hash>\" OR Processes.process_name=\"<payload_name>\" by Processes.dest Processes.user | convert ctime(first)"
+        },
+        {
+          "title": "Access to contact or payload URLs across the org",
+          "phase": "eradication",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.url IN (\"*<ioc_domain>*\") OR Web.dest=\"<ioc_ip>\" by Web.user Web.src Web.url"
+        },
+        {
+          "title": "New logins for the employee since first contact",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.user=\"<suspect_user>\" earliest=<contact_date> by Authentication.src Authentication.dest Authentication.app | iplocation Authentication.src"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-logic-bomb",
+      "name": "Logic bomb planted in code or scheduled jobs",
+      "summary": "Use when code review, a tip or a near-miss reveals time- or condition-triggered destructive code planted by an insider in applications, scripts, cron jobs or database triggers.",
+      "tags": [
+        "logic-bomb",
+        "sabotage",
+        "code-review",
+        "scheduled-task"
+      ],
+      "attack": [
+        "T1053",
+        "T1485",
+        "T1195.002"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Require peer review and signed commits for production code and infrastructure scripts",
+          "Inventory scheduled jobs, cron entries and database triggers with an owner for each",
+          "Keep tested backups that predate recent changes by the departing or suspected insider"
+        ],
+        "identification": [
+          "Locate the trigger condition: date check, missing-user check or file-presence check in the code",
+          "Identify the commit, author, reviewer and deployment that introduced the code",
+          "Search all repositories, cron tables and DB triggers for similar patterns by the same author",
+          "Determine the trigger date or condition and how much time remains",
+          "Assess what the payload does: delete data, corrupt records, disable services"
+        ],
+        "containment": [
+          "Disable the scheduled job or trigger immediately without running it",
+          "Freeze deployments from the author's branches and revoke their repository write access",
+          "Take fresh backups of systems in the blast radius before changes"
+        ],
+        "eradication": [
+          "Remove the malicious code via reviewed commit and redeploy",
+          "Audit every commit by the author for the past year with a second reviewer",
+          "Rotate credentials the code or author had access to"
+        ],
+        "recovery": [
+          "Validate data integrity on systems if the bomb partially executed",
+          "Confirm the trigger date passes without impact under heightened monitoring",
+          "Hand forensic copies of commits and deployment logs to Legal"
+        ],
+        "lessons": [
+          "Add static analysis rules for date-conditional delete or drop statements",
+          "Enforce branch protection so no one merges unreviewed code to production",
+          "Review whether the reviewer of the commit missed it and why"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Scheduled task and cron creation by the author",
+          "phase": "identification",
+          "spl": "index=* (sourcetype=\"WinEventLog:Security\" EventCode=4698 Account_Name=\"<suspect_user>\") OR (sourcetype=\"linux:audit\" exe=\"/usr/bin/crontab\" auid_name=\"<suspect_user>\") | table _time host sourcetype Task_Name cmd"
+        },
+        {
+          "title": "Commits and merges by the author to production branches",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"github:enterprise:audit\" actor=\"<suspect_user>\" action IN (\"git.push\",\"pull_request.merge\",\"protected_branch.policy_override\") | stats count values(repo) as repos by action"
+        },
+        {
+          "title": "Mass delete operations near the trigger date",
+          "phase": "recovery",
+          "spl": "| tstats summariesonly=false count from datamodel=Change where All_Changes.action=deleted by All_Changes.dest All_Changes.user _time span=5m | where count > 100"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-leak-to-press",
+      "name": "Insider leaking confidential information to the press",
+      "summary": "Use when confidential internal documents or details appear in media reports and leadership asks for an investigation, balancing evidence gathering with whistleblower protections.",
+      "tags": [
+        "media-leak",
+        "confidential",
+        "legal",
+        "whistleblower"
+      ],
+      "attack": [],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Have Legal define when a leak investigation is lawful given whistleblower and press protections",
+          "Use document watermarking or unique distribution versions for highly sensitive material",
+          "Keep access logs for board and executive document repositories"
+        ],
+        "identification": [
+          "Get Legal's written approval and scope before any investigative search begins",
+          "Identify exactly which document versions or details were published",
+          "List everyone who had access to that version from repository and distribution logs",
+          "Check access, download and print events for those documents in the window before publication",
+          "Assess whether the leak may be a protected disclosure and route to the whistleblower process if so"
+        ],
+        "containment": [
+          "Restrict access to the remaining sensitive documents in the same repository",
+          "Coordinate a communications response with PR and Legal",
+          "Avoid any contact with journalists outside the PR function"
+        ],
+        "eradication": [
+          "Remove broad distribution lists from the sensitive repository",
+          "Revoke external sharing links that exist on related documents",
+          "Apply sensitivity labels with encryption to the affected document set"
+        ],
+        "recovery": [
+          "Provide findings only to Legal and HR, stating confidence levels honestly",
+          "Ensure no retaliation occurs against a person whose disclosure is protected",
+          "Close the investigation formally with documented rationale"
+        ],
+        "lessons": [
+          "Review whether sensitive documents need per-recipient watermarking",
+          "Check that internal speak-up channels are trusted enough to be used before the press",
+          "Record investigative steps taken for proportionality review"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Access to the leaked document before publication",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation IN (\"FileAccessed\",\"FileDownloaded\",\"FilePrinted\",\"FileCopied\") ObjectId=\"*<document_name>*\" earliest=<window_start> latest=<publication_time> | stats count values(Operation) as ops earliest(_time) as first by UserId ClientIP | convert ctime(first)"
+        },
+        {
+          "title": "Sharing changes on the sensitive repository",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation IN (\"SharingSet\",\"AddedToGroup\",\"AnonymousLinkCreated\",\"SharingInvitationCreated\") SiteUrl=\"*<site_path>*\" | table _time UserId Operation ObjectId TargetUserOrGroupName"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-nepotistic-access-grants",
+      "name": "Inappropriate access granted to friends or relatives",
+      "summary": "Use when an administrator or manager grants accounts, elevated roles or data access to relatives, friends or associates who lack a business need or proper approval.",
+      "tags": [
+        "access-governance",
+        "conflict-of-interest",
+        "iam",
+        "audit"
+      ],
+      "attack": [
+        "T1098"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Require ticket-linked approvals for account creation and privileged group changes",
+          "Collect conflict-of-interest declarations from staff with provisioning rights",
+          "Run quarterly access recertification by data owners"
+        ],
+        "identification": [
+          "List accounts and group memberships created or changed by the suspected administrator",
+          "Check each grant against an approved ticket and manager approval",
+          "Identify relationships between grantees and the administrator using HR data under Legal guidance",
+          "Review what the grantees accessed with the granted permissions",
+          "Check whether guest or contractor accounts were created without sponsors"
+        ],
+        "containment": [
+          "Suspend unapproved accounts and remove unapproved group memberships",
+          "Require a second approver for the administrator's future provisioning actions",
+          "Preserve provisioning logs and tickets"
+        ],
+        "eradication": [
+          "Delete orphan guest and contractor accounts tied to the grants",
+          "Correct role templates if the admin used a loophole to bypass approval",
+          "Revoke any API keys or tokens issued to the grantees"
+        ],
+        "recovery": [
+          "Restore proper access for any grantee with a genuine, approved business need",
+          "Report findings to HR and Compliance for conflict-of-interest handling",
+          "Confirm data accessed by grantees for any privacy impact"
+        ],
+        "lessons": [
+          "Add a detection for account creation without a matching ticket ID",
+          "Enforce four-eyes approval on privileged group membership changes",
+          "Review effectiveness of conflict-of-interest declarations"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Accounts created and groups changed by the admin",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"WinEventLog:Security\" EventCode IN (4720,4728,4732,4756) Subject_Account_Name=\"<suspect_admin>\" | stats count values(Group_Name) as groups by Target_Account_Name EventCode"
+        },
+        {
+          "title": "Entra ID guest invitations by the admin",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"azure:aad:audit\" activityDisplayName IN (\"Invite external user\",\"Add user\",\"Add member to role\") initiatedBy.user.userPrincipalName=\"<suspect_admin>\" | table _time activityDisplayName targetResources{}.userPrincipalName result"
+        },
+        {
+          "title": "Provisioning actions without a ticket reference",
+          "phase": "lessons",
+          "spl": "| tstats summariesonly=false count from datamodel=Change where All_Changes.object_category=user All_Changes.action=created by All_Changes.user All_Changes.object _time | lookup provisioning_tickets.csv account as All_Changes.object OUTPUT ticket | where isnull(ticket)"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-unauthorized-colleague-surveillance",
+      "name": "Employee secretly surveilling colleagues",
+      "summary": "Use when an employee, often IT staff or a manager, uses admin tools, mailbox access, keyloggers or cameras to monitor coworkers without authorization.",
+      "tags": [
+        "surveillance",
+        "privacy",
+        "mailbox-access",
+        "abuse-of-privilege"
+      ],
+      "attack": [
+        "T1114.002",
+        "T1056.001",
+        "T1125"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Log mailbox delegation grants, FullAccess permissions and MailItemsAccessed events",
+          "Require Legal and HR authorization for any sanctioned employee monitoring",
+          "Detect keylogger and screen-capture tools on endpoints"
+        ],
+        "identification": [
+          "Identify which mailboxes, chats, cameras or devices the employee accessed and how",
+          "Check for FullAccess or delegate permissions the employee granted to themselves",
+          "Look for keylogger or monitoring agents installed on colleagues' devices",
+          "Confirm there was no authorized investigation that covers the activity",
+          "Identify affected colleagues while keeping their identities restricted"
+        ],
+        "containment": [
+          "Remove the employee's mailbox permissions and admin roles used for surveillance",
+          "Uninstall monitoring agents from affected devices after evidence capture",
+          "Disable camera or DVR accounts the employee used"
+        ],
+        "eradication": [
+          "Delete collected recordings and logs the employee held, after Legal preserves evidence",
+          "Remove eDiscovery or content search roles not tied to approved cases",
+          "Rotate passwords for colleagues whose credentials may have been keylogged"
+        ],
+        "recovery": [
+          "Inform affected colleagues with HR and Legal guidance and offer support",
+          "Assess whether the surveillance is a reportable personal data breach",
+          "Apply HR disciplinary action per policy"
+        ],
+        "lessons": [
+          "Alert on self-granted mailbox permissions by administrators",
+          "Separate eDiscovery rights from general IT admin roles",
+          "Review physical security camera access controls"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Mailbox permissions granted by the employee",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation IN (\"Add-MailboxPermission\",\"Add-MailboxFolderPermission\",\"Set-Mailbox\") UserId=\"<suspect_user>\" | spath Parameters{} | table _time Operation ObjectId Parameters{}.Name Parameters{}.Value"
+        },
+        {
+          "title": "Mail items accessed in others' mailboxes",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation=MailItemsAccessed UserId=\"<suspect_user>\" | where MailboxOwnerUPN!=UserId | stats count by MailboxOwnerUPN ClientIPAddress"
+        },
+        {
+          "title": "Keylogging and monitoring agents on endpoints",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.process_name IN (\"*keylog*\",\"refog*\",\"spyrix*\",\"kidlogger*\",\"ActivTrak*\") by Processes.dest Processes.user Processes.process_name"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-personal-use-legal-risk",
+      "name": "Personal use of company systems creating legal risk",
+      "summary": "Use when an employee uses company devices or networks for activity that exposes the organization legally, such as pirated content distribution, harassment, or running a side business.",
+      "tags": [
+        "acceptable-use",
+        "legal-risk",
+        "policy-violation",
+        "hr"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Publish an acceptable-use policy that employees acknowledge annually",
+          "Define with Legal when illegal content must go to law enforcement rather than internal handling",
+          "Keep proxy and DLP logs with user attribution"
+        ],
+        "identification": [
+          "Classify the activity: copyright infringement notice, harassment, outside business, or potentially illegal content",
+          "Collect the triggering evidence such as a DMCA notice, complaint or proxy log",
+          "Map activity to the user via DHCP, VPN and proxy authentication records",
+          "Stop and escalate to Legal without viewing further if content may be illegal imagery",
+          "Limit evidence handling to the minimum people Legal approves"
+        ],
+        "containment": [
+          "Block the peer-to-peer or offending service for the user or network segment",
+          "Isolate the device and preserve it unaltered if law enforcement referral is likely",
+          "Respond to any third-party notice via Legal only"
+        ],
+        "eradication": [
+          "Remove torrent clients or unapproved software from the device",
+          "Delete pirated content from company storage after Legal confirms preservation needs",
+          "Revoke access used for outside business activity"
+        ],
+        "recovery": [
+          "Hand findings to HR for disciplinary handling",
+          "Answer the copyright holder or complainant through Legal",
+          "Return the device to service after reimaging"
+        ],
+        "lessons": [
+          "Add peer-to-peer protocol blocking on guest and corporate networks",
+          "Review whether acceptable-use training reached the employee's group",
+          "Track volume of copyright notices received by network segment"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Peer-to-peer traffic by user",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"pan:traffic\" app IN (\"bittorrent\",\"emule\",\"gnutella\") | stats sum(bytes) as bytes earliest(_time) as first latest(_time) as last by src_user src_ip | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Map IP and time from a third-party notice to a user",
+          "phase": "identification",
+          "spl": "index=* (sourcetype=\"pan:traffic\" OR sourcetype=\"dhcp\") (src_ip=\"<nat_internal_ip>\" OR nat_src_ip=\"<public_ip>\") earliest=<notice_time_minus_1h> latest=<notice_time_plus_1h> | stats values(src_user) as users values(src_ip) as internal values(dest_port) as ports by nat_src_port"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-fraudulent-remote-it-worker",
+      "name": "Fraudulent remote IT worker hired under a false identity",
+      "summary": "Use when a remote hire shows signs of being a sanctioned-state or fraudulent worker: laptop farms, mismatched identity, remote-control tools, or pay routed to unusual accounts.",
+      "tags": [
+        "fraudulent-worker",
+        "dprk",
+        "hiring-fraud",
+        "sanctions",
+        "remote-work"
+      ],
+      "attack": [
+        "T1078",
+        "T1219",
+        "T1133"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Require live video identity verification and document checks for remote technical hires",
+          "Ship laptops only to verified home addresses and flag reshipping or freight-forwarder addresses",
+          "Detect IP-KVM devices and remote control tools on corporate laptops"
+        ],
+        "identification": [
+          "Compare the laptop's sign-in IPs against the worker's stated location and flag VPN or VPS exits",
+          "Check the endpoint for IP-KVM USB devices, AnyDesk, Chrome Remote Desktop or similar tooling",
+          "Review the hiring file for identity inconsistencies: reused photos, mismatched documents, references",
+          "Check payroll for bank changes, payment platforms or accounts in third countries",
+          "Review code commits and data access for exfiltration or unusual scope"
+        ],
+        "containment": [
+          "Disable the worker's accounts and revoke all tokens in one coordinated action",
+          "Remotely lock the laptop and request return via a verified courier",
+          "Freeze pending payroll payments with Finance and Legal input"
+        ],
+        "eradication": [
+          "Audit code and infrastructure changes made by the worker and revert suspicious ones",
+          "Rotate secrets and keys the worker could access in repos and CI",
+          "Search for other hires sharing the same addresses, bank accounts, phone numbers or devices"
+        ],
+        "recovery": [
+          "Have Legal assess sanctions exposure and reporting to relevant authorities",
+          "Report the case to the FBI or national cyber authority as advised by counsel",
+          "Restore any affected systems and confirm no remaining persistence"
+        ],
+        "lessons": [
+          "Add continuous checks for sign-ins from known VPS and residential proxy ranges for new hires",
+          "Strengthen identity proofing in recruitment with HR and Talent Acquisition",
+          "Share indicators with industry peers through the ISAC"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Sign-in sources for the worker",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"azure:aad:signin\" userPrincipalName=\"<suspect_user>\" | iplocation ipAddress | stats count values(City) as cities values(Country) as countries values(autonomousSystemNumber) as asn by ipAddress"
+        },
+        {
+          "title": "Remote control tools and IP-KVM devices on the laptop",
+          "phase": "identification",
+          "spl": "index=* host=\"<host>\" ((sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode=1 Image IN (\"*AnyDesk*\",\"*remoting_host*\",\"*TeamViewer*\",\"*rustdesk*\")) OR (sourcetype=\"WinEventLog:Security\" EventCode=6416 Device_Description IN (\"*KVM*\",\"*PiKVM*\",\"*TinyPilot*\"))) | stats count values(Image) as image values(Device_Description) as device by host"
+        },
+        {
+          "title": "Other users sharing the worker's IPs",
+          "phase": "eradication",
+          "spl": "| tstats summariesonly=false dc(Authentication.user) as users values(Authentication.user) as accounts from datamodel=Authentication where Authentication.src IN (\"<ioc_ip1>\",\"<ioc_ip2>\") by Authentication.src"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-intern-excessive-access",
+      "name": "Intern or junior hire with excessive access",
+      "summary": "Use when an intern, apprentice or new junior employee is found with admin rights, production access or sensitive data access far beyond their role, whether or not misuse has occurred.",
+      "tags": [
+        "least-privilege",
+        "intern",
+        "access-review",
+        "onboarding"
+      ],
+      "attack": [
+        "T1078"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Use role-based onboarding templates for interns with no privileged groups by default",
+          "Expire intern accounts at the internship end date",
+          "Include intern accounts in monthly privileged access reports"
+        ],
+        "identification": [
+          "List the intern's group memberships, roles and data access and compare with the role template",
+          "Find how the excess access was granted: cloned account, manager request or inherited group",
+          "Review what the intern did with privileged rights in the last 30 days",
+          "Check whether sensitive data was downloaded or shared",
+          "Speak with the manager about the work the intern actually needs to do"
+        ],
+        "containment": [
+          "Remove privileged groups and production roles not required",
+          "Move the intern's needed access to a supervised or time-bound grant",
+          "Review and remove any credentials the intern created with privileged rights"
+        ],
+        "eradication": [
+          "Fix the source account or template that was cloned with excess rights",
+          "Remove other new hires who received the same cloned access",
+          "Delete service accounts or keys created by the intern if unapproved"
+        ],
+        "recovery": [
+          "Confirm the intern can still complete assigned work with reduced access",
+          "Record that no misuse occurred, or escalate to HR if misuse is found",
+          "Notify data owners if sensitive data was viewed unnecessarily"
+        ],
+        "lessons": [
+          "Stop account cloning as a provisioning method",
+          "Alert when new accounts under 30 days old join privileged groups",
+          "Measure how many accounts exceed their role template at each review"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Privileged group membership for new accounts",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"WinEventLog:Security\" EventCode IN (4728,4732,4756) Group_Name IN (\"Domain Admins\",\"Enterprise Admins\",\"Administrators\",\"*Prod*\") Member_Name=\"*<intern_user>*\" | table _time Subject_Account_Name Group_Name Member_Name"
+        },
+        {
+          "title": "Privileged actions by the intern",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Change where All_Changes.user=\"<intern_user>\" by All_Changes.object_category All_Changes.action All_Changes.dest"
+        },
+        {
+          "title": "Cloud admin role assignments to recent accounts",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=\"azure:aad:audit\" activityDisplayName=\"Add member to role\" | spath targetResources{}.modifiedProperties{}.newValue output=role | search role=\"*Admin*\" | table _time targetResources{}.userPrincipalName role initiatedBy.user.userPrincipalName"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-terminated-employee-access-not-revoked",
+      "name": "Terminated employee still has working access",
+      "summary": "Use when a former employee's account, VPN, SaaS login, API key or shared credential is still active after termination, or logs show them using it.",
+      "tags": [
+        "offboarding",
+        "deprovisioning",
+        "saas",
+        "former-employee"
+      ],
+      "attack": [
+        "T1078",
+        "T1133"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Drive deprovisioning from the HRIS termination event through SCIM to all SSO-connected apps",
+          "Maintain an inventory of non-SSO apps and shared credentials needing manual offboarding",
+          "Give Security a same-day termination feed for involuntary exits"
+        ],
+        "identification": [
+          "List all identities the former employee held: AD, SSO, SaaS local accounts, cloud keys, SSH keys",
+          "Search authentication logs for any use of those identities after the termination date",
+          "Identify actions taken post-termination such as downloads, deletes or config changes",
+          "Determine whether shared or team passwords known to the person were rotated",
+          "Check whether the former employee's MFA device is still registered"
+        ],
+        "containment": [
+          "Disable every remaining identity and revoke sessions and tokens",
+          "Rotate shared passwords and API keys the person knew",
+          "Block the source IPs used after termination if access was attempted"
+        ],
+        "eradication": [
+          "Delete SSH keys and personal access tokens tied to the person in Git, cloud and servers",
+          "Remove the person from vendor portals and external admin consoles",
+          "Transfer ownership of files, repos and resources to the manager"
+        ],
+        "recovery": [
+          "Undo any post-termination changes and restore deleted data",
+          "Ask Legal to send a cease-access letter if deliberate use occurred",
+          "Verify with a test login that each identity is disabled"
+        ],
+        "lessons": [
+          "Measure time from termination to full deprovisioning across all systems",
+          "Connect the remaining non-SSO apps to SCIM or SSO",
+          "Add an alert for any successful login by a terminated user"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Logins by the user after termination",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count earliest(_time) as first latest(_time) as last from datamodel=Authentication where Authentication.user=\"<former_user>\" Authentication.action=success earliest=<termination_date> by Authentication.app Authentication.src Authentication.dest | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "AWS access keys used after termination",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"aws:cloudtrail\" userIdentity.userName=\"<former_user>\" earliest=<termination_date> | stats count values(eventName) as actions values(sourceIPAddress) as ips by userIdentity.accessKeyId"
+        },
+        {
+          "title": "Successful logins by terminated users",
+          "phase": "lessons",
+          "spl": "| tstats summariesonly=false count latest(_time) as last from datamodel=Authentication where Authentication.action=success by Authentication.user | lookup terminated_users.csv user as Authentication.user OUTPUT term_date | where isnotnull(term_date) AND last > strptime(term_date, \"%Y-%m-%d\")"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-insider-mfa-assistance",
+      "name": "Insider approving MFA or resetting accounts for an external attacker",
+      "summary": "Use when an employee or help desk agent knowingly approves MFA prompts, resets MFA or grants access for an outside attacker, often after being paid or coerced.",
+      "tags": [
+        "mfa",
+        "help-desk",
+        "collusion",
+        "account-takeover"
+      ],
+      "attack": [
+        "T1621",
+        "T1098.005",
+        "T1078"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Require identity verification steps logged in the ticket for every help desk MFA reset",
+          "Enable number matching and location context in MFA prompts",
+          "Log help desk reset actions with the agent, target and ticket ID"
+        ],
+        "identification": [
+          "Find MFA approvals or resets followed by sign-ins from attacker-linked IPs",
+          "Check whether the approving employee's actions match social engineering or deliberate collusion patterns",
+          "Review the help desk agent's reset volume and verification evidence for each ticket",
+          "Identify all accounts the agent reset in the period and their subsequent sign-ins",
+          "Engage HR and Legal before interviewing the suspected insider"
+        ],
+        "containment": [
+          "Revoke sessions and re-secure every account the insider helped compromise",
+          "Remove the agent's reset and admin privileges",
+          "Block attacker IPs and device IDs seen after the resets"
+        ],
+        "eradication": [
+          "Remove MFA methods registered by the attacker",
+          "Hunt for persistence the attacker created after gaining access: app consents, forwarding rules, new users",
+          "Rotate credentials for privileged accounts the attacker reached"
+        ],
+        "recovery": [
+          "Re-enroll affected users' MFA with in-person or video verification",
+          "Preserve evidence for criminal referral if collusion is confirmed",
+          "Restore help desk reset rights through a dual-approval workflow"
+        ],
+        "lessons": [
+          "Require a second approver for MFA resets on privileged accounts",
+          "Alert when one agent performs resets followed by risky sign-ins",
+          "Review insider risk indicators that were missed before the event"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "MFA resets by help desk agent and follow-on sign-ins",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"okta:im2\" eventType IN (\"user.mfa.factor.reset_all\",\"user.mfa.factor.deactivate\",\"user.account.reset_password\") actor.alternateId=\"<agent>\" | stats count values(target{}.alternateId) as targets by actor.alternateId"
+        },
+        {
+          "title": "MFA push approvals followed by new-location sign-in",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"azure:aad:signin\" userPrincipalName=\"<target_user>\" authenticationDetails{}.authenticationMethod=\"Mobile app notification\" status.errorCode=0 | iplocation ipAddress | table _time ipAddress Country appDisplayName deviceDetail.displayName"
+        },
+        {
+          "title": "Attacker-registered MFA methods",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=\"azure:aad:audit\" activityDisplayName IN (\"User registered security info\",\"Admin registered security info\") earliest=<reset_time> | table _time targetResources{}.userPrincipalName initiatedBy.user.ipAddress additionalDetails{}.value"
+        }
+      ]
+    },
+    {
+      "id": "lib-insider-threat-whistleblower-report-handling",
+      "name": "Whistleblower report alleging security misconduct",
+      "summary": "Use when a whistleblower or ethics hotline report alleges security misconduct such as concealed breaches or falsified audits, and the IR team must investigate while protecting the reporter.",
+      "tags": [
+        "whistleblower",
+        "ethics-hotline",
+        "legal",
+        "confidentiality"
+      ],
+      "attack": [],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Route ethics hotline reports about security to a named investigator independent of the accused team",
+          "Document whistleblower protection obligations with Legal for each jurisdiction",
+          "Keep a restricted case system where reporter identity is masked"
+        ],
+        "identification": [
+          "Record the allegation exactly as received and acknowledge receipt to the reporter via the hotline",
+          "Confirm the investigator has no conflict of interest with the accused",
+          "Identify systems, tickets and logs that can verify or refute the allegation",
+          "Collect evidence without alerting the accused team, using read-only access",
+          "Assess whether the allegation describes an unreported breach requiring notification"
+        ],
+        "containment": [
+          "Protect the reporter's identity in all communications and access lists",
+          "Preserve relevant logs, tickets and emails under legal hold before evidence can be altered",
+          "Escalate to the audit committee if senior leadership is implicated"
+        ],
+        "eradication": [
+          "Correct any falsified audit evidence or control attestations found",
+          "Remove the accused's ability to alter relevant records during the investigation",
+          "Fix the underlying control failure the report exposed"
+        ],
+        "recovery": [
+          "Trigger breach notification workflows if a concealed incident is confirmed",
+          "Give the reporter feedback within the timeframe required by policy or law",
+          "Monitor for any retaliation against the reporter and report it to Legal"
+        ],
+        "lessons": [
+          "Review why the issue was raised through the hotline rather than normal escalation",
+          "Measure time to acknowledge and to conclude whistleblower cases",
+          "Assess the independence of the security investigation function"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Changes to incident or audit records by the accused",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"snow:incident\" OR sourcetype=\"snow:sys_audit\" user=\"<accused_user>\" | stats count values(fieldname) as fields values(documentkey) as records by tablename"
+        },
+        {
+          "title": "Log deletion or retention changes in the window",
+          "phase": "containment",
+          "spl": "index=* (sourcetype=\"WinEventLog:Security\" EventCode=1102) OR (sourcetype=\"aws:cloudtrail\" eventName IN (\"StopLogging\",\"DeleteTrail\",\"PutBucketLifecycle\")) OR (index=_audit action=delete_by_keyword) | table _time host user eventName EventCode"
+        }
+      ]
+    }
+  ]
+}

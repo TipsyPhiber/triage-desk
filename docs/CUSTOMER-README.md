@@ -6,6 +6,8 @@ Thanks for downloading Triage Desk.
 
 **Single file (recommended):** open `triage-desk.html` in Chrome, Edge, Firefox, or Safari. That's it — no install, no internet connection required. Copy it to an air-gapped workstation if you like.
 
+**Connected edition (live Splunk):** use `connected/triage-desk-connected.html` or host `connected/web/`, then follow `SPLUNK.md` to connect it to your Splunk. It needs a Connected license key. The offline files above never touch the network.
+
 **Hosted:** copy the `web/` folder to any static web server (nginx, IIS, S3 + CloudFront, an internal wiki host). It's all static files; no backend.
 
 ## Supported platforms
@@ -27,11 +29,13 @@ Incidents, playbooks, and settings are saved in your browser's local storage on 
 
 ## Quick tour
 
-1. **Start an incident** and pick a playbook.
+1. Type **what's happening** on the start screen (for example "user entered password on a phishing page"). Triage Desk suggests the closest of 500+ scenario playbooks. You can also **Import a Splunk alert** to start from an alert.
 2. **Declare Incident** starts the clock and jumps to Identification. From here every check, phase change, severity change, and quick note is timestamped on the **Timeline**.
 3. Paste alerts or emails into the **IOC Extractor** to pull indicators into your notes and the report's IOC index.
 4. **Mark Resolved** stops the clock and opens Lessons Learned.
 5. **Export Report** — text, Markdown, or printable HTML (open it and print to PDF).
+
+Tips: **Ctrl/⌘+K** opens the command palette from anywhere. Each phase lists ready-to-copy Splunk searches; the side panel's **Splunk** tab builds hunting searches from your IOCs. Switch light or dark mode from the bottom of the sidebar.
 
 ## Support
 

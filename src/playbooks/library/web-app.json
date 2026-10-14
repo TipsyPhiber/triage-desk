@@ -1,0 +1,1983 @@
+{
+  "category": {
+    "id": "web-app",
+    "name": "Web applications & APIs",
+    "description": "Attacks on web applications and APIs: injection, broken authentication and authorization, client-side script compromise, bots, and exposed endpoints or secrets."
+  },
+  "playbooks": [
+    {
+      "id": "lib-web-app-sql-injection-exploited",
+      "name": "SQL injection exploited against a production web application",
+      "summary": "Use when WAF, app, or database logs show successful SQL injection against a live endpoint, such as UNION or time-based payloads followed by large responses or unusual queries.",
+      "tags": [
+        "web-app",
+        "sql-injection",
+        "database",
+        "data-exfiltration"
+      ],
+      "attack": [
+        "T1190",
+        "T1213",
+        "T1005"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable database audit logging for SELECT on tables holding PII and credentials",
+          "Forward WAF and web server access logs with full query strings to Splunk",
+          "Keep a data map of which application endpoints touch which database schemas",
+          "Ensure the application uses a least-privilege database account, not db_owner or root"
+        ],
+        "identification": [
+          "Pull WAF and access log hits containing UNION SELECT, SLEEP(, WAITFOR DELAY, or information_schema",
+          "Identify the vulnerable endpoint and parameter from the earliest successful payload",
+          "Compare response sizes for injected requests against the endpoint's normal response size",
+          "Review database audit logs for queries against information_schema or sys tables from the app account",
+          "Determine which tables and row counts the attacker read or modified",
+          "Check whether xp_cmdshell, INTO OUTFILE, or COPY TO PROGRAM was attempted for OS access"
+        ],
+        "containment": [
+          "Deploy a WAF virtual patch blocking SQL metacharacters on the vulnerable parameter",
+          "Block the attacking source IPs and user agents at the edge",
+          "Take the vulnerable endpoint offline or behind a feature flag if virtual patching is insufficient",
+          "Rotate the application database account password and any connection strings in config"
+        ],
+        "eradication": [
+          "Rewrite the vulnerable query to use parameterized statements or the ORM's bound parameters",
+          "Run SAST and a targeted DAST scan across similar endpoints for the same injection pattern",
+          "Remove any rows, users, or stored procedures the attacker inserted into the database",
+          "Revoke excessive database grants such as FILE, xp_cmdshell, or schema-wide write"
+        ],
+        "recovery": [
+          "Redeploy the fixed build and confirm injection payloads now return clean errors",
+          "Force password resets for application users whose hashes were in exfiltrated tables",
+          "Monitor database query volume from the app account for 30 days after the fix",
+          "Restore any tampered records from the last clean database backup"
+        ],
+        "lessons": [
+          "Add a detection for SQL error strings and SQLi keywords in successful 200 responses",
+          "Add parameterized query enforcement to code review and CI linting rules",
+          "Record time from first injection payload to WAF block as a metric",
+          "Assess whether breach notification is required based on the tables accessed"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "SQL injection patterns in web requests",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Web.status) as status values(Web.src) as src from datamodel=Web where (Web.url=\"*UNION*SELECT*\" OR Web.url=\"*information_schema*\" OR Web.url=\"*SLEEP(*\" OR Web.url=\"*WAITFOR*DELAY*\" OR Web.url=\"*' OR 1=1*\") by Web.dest Web.uri_path | sort - count"
+        },
+        {
+          "title": "Large responses from injected requests",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path=\"<vulnerable_path>\" | eval injected=if(match(uri_query, \"(?i)(union|select|sleep|benchmark|0x[0-9a-f]+)\"),1,0) | stats avg(bytes) as avg_bytes max(bytes) as max_bytes count by clientip injected | sort - max_bytes"
+        },
+        {
+          "title": "WAF SQLi rule matches after virtual patch",
+          "phase": "containment",
+          "spl": "index=aws sourcetype=aws:waf action=BLOCK terminatingRuleId=\"*SQLi*\" | stats count by httpRequest.clientIp httpRequest.uri | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-web-shell-found",
+      "name": "Web shell found on an internet-facing web server",
+      "summary": "Use when EDR, file integrity monitoring, or an admin finds a script file in a web root that accepts commands, such as an unexpected .aspx, .php, or .jsp file with eval or cmd execution.",
+      "tags": [
+        "web-app",
+        "web-shell",
+        "persistence",
+        "iis",
+        "apache"
+      ],
+      "attack": [
+        "T1505.003",
+        "T1190",
+        "T1059"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable file integrity monitoring on web roots and upload directories",
+          "Log full IIS or Apache access logs including POST requests and response codes",
+          "Deploy EDR on web servers with alerting on w3wp.exe or httpd spawning shells",
+          "Maintain known-good hashes of deployed web application files per release"
+        ],
+        "identification": [
+          "Hash and copy the web shell file before touching it, preserving timestamps",
+          "Search access logs for every request to the web shell path and list source IPs",
+          "Identify the first request to the shell to estimate when it was planted",
+          "Find the upload vector by reviewing requests just before the shell's creation time",
+          "List child processes spawned by w3wp.exe, php-fpm, or java on the server",
+          "Sweep all web servers in the farm for other files with the same hash or eval patterns"
+        ],
+        "containment": [
+          "Block the source IPs that accessed the web shell at the WAF and firewall",
+          "Isolate the server from internal networks while keeping it serving if business requires",
+          "Rename or remove execute permission on the shell after evidence is captured",
+          "Reset credentials of the application pool and service accounts on the server"
+        ],
+        "eradication": [
+          "Remove the web shell and any secondary shells, scheduled tasks, or new local accounts",
+          "Patch or fix the vulnerability used to plant the shell",
+          "Rebuild the server from a golden image if commands were run as SYSTEM or root",
+          "Deploy web content from the clean release artifact instead of cleaning in place"
+        ],
+        "recovery": [
+          "Return the server to the load balancer pool after FIM baseline matches the release",
+          "Watch for new requests to the old shell path as a reinfection indicator",
+          "Review lateral movement from the server using its credentials over the dwell period"
+        ],
+        "lessons": [
+          "Add detection for web server worker processes spawning cmd.exe, powershell, or sh",
+          "Make web roots read-only to the application pool identity where possible",
+          "Measure dwell time between shell creation and discovery",
+          "Add a YARA rule for the shell family to EDR and FIM scanning"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Requests to the web shell path",
+          "phase": "identification",
+          "spl": "index=web (sourcetype=ms:iis:auto OR sourcetype=iis OR sourcetype=access_combined) uri_path=\"*<shell_filename>*\" | stats count earliest(_time) as first latest(_time) as last values(cs_method) as methods by c_ip | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Web server process spawning shells",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Processes.process) as cmd from datamodel=Endpoint.Processes where Processes.parent_process_name IN (\"w3wp.exe\",\"httpd\",\"php-fpm\",\"tomcat*.exe\",\"java.exe\") Processes.process_name IN (\"cmd.exe\",\"powershell.exe\",\"sh\",\"bash\",\"whoami.exe\") by Processes.dest Processes.parent_process_name Processes.process_name"
+        },
+        {
+          "title": "New script files created in web roots",
+          "phase": "eradication",
+          "spl": "index=sysmon sourcetype=XmlWinEventLog:Microsoft-Windows-Sysmon/Operational EventCode=11 TargetFilename IN (\"*\\\\inetpub\\\\wwwroot\\\\*.aspx\",\"*\\\\inetpub\\\\wwwroot\\\\*.ashx\",\"*\\\\inetpub\\\\wwwroot\\\\*.asmx\") | stats count by host Image TargetFilename"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-stored-xss-customer-portal",
+      "name": "Stored XSS on the customer portal",
+      "summary": "Use when a malicious script is found persisted in user-generated content on a customer-facing portal, such as a profile field or support ticket, executing in other users' browsers.",
+      "tags": [
+        "web-app",
+        "xss",
+        "customer-portal",
+        "session-theft"
+      ],
+      "attack": [
+        "T1189",
+        "T1539",
+        "T1185"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enforce a Content-Security-Policy with report-uri on the customer portal",
+          "Collect CSP violation reports into Splunk",
+          "Set session cookies with HttpOnly, Secure, and SameSite attributes",
+          "Know which portal fields render user-supplied HTML or Markdown"
+        ],
+        "identification": [
+          "Locate the stored payload in the database record and record the field and record id",
+          "Identify the account that submitted the payload and its source IPs",
+          "Determine which pages render the field and which user roles view them",
+          "Review CSP reports for the external domain the script beacons to",
+          "Check whether the payload steals cookies, tokens, or performs actions as the victim",
+          "List users who viewed the infected content since it was stored"
+        ],
+        "containment": [
+          "Sanitize or delete the stored payload from every affected record",
+          "Disable the account that planted the payload",
+          "Block the exfiltration domain at the CSP and egress proxy",
+          "Invalidate sessions for all users who loaded the infected page"
+        ],
+        "eradication": [
+          "Apply context-aware output encoding on the vulnerable field rendering",
+          "Add server-side HTML sanitization with an allowlist library on input",
+          "Search the database for other records containing script tags or event handler attributes"
+        ],
+        "recovery": [
+          "Tighten CSP to remove unsafe-inline from script-src on portal pages",
+          "Review account changes made by victim sessions, such as email or payout changes",
+          "Notify affected customers if account takeover or data access occurred"
+        ],
+        "lessons": [
+          "Add a detection for CSP violation spikes to unknown domains",
+          "Add stored XSS test cases to the portal's automated security tests",
+          "Track how many users were exposed before removal"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Submissions with script content to portal endpoints",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined method=POST uri_path=\"/portal/*\" | regex _raw=\"(?i)(%3Cscript|<script|onerror%3D|onerror=|javascript%3A)\" | stats count values(uri_path) as paths by clientip user"
+        },
+        {
+          "title": "CSP violation reports by blocked domain",
+          "phase": "identification",
+          "spl": "index=web sourcetype=csp:report | spath path=csp-report.blocked-uri output=blocked | spath path=csp-report.document-uri output=page | stats count dc(src_ip) as users by blocked page | sort - count"
+        },
+        {
+          "title": "Users who loaded the infected page",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false dc(Web.src) as users values(Web.user) as user from datamodel=Web where Web.uri_path=\"<infected_page>\" by Web.dest"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-ssrf-metadata-service",
+      "name": "SSRF used to reach the cloud metadata service from the app",
+      "summary": "Use when an application feature that fetches URLs is abused to request 169.254.169.254 or internal hosts, potentially exposing instance role credentials.",
+      "tags": [
+        "web-app",
+        "ssrf",
+        "cloud",
+        "credential-theft",
+        "imds"
+      ],
+      "attack": [
+        "T1190",
+        "T1552.005",
+        "T1090"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enforce IMDSv2 with hop limit 1 on all application instances",
+          "Log outbound requests from URL-fetch features, including resolved destination IP",
+          "Inventory application features that fetch user-supplied URLs, such as webhooks and image import",
+          "Enable CloudTrail data on instance role credential use"
+        ],
+        "identification": [
+          "Search access logs for url, callback, or image parameters containing 169.254.169.254 or localhost",
+          "Check for encoded variants such as decimal IP, IPv6 mapped, or DNS names resolving to link-local",
+          "Confirm whether the response returned role credentials from iam/security-credentials",
+          "Review CloudTrail for API calls by the instance role from IPs outside the instance",
+          "Identify internal services the SSRF reached, such as admin ports or databases"
+        ],
+        "containment": [
+          "Disable the URL-fetch feature or restrict it to an allowlist of domains",
+          "Revoke active sessions for the instance role with a deny policy on aws:TokenIssueTime",
+          "Block the attacker IPs at the WAF and load balancer",
+          "Enforce IMDSv2 on the affected instances immediately"
+        ],
+        "eradication": [
+          "Validate and resolve destination addresses server-side and reject private and link-local ranges",
+          "Route URL fetches through an egress proxy that blocks internal ranges",
+          "Reduce the instance role's permissions to what the app actually needs"
+        ],
+        "recovery": [
+          "Re-enable the feature behind the new validation and confirm metadata requests fail",
+          "Review and roll back any AWS resources created with the stolen role credentials",
+          "Monitor the role for anomalous source IPs for two weeks"
+        ],
+        "lessons": [
+          "Add GuardDuty InstanceCredentialExfiltration findings to high-priority alerting",
+          "Add SSRF test payloads for every URL-accepting parameter to DAST",
+          "Track instances still allowing IMDSv1 as a compliance metric"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "SSRF payloads targeting metadata or internal hosts",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Web.src) as src from datamodel=Web where (Web.url=\"*169.254.169.254*\" OR Web.url=\"*metadata.google.internal*\" OR Web.url=\"*localhost*\" OR Web.url=\"*127.0.0.1*\" OR Web.url=\"*2852039166*\" OR Web.url=\"*[::ffff:*\") by Web.dest Web.uri_path"
+        },
+        {
+          "title": "Instance role credentials used from outside the instance",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:cloudtrail userIdentity.type=AssumedRole userIdentity.arn=\"*<instance_role>*\" NOT sourceIPAddress IN (\"<instance_ip>\",\"*.amazonaws.com\") | stats count values(eventName) as events by sourceIPAddress userIdentity.arn"
+        },
+        {
+          "title": "WAF blocks on SSRF rules after fix",
+          "phase": "recovery",
+          "spl": "index=aws sourcetype=aws:waf action=BLOCK | search httpRequest.args=\"*169.254*\" OR httpRequest.uri=\"*169.254*\" | stats count by httpRequest.clientIp terminatingRuleId"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-credential-stuffing-login",
+      "name": "Credential stuffing attack against the customer login",
+      "summary": "Use when the login endpoint sees high volumes of failed logins across many usernames from distributed IPs, with some successes indicating reused breached passwords.",
+      "tags": [
+        "web-app",
+        "credential-stuffing",
+        "account-takeover",
+        "bots"
+      ],
+      "attack": [
+        "T1110.004",
+        "T1078"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Log login attempts with username, result, IP, ASN, and user agent",
+          "Integrate breached-password checks at registration and password change",
+          "Have bot management or CAPTCHA ready to enable on the login route",
+          "Define a customer communication template for forced password resets"
+        ],
+        "identification": [
+          "Chart failed and successful logins per minute to confirm the spike and its start time",
+          "Measure the ratio of distinct usernames to source IPs to separate stuffing from brute force",
+          "List accounts with a successful login from an attacking IP or ASN",
+          "Identify shared fingerprints across attack traffic such as user agent, TLS JA3, or header order",
+          "Check compromised accounts for post-login actions like address, payment, or email changes"
+        ],
+        "containment": [
+          "Enable CAPTCHA or bot challenge on the login endpoint",
+          "Rate-limit login attempts per IP, per ASN, and per username",
+          "Block or challenge hosting and residential-proxy ASNs driving the attack",
+          "Lock and force password reset on accounts successfully accessed by the attacker"
+        ],
+        "eradication": [
+          "Revoke sessions and refresh tokens issued to attacker IPs",
+          "Revert fraudulent profile and payment changes on compromised accounts",
+          "Offer or enforce MFA for accounts seen in the attack"
+        ],
+        "recovery": [
+          "Relax emergency blocks gradually while watching failure rates",
+          "Notify affected customers with reset instructions and fraud guidance",
+          "Monitor refund and loyalty-point fraud on affected accounts for 30 days"
+        ],
+        "lessons": [
+          "Add a detection on login failure rate per distinct username crossing baseline",
+          "Measure time to challenge enablement and number of accounts taken over",
+          "Evaluate passkeys or mandatory MFA for high-value customer accounts"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Login failures and distinct users over time",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count dc(Authentication.user) as users dc(Authentication.src) as ips from datamodel=Authentication where Authentication.app=\"<customer_app>\" by _time span=5m Authentication.action | timechart span=5m sum(count) by Authentication.action"
+        },
+        {
+          "title": "Successful logins from IPs with mass failures",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path=\"/api/login\" | eval result=if(status=200,\"success\",\"failure\") | stats count(eval(result=\"failure\")) as fails count(eval(result=\"success\")) as wins dc(user) as users by clientip | where fails>50 AND wins>0 | sort - fails"
+        },
+        {
+          "title": "Attack fingerprint by user agent",
+          "phase": "containment",
+          "spl": "index=web sourcetype=access_combined uri_path=\"/api/login\" status IN (401,403) | stats count dc(clientip) as ips by useragent | sort - count | head 20"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-account-enumeration",
+      "name": "Account enumeration through login, signup, or reset responses",
+      "summary": "Use when an attacker is probing which usernames or emails exist by watching differences in responses or timing on login, registration, or password reset endpoints.",
+      "tags": [
+        "web-app",
+        "enumeration",
+        "reconnaissance",
+        "authentication"
+      ],
+      "attack": [
+        "T1589.002",
+        "T1087"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Log password reset and signup requests with the submitted identifier hashed",
+          "Document which auth endpoints return distinct messages for unknown accounts",
+          "Baseline normal daily volume of password reset requests"
+        ],
+        "identification": [
+          "Find source IPs submitting many distinct emails to reset or signup endpoints",
+          "Compare response codes, body sizes, and latency for existing versus nonexistent accounts",
+          "Determine whether the probed identifier list matches a known breach dump or employee list",
+          "Check whether enumerated accounts later received stuffing or phishing attempts",
+          "Identify whether the reset flow sent unsolicited emails to real customers"
+        ],
+        "containment": [
+          "Return identical generic responses for known and unknown accounts on all three endpoints",
+          "Rate-limit reset and signup requests per IP and per identifier",
+          "Challenge enumerating clients with CAPTCHA"
+        ],
+        "eradication": [
+          "Equalize response timing by performing a dummy hash compare for unknown users",
+          "Remove username-availability APIs or put them behind authentication",
+          "Block the enumeration tooling fingerprint at the WAF"
+        ],
+        "recovery": [
+          "Watch enumerated accounts for login anomalies for two weeks",
+          "Respond to customer complaints about unexpected reset emails with a prepared notice",
+          "Remove emergency CAPTCHA on signup once enumeration traffic stops for 72 hours"
+        ],
+        "lessons": [
+          "Add a detection for high distinct-identifier counts per IP on reset endpoints",
+          "Add enumeration checks to the authentication security test suite",
+          "Review mobile API endpoints for the same response differences"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Distinct identifiers submitted to reset or signup per IP",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path IN (\"/api/password/reset\",\"/api/signup\",\"/api/users/exists\") | stats count dc(form_email) as identifiers values(status) as codes by clientip | where identifiers>25 | sort - identifiers"
+        },
+        {
+          "title": "Response size and timing by status for login",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path=\"/api/login\" | stats count avg(bytes) as avg_bytes avg(response_time) as avg_ms by status | sort status"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-api-key-abuse-scraping",
+      "name": "API key abused for bulk data scraping",
+      "summary": "Use when a partner or customer API key shows request volumes, endpoints, or source locations far outside its normal pattern, suggesting the key leaked or is being used to scrape data.",
+      "tags": [
+        "web-app",
+        "api",
+        "scraping",
+        "api-key",
+        "data-exfiltration"
+      ],
+      "attack": [
+        "T1078",
+        "T1530",
+        "T1119"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Log API key id, client IP, endpoint, and response size on every API request",
+          "Maintain owner contacts for each issued API key",
+          "Enforce per-key quotas and scopes in the API gateway"
+        ],
+        "identification": [
+          "Chart request volume for the key against its 30-day baseline",
+          "List source IPs and ASNs using the key and compare with the owner's known ranges",
+          "Identify which endpoints and record ranges were paged through sequentially",
+          "Estimate the number of records returned to the abusive client",
+          "Search public code repositories and paste sites for the key prefix",
+          "Ask the key owner whether the traffic is theirs"
+        ],
+        "containment": [
+          "Revoke or suspend the abused API key at the gateway",
+          "Issue a replacement key to the legitimate owner through a verified channel",
+          "Block the scraping source IPs at the API gateway"
+        ],
+        "eradication": [
+          "Reduce the replacement key's scopes to the endpoints the partner needs",
+          "Add IP allowlisting for server-to-server partner keys",
+          "Remove the leaked key from any public repository and request takedown"
+        ],
+        "recovery": [
+          "Confirm the partner's integration works on the new key",
+          "Monitor for reuse of the revoked key as an indicator of attacker persistence",
+          "Assess whether scraped data triggers contractual or regulatory notification"
+        ],
+        "lessons": [
+          "Add per-key anomaly alerting on volume and new ASN",
+          "Shorten API key lifetimes or move partners to OAuth client credentials",
+          "Track how long the key was abused before detection"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Request volume per API key versus baseline",
+          "phase": "identification",
+          "spl": "index=api sourcetype=aws:apigateway apiKeyId=\"<api_key_id>\" earliest=-30d | timechart span=1h count as requests sum(responseLength) as bytes"
+        },
+        {
+          "title": "Source IPs and endpoints for the key",
+          "phase": "identification",
+          "spl": "index=api sourcetype=aws:apigateway apiKeyId=\"<api_key_id>\" | iplocation ip | stats count sum(responseLength) as bytes values(resourcePath) as paths by ip Country | sort - count"
+        },
+        {
+          "title": "Use of the revoked key after revocation",
+          "phase": "recovery",
+          "spl": "index=api sourcetype=aws:apigateway apiKeyId=\"<api_key_id>\" status=403 | stats count latest(_time) as last by ip | convert ctime(last)"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-bola-idor-data-leak",
+      "name": "Broken object level authorization (IDOR) leaking customer records",
+      "summary": "Use when an authenticated user can fetch other users' records by changing an object id in an API call, and logs show sequential or high-cardinality id access from one account.",
+      "tags": [
+        "web-app",
+        "idor",
+        "bola",
+        "api",
+        "data-exposure"
+      ],
+      "attack": [
+        "T1190",
+        "T1213"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Log authenticated user id alongside requested object id on API calls",
+          "Use non-sequential identifiers such as UUIDs for customer-facing objects",
+          "Keep an inventory of API routes with their authorization checks"
+        ],
+        "identification": [
+          "Reproduce the flaw in staging by requesting another test user's object id",
+          "Find accounts requesting many distinct object ids they do not own",
+          "Determine the full set of record ids accessed by the abusing accounts",
+          "Identify which fields the endpoint returns, such as address, documents, or payment details",
+          "Check whether the same pattern exists on update and delete methods of the route"
+        ],
+        "containment": [
+          "Hotfix the route to verify object ownership server-side before returning data",
+          "Suspend the abusing accounts and revoke their tokens",
+          "Add a gateway rule that throttles high id-cardinality per user on the route"
+        ],
+        "eradication": [
+          "Centralize ownership checks in middleware or policy rather than per-handler",
+          "Audit sibling routes in the same service for missing ownership checks",
+          "Restore any records modified through the flawed update method"
+        ],
+        "recovery": [
+          "Notify customers whose records were accessed per legal guidance",
+          "Monitor the route for 403 spikes indicating continued probing",
+          "Confirm mobile and partner clients still work with the ownership check enforced"
+        ],
+        "lessons": [
+          "Add automated BOLA tests with two users to the API test suite",
+          "Add a detection for distinct object ids per user over threshold",
+          "Record how many records were exposed and for how long"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Users accessing many distinct object ids",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path=\"/api/v1/orders/*\" status=200 | rex field=uri_path \"/api/v1/orders/(?<object_id>[^/]+)\" | stats dc(object_id) as objects count by user clientip | where objects>50 | sort - objects"
+        },
+        {
+          "title": "Record ids exposed to the abusing account",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined user=\"<suspect_user>\" uri_path=\"/api/v1/orders/*\" status=200 | rex field=uri_path \"/api/v1/orders/(?<object_id>[^/]+)\" | stats earliest(_time) as first by object_id | convert ctime(first)"
+        },
+        {
+          "title": "Authorization denials after hotfix",
+          "phase": "recovery",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.uri_path=\"/api/v1/orders/*\" Web.status=403 by _time span=1h Web.user | where count>20"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-graphql-introspection-abuse",
+      "name": "GraphQL introspection and query abuse against the API",
+      "summary": "Use when a GraphQL endpoint receives introspection queries, deeply nested or batched queries, or alias-based brute force from unknown clients, mapping the schema or exhausting resources.",
+      "tags": [
+        "web-app",
+        "graphql",
+        "api",
+        "reconnaissance"
+      ],
+      "attack": [
+        "T1595.002",
+        "T1190",
+        "T1499.003"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Log GraphQL operation name, query hash, depth, and complexity per request",
+          "Decide whether introspection should be enabled in production",
+          "Configure query depth and cost limits in the GraphQL server"
+        ],
+        "identification": [
+          "Find requests containing __schema or __type and list their sources",
+          "Identify queries with many aliases used to batch login or OTP attempts",
+          "Find deeply nested queries causing high resolver latency or CPU",
+          "Check whether the attacker queried fields that expose internal or admin data",
+          "Review resolver-level authorization on fields the attacker discovered"
+        ],
+        "containment": [
+          "Disable introspection on the production endpoint",
+          "Enforce maximum depth, alias count, and query cost at the gateway",
+          "Block the probing sources and rate-limit by token"
+        ],
+        "eradication": [
+          "Add field-level authorization to sensitive resolvers",
+          "Move to persisted queries allowlisting for first-party clients",
+          "Remove deprecated or debug fields from the public schema"
+        ],
+        "recovery": [
+          "Confirm first-party web and mobile clients function with persisted queries",
+          "Monitor GraphQL error rates and latency after limits are enforced",
+          "Publish the schema to internal developers through a documentation portal instead of introspection"
+        ],
+        "lessons": [
+          "Add a detection on __schema queries from non-developer clients",
+          "Add GraphQL-specific tests for aliasing and batching to the security suite",
+          "Document the schema exposure decision in the API standard"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Introspection queries by source",
+          "phase": "identification",
+          "spl": "index=api sourcetype=graphql:requests (query=\"*__schema*\" OR query=\"*__type*\") | stats count earliest(_time) as first values(user_agent) as ua by src_ip user | convert ctime(first)"
+        },
+        {
+          "title": "High-alias or deep queries",
+          "phase": "identification",
+          "spl": "index=api sourcetype=graphql:requests | eval aliases=mvcount(split(query, \":\"))-1 | where aliases>50 OR depth>10 | stats count max(aliases) as max_aliases max(depth) as max_depth by src_ip operationName"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-file-upload-rce",
+      "name": "Unrestricted file upload leading to remote code execution",
+      "summary": "Use when an attacker uploads an executable script through a file upload feature, such as a profile photo or document form, and then requests it to run code on the server.",
+      "tags": [
+        "web-app",
+        "file-upload",
+        "rce",
+        "web-shell"
+      ],
+      "attack": [
+        "T1190",
+        "T1505.003",
+        "T1105"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Store uploads outside the web root or in object storage with no execute handler",
+          "Log upload filename, detected MIME type, size, and uploader on every upload",
+          "Scan uploads with antivirus before they are made available"
+        ],
+        "identification": [
+          "List uploads with executable extensions or double extensions like .php.jpg",
+          "Inspect the uploaded file for magic bytes that disagree with its claimed MIME type",
+          "Find GET or POST requests to the uploaded file path and their responses",
+          "Review process telemetry on the app server at the time the upload was requested",
+          "Identify the uploader account and how it was created"
+        ],
+        "containment": [
+          "Disable script execution in the upload directory via server config",
+          "Quarantine the malicious uploads and preserve copies for analysis",
+          "Suspend the uploader account and block its source IPs",
+          "Temporarily disable the upload feature if the bypass is not understood"
+        ],
+        "eradication": [
+          "Validate uploads by content type and re-encode images server-side",
+          "Rename stored files to random names without user-controlled extensions",
+          "Remove persistence created by commands run through the uploaded script"
+        ],
+        "recovery": [
+          "Re-enable uploads after the new validation passes bypass test cases",
+          "Rescan all historical uploads for executable content",
+          "Return the app server to service only after EDR shows no residual attacker processes"
+        ],
+        "lessons": [
+          "Add a detection for script extensions written to upload directories",
+          "Add file upload bypass cases to DAST",
+          "Move uploads to a separate domain to isolate them from the app origin"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Uploads with executable or double extensions",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined method=POST uri_path=\"*/upload*\" | regex form_filename=\"(?i)\\.(php\\d?|phtml|aspx?|jsp|jspx|cer|ashx)(\\.|$)\" | stats count values(form_filename) as files by clientip user"
+        },
+        {
+          "title": "Requests to files in the upload directory",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Web.http_method) as methods values(Web.status) as status from datamodel=Web where Web.uri_path=\"/uploads/*\" (Web.uri_path=\"*.php\" OR Web.uri_path=\"*.jsp\" OR Web.uri_path=\"*.aspx\") by Web.src Web.uri_path"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-deserialization-rce",
+      "name": "Insecure deserialization exploited for remote code execution",
+      "summary": "Use when a Java, .NET, PHP, or Python application receives serialized object payloads, such as ViewState or Base64 rO0AB blobs, that trigger code execution on the server.",
+      "tags": [
+        "web-app",
+        "deserialization",
+        "rce",
+        "java",
+        "dotnet"
+      ],
+      "attack": [
+        "T1190",
+        "T1059"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Inventory applications that accept serialized objects in cookies, headers, or bodies",
+          "Track versions of serialization libraries such as Jackson, XStream, or BinaryFormatter usage",
+          "Protect ASP.NET machine keys and ViewState MAC settings"
+        ],
+        "identification": [
+          "Search request bodies and cookies for rO0AB, AAEAAAD, or O: serialized markers",
+          "Correlate payload requests with child processes of the app server JVM or w3wp",
+          "Decode a captured payload to identify the gadget chain and intended command",
+          "Check whether the ASP.NET machine key was exposed, enabling forged ViewState",
+          "Review outbound connections from the app server for callbacks after payload requests"
+        ],
+        "containment": [
+          "Block serialized object markers at the WAF on the affected route",
+          "Isolate the app server from internal networks pending rebuild",
+          "Rotate the machine key or signing keys used to protect serialized data"
+        ],
+        "eradication": [
+          "Replace native deserialization with a data-only format like JSON with strict types",
+          "Apply look-ahead class allowlisting where deserialization cannot be removed",
+          "Upgrade vulnerable libraries and remove unused gadget libraries from the classpath",
+          "Rebuild the server from a clean image"
+        ],
+        "recovery": [
+          "Redeploy and replay the captured payload in staging to confirm it no longer executes",
+          "Hunt for credentials or tokens used from the compromised server",
+          "Re-issue user sessions and ViewState after the key rotation is deployed to every farm node"
+        ],
+        "lessons": [
+          "Add detection for Java or IIS worker processes spawning interpreters",
+          "Add a dependency rule blocking known gadget libraries",
+          "Record how the machine key or serialized endpoint was exposed"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Serialized object markers in requests",
+          "phase": "identification",
+          "spl": "index=web (sourcetype=access_combined OR sourcetype=ms:iis:auto) (\"rO0AB\" OR \"AAEAAAD\" OR \"__VIEWSTATE=\" OR \"aced0005\") | stats count values(uri_path) as paths by src_ip host"
+        },
+        {
+          "title": "App server JVM or IIS worker spawning processes",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Processes.process) as cmd from datamodel=Endpoint.Processes where Processes.parent_process_name IN (\"java\",\"java.exe\",\"w3wp.exe\",\"python3\") Processes.process_name IN (\"sh\",\"bash\",\"cmd.exe\",\"powershell.exe\",\"curl\",\"wget\") by Processes.dest Processes.parent_process_name"
+        },
+        {
+          "title": "Outbound connections from the app server",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.src=\"<host>\" All_Traffic.direction=outbound NOT All_Traffic.dest IN (\"10.0.0.0/8\",\"172.16.0.0/12\",\"192.168.0.0/16\") by All_Traffic.dest All_Traffic.dest_port"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-path-traversal-config-leak",
+      "name": "Path traversal used to read application config and secrets",
+      "summary": "Use when requests containing ../ sequences or encoded variants return files outside the web root, such as web.config, .env, or /etc/passwd, exposing credentials.",
+      "tags": [
+        "web-app",
+        "path-traversal",
+        "secrets",
+        "lfi"
+      ],
+      "attack": [
+        "T1190",
+        "T1083",
+        "T1552.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Keep secrets in a vault rather than files readable by the web process",
+          "Log full raw request URIs before normalization",
+          "Know which config files hold database and API credentials per application"
+        ],
+        "identification": [
+          "Search for ../, ..%2f, %252e%252e, and ..\\ in request URIs and parameters",
+          "Find traversal requests that returned 200 with non-trivial response sizes",
+          "Identify exactly which files were read, such as web.config, appsettings.json, or .env",
+          "List every credential and key present in the leaked files",
+          "Check whether leaked credentials were used afterward from any source"
+        ],
+        "containment": [
+          "Block traversal sequences on the vulnerable parameter at the WAF",
+          "Rotate every secret contained in the files that were read",
+          "Block attacker sources at the edge"
+        ],
+        "eradication": [
+          "Fix the file handler to resolve canonical paths and enforce a base directory",
+          "Replace user-supplied filenames with ids mapped server-side",
+          "Move secrets out of readable config into environment injection or a vault"
+        ],
+        "recovery": [
+          "Verify downstream services accept the rotated credentials",
+          "Monitor for use of the old credentials as an attacker indicator",
+          "Rerun the traversal payloads against the fixed handler and confirm 400 or 404 responses"
+        ],
+        "lessons": [
+          "Add a detection for traversal patterns with 200 responses",
+          "Add traversal payloads to DAST for every file-serving parameter",
+          "Measure time from leak to full credential rotation"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Successful path traversal requests",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count max(Web.bytes) as max_bytes from datamodel=Web where (Web.url=\"*../*\" OR Web.url=\"*..%2f*\" OR Web.url=\"*%2e%2e*\" OR Web.url=\"*..%5c*\") Web.status=200 by Web.src Web.dest Web.url | sort - max_bytes"
+        },
+        {
+          "title": "Requests naming sensitive config files",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined (uri_query=\"*web.config*\" OR uri_query=\"*.env*\" OR uri_query=\"*etc/passwd*\" OR uri_query=\"*appsettings*\") | table _time clientip uri_path uri_query status bytes"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-magecart-checkout-skimmer",
+      "name": "Magecart-style card skimmer JavaScript on the checkout page",
+      "summary": "Use when injected JavaScript on checkout or payment pages captures card data and sends it to an attacker domain, found by CSP reports, customer fraud reports, or page integrity monitoring.",
+      "tags": [
+        "web-app",
+        "magecart",
+        "skimmer",
+        "ecommerce",
+        "pci"
+      ],
+      "attack": [
+        "T1059.007",
+        "T1056.003",
+        "T1195"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Monitor checkout page scripts with a page integrity or script inventory tool",
+          "Use Subresource Integrity on third-party scripts loaded on payment pages",
+          "Know your acquirer and PCI forensic investigator contacts",
+          "Keep version history of checkout templates and CMS static blocks"
+        ],
+        "identification": [
+          "Capture the rendered checkout page and extract every inline and external script",
+          "Deobfuscate the suspicious script and identify the exfiltration domain",
+          "Determine where the injection lives: template file, CMS block, database, or third-party script",
+          "Establish when the skimmer first appeared from file timestamps, deploy logs, or archived pages",
+          "Estimate the number of transactions processed while the skimmer was live",
+          "Find how the attacker gained write access, such as admin login or plugin vulnerability"
+        ],
+        "containment": [
+          "Remove the skimmer code from the source location and purge CDN caches",
+          "Block the exfiltration domain in CSP connect-src and at egress",
+          "Reset admin credentials for the e-commerce platform and hosting",
+          "Notify the payment processor and acquirer per contract"
+        ],
+        "eradication": [
+          "Patch the platform or extension that allowed the injection",
+          "Search the database and all templates for other copies of the skimmer",
+          "Move payment entry to a hosted payment page or iframe from the processor"
+        ],
+        "recovery": [
+          "Verify checkout pages match the clean template after cache purge",
+          "Coordinate cardholder notification and card reissue with the acquirer",
+          "Monitor CSP reports for new unknown domains on payment pages"
+        ],
+        "lessons": [
+          "Add alerting on any script change on checkout pages",
+          "Track PCI DSS 6.4.3 and 11.6.1 script management controls",
+          "Record skimmer dwell time and number of affected cards"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "CSP violations on checkout pages",
+          "phase": "identification",
+          "spl": "index=web sourcetype=csp:report | spath path=csp-report.document-uri output=page | spath path=csp-report.blocked-uri output=blocked | search page=\"*/checkout*\" | stats count earliest(_time) as first by blocked | convert ctime(first)"
+        },
+        {
+          "title": "Browser traffic to the skimmer exfil domain",
+          "phase": "identification",
+          "spl": "index=proxy OR index=dns (query=\"*<exfil_domain>*\" OR url=\"*<exfil_domain>*\") | stats count earliest(_time) as first latest(_time) as last by src | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Changes to checkout templates or CMS blocks",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(All_Changes.user) as user from datamodel=Change where All_Changes.object=\"*checkout*\" by All_Changes.dest All_Changes.object All_Changes.action _time"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-website-defacement",
+      "name": "Public website defaced",
+      "summary": "Use when the public website shows unauthorized content, such as hacktivist messages or altered pages, through compromised CMS, hosting, deployment pipeline, or DNS.",
+      "tags": [
+        "web-app",
+        "defacement",
+        "hacktivism",
+        "brand"
+      ],
+      "attack": [
+        "T1491.002",
+        "T1190"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Monitor homepage and key pages for content hash changes",
+          "Keep a static maintenance page ready to serve from the CDN",
+          "Have communications and social media contacts ready for public statements"
+        ],
+        "identification": [
+          "Screenshot and archive the defaced pages with timestamps",
+          "Determine whether the change is on origin servers, the CDN, or DNS pointing elsewhere",
+          "Diff the live web root against the last release artifact",
+          "Review CMS admin logins, FTP or SFTP logins, and deploy pipeline runs before the change",
+          "Check for hacktivist claims on social media that indicate group and motive"
+        ],
+        "containment": [
+          "Switch the CDN to the static maintenance page",
+          "Disable the compromised CMS, FTP, or deploy credentials",
+          "Remove write access to the web root for all but the deploy identity"
+        ],
+        "eradication": [
+          "Redeploy the site from the release artifact rather than editing pages",
+          "Patch the CMS or plugin used for access",
+          "Remove backdoors, extra admin users, or web shells left by the defacer"
+        ],
+        "recovery": [
+          "Restore the live site and confirm content hashes match the release",
+          "Publish a brief public statement if the defacement was widely seen",
+          "Monitor content integrity at short intervals for a week"
+        ],
+        "lessons": [
+          "Add content change monitoring with alerting to the SOC",
+          "Measure time from defacement to maintenance page",
+          "Move to immutable deployments for the public site"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "CMS or FTP logins before the defacement",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Authentication.src) as src from datamodel=Authentication where Authentication.dest=\"<web_host>\" Authentication.action=success by Authentication.user Authentication.app _time span=1h"
+        },
+        {
+          "title": "Write requests to the web root around the change",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined method IN (PUT,POST,DELETE) host=\"<web_host>\" earliest=<change_time_minus_24h> latest=<change_time> | stats count values(uri_path) as paths by clientip user"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-subdomain-takeover",
+      "name": "Subdomain takeover through a dangling DNS record",
+      "summary": "Use when a company subdomain CNAME points to a deprovisioned cloud resource, such as a storage bucket or app service, that an attacker has claimed to host their own content.",
+      "tags": [
+        "web-app",
+        "subdomain-takeover",
+        "dns",
+        "cloud"
+      ],
+      "attack": [
+        "T1584.001",
+        "T1566.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Maintain an inventory of DNS records with the cloud resource each points to",
+          "Run scheduled checks for CNAMEs to unclaimed buckets, apps, or CDN endpoints",
+          "Know who can change records in each DNS zone"
+        ],
+        "identification": [
+          "Resolve the subdomain and record the CNAME chain and final target",
+          "Confirm the target resource is not in any company cloud account",
+          "Capture the content the attacker is serving, such as phishing or malware",
+          "Check whether the subdomain is in scope for cookies set on the parent domain",
+          "Search email and proxy logs for links to the subdomain"
+        ],
+        "containment": [
+          "Delete or repoint the dangling DNS record",
+          "Invalidate sessions if parent-domain cookies could have been read",
+          "Report the hosted content to the cloud provider's abuse team"
+        ],
+        "eradication": [
+          "Sweep all zones for other CNAMEs pointing to unclaimed resources",
+          "Add DNS record removal to the decommission runbook for cloud resources",
+          "Remove NS delegations for retired third-party DNS providers"
+        ],
+        "recovery": [
+          "Confirm the subdomain no longer resolves to attacker content from multiple resolvers",
+          "Tighten cookie scope to specific hosts instead of the parent domain",
+          "Request removal of the subdomain from blocklists and search engine phishing flags"
+        ],
+        "lessons": [
+          "Add automated dangling-DNS detection to the CI pipeline for DNS changes",
+          "Track the age of the dangling record before takeover",
+          "Require cloud resource deletion tickets to reference the DNS records that point to them"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Internal clients visiting the taken-over subdomain",
+          "phase": "identification",
+          "spl": "index=dns sourcetype=stream:dns query=\"<subdomain>.example\" | stats count earliest(_time) as first by src | convert ctime(first)"
+        },
+        {
+          "title": "Emails containing links to the subdomain",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.url=\"*<subdomain>.example*\" by All_Email.src_user All_Email.recipient All_Email.subject"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-exposed-git-env-file",
+      "name": "Exposed .git directory or .env file on a public web server",
+      "summary": "Use when a web server serves /.git/ or /.env publicly, letting anyone download source history, credentials, or API keys, whether found by a scanner, researcher, or attacker logs.",
+      "tags": [
+        "web-app",
+        "secrets",
+        "misconfiguration",
+        "source-code"
+      ],
+      "attack": [
+        "T1552.001",
+        "T1213.003",
+        "T1595.003"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Configure web servers to deny dotfiles and dot-directories by default",
+          "Run external scans for /.git/HEAD and /.env across all public hosts",
+          "Use secret scanning on repositories so secrets in history are known"
+        ],
+        "identification": [
+          "Confirm exposure by requesting /.git/HEAD and /.env from an external vantage point",
+          "Search access logs for prior downloads of /.git/objects or /.env and list requesters",
+          "Reconstruct which files and commits were retrievable from the exposed .git directory",
+          "Extract every secret from the .env and repository history",
+          "Check provider logs for use of each exposed secret since the exposure began"
+        ],
+        "containment": [
+          "Block dotfile paths at the web server and CDN immediately",
+          "Remove the .git directory and .env from the deployed web root",
+          "Rotate database passwords, API keys, and signing secrets found in the files"
+        ],
+        "eradication": [
+          "Change the deployment process to ship build artifacts without repository metadata",
+          "Purge secrets from repository history after rotation",
+          "Scan all other hosts for the same deployment mistake"
+        ],
+        "recovery": [
+          "Confirm applications are healthy after secret rotation",
+          "Monitor for use of the revoked secrets",
+          "Confirm external scans no longer return content for dotfile paths on any host"
+        ],
+        "lessons": [
+          "Add a detection for requests to /.git/ and /.env with 200 responses",
+          "Add a pre-deploy check that fails if dotfiles exist in the artifact",
+          "Record how long the files were exposed"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Successful requests for .git or .env",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count sum(Web.bytes) as bytes earliest(_time) as first from datamodel=Web where (Web.uri_path=\"/.git/*\" OR Web.uri_path=\"*/.env\" OR Web.uri_path=\"/.git\") Web.status=200 by Web.src Web.dest | convert ctime(first) | sort - bytes"
+        },
+        {
+          "title": "Scanner activity probing dotfiles",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined (uri_path=\"*/.git/*\" OR uri_path=\"*/.env*\" OR uri_path=\"*/.aws/credentials\") | stats count values(status) as codes dc(host) as hosts by clientip useragent | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-admin-panel-no-auth",
+      "name": "Admin panel exposed to the internet without authentication",
+      "summary": "Use when an application admin interface, such as a management console or back office, is reachable publicly without login or with default credentials.",
+      "tags": [
+        "web-app",
+        "misconfiguration",
+        "admin-interface",
+        "exposure"
+      ],
+      "attack": [
+        "T1190",
+        "T1078.001",
+        "T1133"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Inventory admin paths for each application such as /admin, /manage, or /backoffice",
+          "Restrict admin interfaces to VPN or zero-trust access by policy",
+          "Monitor external attack surface for new admin login pages"
+        ],
+        "identification": [
+          "Confirm the panel is reachable without auth from an external network",
+          "Determine when the exposure began from deploy history or config changes",
+          "List every request to admin paths from non-corporate IPs during the exposure",
+          "Review the admin audit log for user creation, config changes, or data exports",
+          "Check whether default or shared credentials were in use"
+        ],
+        "containment": [
+          "Restrict the admin path to corporate IP ranges or SSO at the load balancer",
+          "Disable accounts created during the exposure window",
+          "Rotate admin credentials and API tokens issued from the panel"
+        ],
+        "eradication": [
+          "Fix the configuration that disabled authentication and add a test for it",
+          "Revert unauthorized settings changes made through the panel",
+          "Remove default accounts from the application"
+        ],
+        "recovery": [
+          "Verify authorized admins can reach the panel through the approved path",
+          "Assess data exported from the panel for notification requirements",
+          "Confirm the external attack surface scan shows the admin path is no longer public"
+        ],
+        "lessons": [
+          "Add external monitoring that alerts on admin paths returning 200 without auth",
+          "Add an infrastructure-as-code policy denying public listeners on admin ports",
+          "Record exposure duration and actions taken by outsiders"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "External requests to admin paths",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Web.status) as status values(Web.http_method) as methods from datamodel=Web where (Web.uri_path=\"/admin*\" OR Web.uri_path=\"/manage*\" OR Web.uri_path=\"/backoffice*\") NOT Web.src IN (\"10.0.0.0/8\",\"172.16.0.0/12\",\"192.168.0.0/16\") by Web.src Web.dest"
+        },
+        {
+          "title": "Admin actions from outside corporate ranges",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path=\"/admin*\" method IN (POST,PUT,DELETE) NOT clientip IN (\"10.0.0.0/8\",\"<corp_egress_ip>\") | table _time clientip method uri_path status"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-jwt-secret-compromised",
+      "name": "JWT signing secret compromised and tokens forged",
+      "summary": "Use when the HMAC secret or private key used to sign JWTs is leaked or weak, or tokens with alg none or forged claims are accepted, letting attackers impersonate any user.",
+      "tags": [
+        "web-app",
+        "jwt",
+        "authentication",
+        "token-forgery"
+      ],
+      "attack": [
+        "T1606",
+        "T1552.001",
+        "T1078"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Store JWT signing keys in a KMS or vault and support key ids for rotation",
+          "Log token jti, kid, sub, and issuer on validation",
+          "Pin accepted algorithms in every service that validates tokens"
+        ],
+        "identification": [
+          "Determine how the secret leaked: repository, logs, config exposure, or brute-forced weak key",
+          "Find tokens whose jti or iat does not match any token issued by the auth service",
+          "Identify tokens with alg none, unexpected kid, or role claims never issued",
+          "List identities impersonated with forged tokens and their actions",
+          "Check every service validating tokens with the same secret"
+        ],
+        "containment": [
+          "Rotate the signing key and publish only the new key in JWKS",
+          "Reject tokens signed with the old key across all services",
+          "Force re-authentication for all users"
+        ],
+        "eradication": [
+          "Move from shared HMAC secrets to asymmetric keys held only by the issuer",
+          "Fix validation libraries to reject alg none and algorithm confusion",
+          "Remove the leaked secret from source and logs"
+        ],
+        "recovery": [
+          "Monitor validation failures for old-key tokens as attacker indicators",
+          "Revert account and privilege changes made with forged tokens",
+          "Confirm every consuming service fetches the new JWKS and validates new tokens"
+        ],
+        "lessons": [
+          "Add a detection on tokens whose jti was never issued",
+          "Set a scheduled key rotation interval and test it",
+          "Record how many services shared the compromised secret"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Tokens with unexpected algorithm or kid",
+          "phase": "identification",
+          "spl": "index=app sourcetype=auth:jwt:validation (alg=\"none\" OR NOT kid IN (\"<current_kid>\",\"<previous_kid>\")) | stats count values(sub) as subjects by src_ip alg kid"
+        },
+        {
+          "title": "Validated tokens with no matching issuance",
+          "phase": "identification",
+          "spl": "index=app sourcetype=auth:jwt:validation result=accepted | join type=left jti [search index=app sourcetype=auth:jwt:issued | eval issued=1 | fields jti issued] | where isnull(issued) | stats count values(src_ip) as src by sub role"
+        },
+        {
+          "title": "Rejected old-key tokens after rotation",
+          "phase": "recovery",
+          "spl": "index=app sourcetype=auth:jwt:validation result=rejected reason=\"unknown_kid\" | timechart span=1h count by src_ip limit=10"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-session-hijack-fixation",
+      "name": "Session hijacking or session fixation on the web app",
+      "summary": "Use when one session token is used from multiple unrelated IPs or devices, or a session id set before login persists after login, letting an attacker ride a victim's session.",
+      "tags": [
+        "web-app",
+        "session-hijacking",
+        "cookies",
+        "account-takeover"
+      ],
+      "attack": [
+        "T1539",
+        "T1550.004",
+        "T1185"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Log a hashed session id with IP, user agent, and user on each request",
+          "Regenerate session ids at login and privilege change",
+          "Set Secure, HttpOnly, and SameSite on session cookies"
+        ],
+        "identification": [
+          "Find session ids used from more than one ASN or country within a short window",
+          "Check whether the session id existed before authentication and was kept after login",
+          "Determine how the token was obtained: XSS, infostealer, URL leakage, or network capture",
+          "List actions performed in the hijacked session from the attacker IP",
+          "Identify other sessions with the same attacker IP or user agent"
+        ],
+        "containment": [
+          "Terminate the hijacked sessions server-side",
+          "Force re-authentication with MFA for the affected users",
+          "Block the attacker IPs"
+        ],
+        "eradication": [
+          "Fix login to always issue a new session id",
+          "Remove session ids from URLs and referrer-exposed parameters",
+          "Bind sessions to device signals and re-prompt on large changes"
+        ],
+        "recovery": [
+          "Revert changes made by the attacker in each hijacked session",
+          "Tell affected users to scan devices for infostealers if theft was client-side",
+          "Verify new logins receive a fresh session id in production traffic captures"
+        ],
+        "lessons": [
+          "Add a detection on session ids seen from multiple ASNs",
+          "Shorten idle session timeouts for sensitive roles",
+          "Track the number of hijacked sessions and root cause"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Session ids used from multiple IPs or countries",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined session_id=* | iplocation clientip | stats dc(clientip) as ips dc(Country) as countries values(useragent) as ua by session_id user | where countries>1 OR ips>3"
+        },
+        {
+          "title": "Actions in a hijacked session",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined session_id=\"<session_hash>\" | table _time clientip useragent method uri_path status"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-oauth-redirect-abuse",
+      "name": "OAuth redirect URI abuse stealing authorization codes",
+      "summary": "Use when an OAuth or OIDC flow accepts loose redirect_uri values, letting attackers send authorization codes or tokens to a domain they control through a crafted login link.",
+      "tags": [
+        "web-app",
+        "oauth",
+        "redirect",
+        "token-theft"
+      ],
+      "attack": [
+        "T1528",
+        "T1566.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Register exact-match redirect URIs for each OAuth client",
+          "Log authorize requests with client_id, redirect_uri, and response_type",
+          "Require PKCE for public clients"
+        ],
+        "identification": [
+          "List authorize requests whose redirect_uri differs from the registered values",
+          "Identify the attacker domain and any open redirect chained in the redirect_uri",
+          "Find users who completed the flow to the malicious redirect",
+          "Check token endpoint logs for codes redeemed from unexpected IPs",
+          "Review whether implicit flow tokens appeared in URL fragments sent to third parties"
+        ],
+        "containment": [
+          "Change the client config to exact redirect matching",
+          "Revoke tokens and refresh tokens issued through the malicious redirect",
+          "Block the attacker domain in email and proxy filters"
+        ],
+        "eradication": [
+          "Disable implicit flow and require authorization code with PKCE",
+          "Fix any open redirect on the registered domain used in the chain",
+          "Audit all clients for wildcard or prefix-matched redirect URIs"
+        ],
+        "recovery": [
+          "Ask affected users to sign in again and review connected apps",
+          "Monitor authorize requests for new redirect variants",
+          "Verify legitimate client apps complete login with the exact-match redirect config"
+        ],
+        "lessons": [
+          "Add a detection for authorize requests with unregistered redirect hosts",
+          "Add redirect URI validation tests to the identity provider release process",
+          "Record how many users granted codes to the attacker"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Authorize requests with unexpected redirect_uri",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path=\"/oauth/authorize\" | rex field=uri_query \"redirect_uri=(?<redirect_uri>[^&]+)\" | eval redirect_uri=urldecode(redirect_uri) | search NOT redirect_uri IN (\"https://app.example/callback\",\"https://mobile.example/callback\") | stats count dc(user) as users by redirect_uri client_id"
+        },
+        {
+          "title": "Code redemption from unknown IPs",
+          "phase": "identification",
+          "spl": "index=app sourcetype=idp:token grant_type=authorization_code client_id=\"<client_id>\" | iplocation src_ip | stats count values(Country) as countries by src_ip | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-bot-inventory-hoarding",
+      "name": "Bots hoarding inventory through add-to-cart or reservation abuse",
+      "summary": "Use when automated clients add limited stock to carts, reserve seats, or hold bookings without buying, denying inventory to real customers during launches or sales.",
+      "tags": [
+        "web-app",
+        "bots",
+        "ecommerce",
+        "business-logic"
+      ],
+      "attack": [
+        "T1499.003"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Log cart and reservation events with session, account, IP, and device fingerprint",
+          "Agree with the business on cart hold times and per-account limits for launches",
+          "Have bot management rules staged for high-demand product pages"
+        ],
+        "identification": [
+          "Chart add-to-cart and reservation rates for the affected SKUs versus checkout completions",
+          "Identify accounts or sessions holding many units without completing checkout",
+          "Cluster bot traffic by fingerprint, ASN, and request timing regularity",
+          "Check whether new accounts were mass-registered before the launch",
+          "Quantify inventory currently held by suspected bots"
+        ],
+        "containment": [
+          "Release carts and reservations held by flagged sessions",
+          "Enable bot challenges on add-to-cart and reservation endpoints",
+          "Apply per-account and per-payment-instrument quantity limits"
+        ],
+        "eradication": [
+          "Shorten hold timers for high-demand SKUs",
+          "Disable mass-registered accounts linked to the bot cluster",
+          "Block the automation fingerprint and proxy ASNs at the bot manager"
+        ],
+        "recovery": [
+          "Return released inventory to sale and confirm real customer checkout rates",
+          "Cancel orders that slipped through from bot accounts before shipment",
+          "Tune bot challenge thresholds after the launch to cut friction for real shoppers"
+        ],
+        "lessons": [
+          "Add a detection for cart-to-checkout ratio anomalies per account",
+          "Run a pre-launch bot readiness checklist for limited drops",
+          "Measure the share of inventory captured by bots"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Add-to-cart versus checkout by account",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path IN (\"/api/cart/add\",\"/api/checkout/complete\") | eval evt=if(uri_path=\"/api/cart/add\",\"add\",\"buy\") | stats count(eval(evt=\"add\")) as adds count(eval(evt=\"buy\")) as buys dc(clientip) as ips by user | where adds>20 AND buys=0 | sort - adds"
+        },
+        {
+          "title": "Request timing regularity by fingerprint",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path=\"/api/cart/add\" | sort 0 ja3 _time | streamstats current=f last(_time) as prev by ja3 | eval gap=_time-prev | stats count stdev(gap) as jitter avg(gap) as avg_gap dc(user) as accounts by ja3 | where count>100 AND jitter<1"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-waf-bypass-alert-surge",
+      "name": "Surge of WAF alerts suggesting a bypass attempt",
+      "summary": "Use when WAF alert volume jumps or blocked payloads shift to encoded, chunked, or obfuscated variants, and some similar requests reach the origin with 200 responses.",
+      "tags": [
+        "web-app",
+        "waf",
+        "evasion",
+        "detection"
+      ],
+      "attack": [
+        "T1190",
+        "T1027"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Send WAF logs with rule ids, action, and matched data to Splunk",
+          "Log origin requests with a WAF request id for correlation",
+          "Know who can change WAF rules and how fast changes deploy"
+        ],
+        "identification": [
+          "Chart WAF blocks by rule group to find the rule driving the surge",
+          "Compare blocked payloads with similar requests that were allowed to find the bypass variant",
+          "Correlate allowed variants with origin responses and app errors",
+          "Check for requests sent directly to the origin IP bypassing the WAF",
+          "Determine which endpoints the bypass reached and whether exploitation succeeded"
+        ],
+        "containment": [
+          "Add a custom rule matching the bypass encoding or content type",
+          "Lock origin ingress to the WAF or CDN ranges only",
+          "Rate-limit or block the attacking sources"
+        ],
+        "eradication": [
+          "Fix the underlying vulnerability in the targeted endpoint",
+          "Enable request body inspection limits and reject oversized or malformed bodies",
+          "Update the managed rule set version"
+        ],
+        "recovery": [
+          "Tune new rules against legitimate traffic to remove false positives",
+          "Monitor the targeted endpoint for allowed payload variants",
+          "Move the emergency custom rule from count to block after a false positive review"
+        ],
+        "lessons": [
+          "Add an alert for WAF block rate anomalies by rule group",
+          "Add a check that origin IPs are not reachable from the internet",
+          "Feed the bypass payloads into regression tests for WAF rules"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "WAF blocks by rule over time",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:waf action=BLOCK | timechart span=15m count by terminatingRuleId limit=10"
+        },
+        {
+          "title": "Allowed requests from IPs that were also blocked",
+          "phase": "identification",
+          "spl": "index=aws sourcetype=aws:waf | stats count(eval(action=\"BLOCK\")) as blocked count(eval(action=\"ALLOW\")) as allowed values(httpRequest.uri) as uris by httpRequest.clientIp | where blocked>20 AND allowed>0"
+        },
+        {
+          "title": "Origin traffic not coming through the WAF",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest=\"<origin_ip>\" All_Traffic.dest_port=443 NOT All_Traffic.src IN (\"<cdn_range_1>\",\"<cdn_range_2>\") by All_Traffic.src"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-wordpress-plugin-compromise",
+      "name": "WordPress site compromised through a vulnerable plugin",
+      "summary": "Use when a WordPress site shows rogue admin users, injected spam or redirects, or PHP backdoors after exploitation of a plugin or theme vulnerability.",
+      "tags": [
+        "web-app",
+        "wordpress",
+        "cms",
+        "plugin",
+        "web-shell"
+      ],
+      "attack": [
+        "T1190",
+        "T1505.003",
+        "T1136"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Keep an inventory of WordPress sites, plugins, and versions",
+          "Enable automatic minor and plugin security updates",
+          "Back up the database and wp-content daily with retention"
+        ],
+        "identification": [
+          "Identify the vulnerable plugin and version from the requests hitting its endpoints",
+          "List WordPress users created or promoted to administrator recently",
+          "Search wp-content/uploads and plugin directories for PHP files with eval or base64_decode",
+          "Check wp_options for injected siteurl, home, or autoloaded script values",
+          "Review requests to admin-ajax.php and the plugin's REST routes around the compromise"
+        ],
+        "containment": [
+          "Put the site in maintenance mode or behind a WAF block",
+          "Deactivate the vulnerable plugin",
+          "Delete rogue administrator accounts and reset all admin passwords",
+          "Rotate WordPress salts and database credentials in wp-config.php"
+        ],
+        "eradication": [
+          "Replace WordPress core, themes, and plugins with fresh copies from official sources",
+          "Remove PHP backdoors and clean injected database content",
+          "Disable PHP execution in wp-content/uploads"
+        ],
+        "recovery": [
+          "Restore from a pre-compromise backup if cleanup cannot be verified",
+          "Request search engine review if the site was flagged for malware or spam",
+          "Run an external malware scan of the site and confirm no injected redirects remain"
+        ],
+        "lessons": [
+          "Add a detection for new WordPress administrator accounts",
+          "Remove unused plugins and track plugin vulnerability feeds",
+          "Record the time between plugin patch release and exploitation"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Requests to the vulnerable plugin endpoints",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined (uri_path=\"/wp-content/plugins/<plugin_slug>/*\" OR (uri_path=\"/wp-admin/admin-ajax.php\" uri_query=\"*action=<plugin_action>*\")) | stats count values(status) as codes by clientip method"
+        },
+        {
+          "title": "Requests to PHP files in uploads",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.uri_path=\"/wp-content/uploads/*.php\" by Web.src Web.dest Web.uri_path Web.status"
+        },
+        {
+          "title": "New admin user creation requests",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined (uri_path=\"/wp-admin/user-new.php\" method=POST) OR (uri_path=\"/wp-json/wp/v2/users\" method=POST) | table _time clientip user uri_path status"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-open-redirect-phishing",
+      "name": "Open redirect on our domain used in phishing campaigns",
+      "summary": "Use when phishing emails use a trusted company URL with a redirect parameter to send victims to attacker pages, abusing our domain's reputation to bypass filters.",
+      "tags": [
+        "web-app",
+        "open-redirect",
+        "phishing",
+        "brand"
+      ],
+      "attack": [
+        "T1566.002",
+        "T1204.001"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Know which routes accept next, url, return, or redirect parameters",
+          "Log redirect destinations on redirect endpoints",
+          "Have a takedown process for phishing pages"
+        ],
+        "identification": [
+          "Identify the redirect endpoint and parameter from the reported phishing link",
+          "List external destinations reached through the redirect in access logs",
+          "Count unique visitors who followed redirects to the attacker domains",
+          "Check whether the campaign targets employees, customers, or both",
+          "Review the destination page for credential harvesting or malware"
+        ],
+        "containment": [
+          "Restrict the redirect to relative paths or an allowlist of company domains",
+          "Block the phishing destinations in mail and proxy filters",
+          "Submit takedown requests for the destination pages"
+        ],
+        "eradication": [
+          "Replace raw URL parameters with signed or id-based redirect targets",
+          "Search other routes and apps for the same redirect pattern",
+          "Add an interstitial warning page for any remaining external redirects"
+        ],
+        "recovery": [
+          "Reset credentials for employees or customers who submitted data to the phishing page",
+          "Watch for new campaigns using any remaining redirect",
+          "Confirm mail filters no longer flag legitimate company links after the blocks"
+        ],
+        "lessons": [
+          "Add a detection for redirect responses pointing to non-company domains",
+          "Add open redirect checks to DAST and code review",
+          "Record the campaign's reach through the redirect"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Redirects to external destinations",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path=\"<redirect_path>\" status IN (301,302,303,307) | rex field=uri_query \"(?:next|url|redirect|return)=(?<dest>[^&]+)\" | eval dest=urldecode(dest) | where NOT match(dest, \"^(/|https?://([a-z0-9-]+\\.)*example\\.com)\") | stats count dc(clientip) as visitors by dest"
+        },
+        {
+          "title": "Phishing emails using the redirect link",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count dc(All_Email.recipient) as recipients from datamodel=Email where All_Email.url=\"*<redirect_path>*\" by All_Email.src_user All_Email.subject"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-otp-rate-limit-bypass",
+      "name": "Rate limit bypass used to brute-force OTP or MFA codes",
+      "summary": "Use when attackers circumvent rate limits on one-time code verification, such as by rotating IPs, headers like X-Forwarded-For, or parallel requests, to guess SMS or email OTPs.",
+      "tags": [
+        "web-app",
+        "otp",
+        "mfa",
+        "brute-force",
+        "rate-limit"
+      ],
+      "attack": [
+        "T1110.001",
+        "T1111"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Rate-limit OTP verification per account and per code issuance, not only per IP",
+          "Log OTP verification attempts with account, result, and the trusted client IP",
+          "Ignore client-supplied X-Forwarded-For unless set by your own proxy"
+        ],
+        "identification": [
+          "Find accounts with many failed OTP verifications against a single issued code",
+          "Check for spoofed X-Forwarded-For or X-Real-IP headers varying per request",
+          "Look for concurrent bursts of verification requests indicating race conditions",
+          "List accounts where a successful verification followed a long failure run",
+          "Review SMS spend for OTP send floods tied to the same accounts"
+        ],
+        "containment": [
+          "Invalidate the OTP after a small number of failed attempts",
+          "Lock accounts with suspected successful brute force and revoke sessions",
+          "Block the source ranges and normalize client IP from the trusted proxy"
+        ],
+        "eradication": [
+          "Make attempt counters atomic to defeat parallel-request races",
+          "Increase OTP length or move users to app-based or passkey MFA",
+          "Fix gateway config that trusted spoofable headers"
+        ],
+        "recovery": [
+          "Contact owners of breached accounts to restore control and review activity",
+          "Monitor OTP failure rates per account after the fix",
+          "Restore normal SMS sending limits after confirming OTP pumping has stopped"
+        ],
+        "lessons": [
+          "Add a detection for OTP failures per account over threshold",
+          "Add race-condition tests for verification endpoints",
+          "Record cost of SMS pumping during the incident"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "OTP failures per account",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path=\"/api/otp/verify\" | stats count(eval(status!=200)) as fails count(eval(status=200)) as wins dc(clientip) as ips dc(x_forwarded_for) as xff by user | where fails>10 | sort - fails"
+        },
+        {
+          "title": "Concurrent verification bursts",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path=\"/api/otp/verify\" | bin _time span=1s | stats count by _time user | where count>5"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-tag-manager-script-change",
+      "name": "Malicious change to a third-party script or tag manager container",
+      "summary": "Use when a tag manager container or third-party analytics or chat script loaded on our site is modified to inject code, through a compromised marketing account or vendor.",
+      "tags": [
+        "web-app",
+        "supply-chain",
+        "tag-manager",
+        "javascript"
+      ],
+      "attack": [
+        "T1195.002",
+        "T1059.007",
+        "T1078"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Inventory tag manager containers and third-party scripts per site",
+          "Require SSO and MFA for tag manager accounts and limit publish rights",
+          "Monitor script hashes and destinations loaded by key pages"
+        ],
+        "identification": [
+          "Review the tag manager version history for the publish that added the suspicious tag",
+          "Identify which account published the change and from where",
+          "Extract and deobfuscate the injected tag to find its behavior and destinations",
+          "Determine which pages and user populations loaded the container version",
+          "For vendor-hosted scripts, compare the current file against a known-good hash"
+        ],
+        "containment": [
+          "Republish the last known-good container version",
+          "Remove publish rights from the compromised marketing account and reset its credentials",
+          "Remove or pin the compromised vendor script with SRI"
+        ],
+        "eradication": [
+          "Audit all tags in the container for unapproved custom HTML",
+          "Contact the vendor to confirm their compromise status and remediation",
+          "Restrict custom HTML tags through container permissions"
+        ],
+        "recovery": [
+          "Confirm pages load only approved scripts using a crawl",
+          "Notify users if the script captured form data or credentials",
+          "Restore marketing publish rights only after MFA and approval workflow are enforced"
+        ],
+        "lessons": [
+          "Add alerting on tag manager publishes outside change windows",
+          "Exclude tag managers from login and payment pages",
+          "Record how long the malicious version was live"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Client traffic to the injected tag's destination",
+          "phase": "identification",
+          "spl": "index=proxy (url=\"*<injected_domain>*\" OR dest=\"<injected_domain>\") | stats count dc(src) as clients earliest(_time) as first by url | convert ctime(first)"
+        },
+        {
+          "title": "CSP violations for new script sources",
+          "phase": "identification",
+          "spl": "index=web sourcetype=csp:report | spath path=csp-report.blocked-uri output=blocked | spath path=csp-report.violated-directive output=directive | search directive=\"script-src*\" | stats count earliest(_time) as first by blocked | convert ctime(first) | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-cache-poisoning",
+      "name": "Web cache poisoning serving malicious content from the CDN",
+      "summary": "Use when unkeyed headers or parameters let an attacker store a malicious response in the CDN or reverse proxy cache, so other users receive injected scripts or redirects.",
+      "tags": [
+        "web-app",
+        "cache-poisoning",
+        "cdn",
+        "xss"
+      ],
+      "attack": [
+        "T1189",
+        "T1557"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Document cache keys and which headers the origin reflects in responses",
+          "Log CDN cache status, cache key, and request headers",
+          "Know how to purge the CDN by URL and globally"
+        ],
+        "identification": [
+          "Fetch the affected URL from several regions and capture cached response bodies",
+          "Identify the unkeyed input reflected in the poisoned response, such as X-Forwarded-Host",
+          "Find the request that populated the poisoned cache entry and its source",
+          "Determine how many users received the poisoned response from cache hits",
+          "Check for web cache deception storing private pages under static extensions"
+        ],
+        "containment": [
+          "Purge the poisoned URLs from the CDN",
+          "Strip or normalize the unkeyed header at the CDN edge",
+          "Temporarily bypass cache for the affected route"
+        ],
+        "eradication": [
+          "Stop the origin from reflecting untrusted headers in responses",
+          "Add the necessary inputs to the cache key or mark responses non-cacheable",
+          "Set Cache-Control private on authenticated pages"
+        ],
+        "recovery": [
+          "Re-enable caching and verify responses no longer vary on the header",
+          "Monitor cache hit content hashes for the route",
+          "Confirm all edge regions serve the clean response after the global purge"
+        ],
+        "lessons": [
+          "Add cache poisoning probes to periodic security testing",
+          "Add an alert for unusual X-Forwarded-Host or X-Original-URL values",
+          "Record exposure window and affected user count"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Requests with unusual forwarding headers",
+          "phase": "identification",
+          "spl": "index=cdn sourcetype=cdn:access (x_forwarded_host=* OR x_original_url=* OR x_host=*) NOT x_forwarded_host IN (\"www.example.com\",\"api.example.com\") | stats count values(x_forwarded_host) as xfh by client_ip uri_path cache_status"
+        },
+        {
+          "title": "Cache hits served for the poisoned URL",
+          "phase": "identification",
+          "spl": "index=cdn sourcetype=cdn:access uri_path=\"<poisoned_path>\" cache_status=HIT earliest=<poison_time> | stats count dc(client_ip) as users by edge_location"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-log4shell-style-injection",
+      "name": "JNDI or template injection strings found in application logs",
+      "summary": "Use when request headers, usernames, or form fields contain ${jndi:, ${env:, or template expressions that a logging or templating library might evaluate, and you need to know if any fired.",
+      "tags": [
+        "web-app",
+        "jndi",
+        "log-injection",
+        "rce",
+        "java"
+      ],
+      "attack": [
+        "T1190",
+        "T1059",
+        "T1105"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Inventory applications and the logging and templating libraries they bundle",
+          "Capture outbound DNS and LDAP or RMI traffic from app servers",
+          "Keep software bill of materials data searchable"
+        ],
+        "identification": [
+          "Search request logs for ${jndi:, ${env:, ${lower:, and nested obfuscations",
+          "Identify which fields carried the payload, such as User-Agent, X-Api-Version, or username",
+          "Check DNS logs for app servers resolving the callback domains from the payloads",
+          "Look for outbound LDAP, RMI, or HTTP from app servers to payload hosts",
+          "Determine whether the library version in each targeted app evaluates lookups"
+        ],
+        "containment": [
+          "Block egress LDAP and RMI from application tiers",
+          "Add WAF rules for lookup syntax in headers and bodies",
+          "Disable message lookups via configuration or environment flag where supported"
+        ],
+        "eradication": [
+          "Upgrade the vulnerable library in every affected application",
+          "Rebuild any server that made a confirmed callback",
+          "Search for dropped files or miners on servers that reached payload hosts"
+        ],
+        "recovery": [
+          "Rescan with SBOM and runtime checks to confirm no vulnerable versions remain",
+          "Keep egress restrictions on the app tier permanently",
+          "Return rebuilt servers to the pool after confirming no callbacks in DNS logs"
+        ],
+        "lessons": [
+          "Add a detection on app servers resolving domains seen in injection payloads",
+          "Reduce default egress from application subnets",
+          "Track time to identify every app using the library"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Lookup injection strings in web logs",
+          "phase": "identification",
+          "spl": "index=web (sourcetype=access_combined OR sourcetype=ms:iis:auto OR sourcetype=aws:waf) (\"${jndi:\" OR \"${env:\" OR \"%24%7Bjndi\" OR \"${lower:\" OR \"${::-j}\") | rex \"(?i)\\$\\{jndi:(?<proto>[a-z]+)://(?<cb_host>[^/:}]+)\" | stats count values(cb_host) as callbacks by src_ip host"
+        },
+        {
+          "title": "App servers resolving callback domains",
+          "phase": "identification",
+          "spl": "index=dns sourcetype=stream:dns src IN (\"<app_subnet>\") query IN (\"*<callback_domain>*\") | stats count earliest(_time) as first by src query | convert ctime(first)"
+        },
+        {
+          "title": "Outbound LDAP or RMI from app tier",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.src_category=app_server All_Traffic.dest_port IN (389,636,1099,1389) by All_Traffic.src All_Traffic.dest All_Traffic.action"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-mass-assignment-privesc",
+      "name": "Mass assignment used to escalate privileges via API",
+      "summary": "Use when users add fields like role, isAdmin, or account_id to profile or signup API requests and the backend binds them, granting elevated rights or crossing tenants.",
+      "tags": [
+        "web-app",
+        "mass-assignment",
+        "api",
+        "privilege-escalation"
+      ],
+      "attack": [
+        "T1190",
+        "T1098"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Use explicit request DTOs or allowlists for writable fields",
+          "Log role and tenant changes on user objects with the request that caused them",
+          "Keep an authoritative list of who holds admin roles"
+        ],
+        "identification": [
+          "Find user records whose role or tenant changed without an admin workflow event",
+          "Search request bodies for role, is_admin, permissions, or tenant_id on self-service routes",
+          "Identify actions taken by accounts after they gained elevated rights",
+          "Reproduce the binding issue in staging to confirm which fields are writable"
+        ],
+        "containment": [
+          "Revert roles and tenant memberships on affected accounts",
+          "Revoke sessions for those accounts",
+          "Hotfix the endpoint to ignore privileged fields"
+        ],
+        "eradication": [
+          "Replace generic model binding with explicit field allowlists across the API",
+          "Add server-side authorization checks on role assignment",
+          "Undo data changes the escalated accounts made"
+        ],
+        "recovery": [
+          "Reconcile admin role membership against the authoritative list",
+          "Monitor role-change events for a month",
+          "Notify tenant admins whose data was reachable by cross-tenant escalated accounts"
+        ],
+        "lessons": [
+          "Add a detection on role changes without an admin approval event",
+          "Add mass assignment tests to API contract tests",
+          "Record how many accounts escalated and for how long"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Self-service requests containing privileged fields",
+          "phase": "identification",
+          "spl": "index=app sourcetype=api:requests uri_path IN (\"/api/users/me\",\"/api/signup\",\"/api/profile\") method IN (POST,PUT,PATCH) | regex request_body=\"(?i)\\\"(role|is_?admin|permissions|tenant_?id|account_?id)\\\"\\s*:\" | stats count by user src_ip uri_path"
+        },
+        {
+          "title": "Role changes on user objects",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(All_Changes.user) as actor from datamodel=Change where All_Changes.object_category=user All_Changes.object_attrs=\"role\" by All_Changes.object All_Changes.result _time"
+        }
+      ]
+    },
+    {
+      "id": "lib-web-app-exposed-swagger-debug-endpoint",
+      "name": "Swagger UI or debug endpoint exposed in production",
+      "summary": "Use when production exposes API docs, actuator, debug consoles, or stack-trace pages that reveal internal routes, environment variables, or allow code execution.",
+      "tags": [
+        "web-app",
+        "debug-endpoint",
+        "swagger",
+        "misconfiguration"
+      ],
+      "attack": [
+        "T1190",
+        "T1592",
+        "T1552.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Define which documentation and diagnostic endpoints are allowed in production",
+          "Scan externally for /swagger, /actuator, /debug, /_profiler, and /console paths",
+          "Disable debug mode in production builds via configuration checks"
+        ],
+        "identification": [
+          "Confirm which endpoints are reachable externally and what they return",
+          "Check /actuator/env, /actuator/heapdump, or debug pages for exposed secrets",
+          "List external requests to the endpoints during the exposure window",
+          "Determine whether interactive consoles like Werkzeug or Spring Boot Admin were usable",
+          "Use the Swagger spec to identify internal or undocumented routes the attacker may have tried"
+        ],
+        "containment": [
+          "Block the endpoints at the load balancer or WAF",
+          "Rotate any secrets present in env dumps or heap dumps",
+          "Disable debug mode and redeploy"
+        ],
+        "eradication": [
+          "Restrict actuator exposure to health only on public listeners",
+          "Move API documentation behind SSO",
+          "Review internal routes listed in the spec for missing authentication"
+        ],
+        "recovery": [
+          "Verify monitoring still reaches health endpoints after restrictions",
+          "Monitor for requests to old debug paths",
+          "Confirm downstream services accept the rotated secrets from the env dump"
+        ],
+        "lessons": [
+          "Add a CI check that fails builds with debug flags enabled for production",
+          "Add a detection for 200 responses on debug paths from external IPs",
+          "Record which secrets were exposed and how long"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "External requests to debug and docs paths",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Web.status) as status from datamodel=Web where (Web.uri_path=\"/swagger*\" OR Web.uri_path=\"/v2/api-docs*\" OR Web.uri_path=\"/actuator*\" OR Web.uri_path=\"/debug*\" OR Web.uri_path=\"/_profiler*\" OR Web.uri_path=\"/console*\") by Web.src Web.dest Web.uri_path"
+        },
+        {
+          "title": "Heap dump or env downloads",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path IN (\"/actuator/heapdump\",\"/actuator/env\",\"/heapdump\") status=200 | table _time clientip uri_path bytes useragent"
+        }
+      ]
+    }
+  ]
+}

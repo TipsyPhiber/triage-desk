@@ -1,0 +1,1947 @@
+{
+  "category": {
+    "id": "phishing",
+    "name": "Phishing & email",
+    "description": "Email, chat and SMS lures against staff: credential harvesting, MFA-bypass kits, malicious attachments, consent phishing and post-click mailbox abuse."
+  },
+  "playbooks": [
+    {
+      "id": "lib-phishing-credential-harvest-link",
+      "name": "Credential-harvesting link clicked and password entered",
+      "summary": "Use when a user clicked a link to a fake sign-in page and may have typed their password, before any confirmed misuse of the account.",
+      "tags": [
+        "phishing",
+        "credential-theft",
+        "email",
+        "m365"
+      ],
+      "attack": [
+        "T1566.002",
+        "T1056.003",
+        "T1078"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable URL rewriting and time-of-click detonation on the email gateway for all inbound mail",
+          "Confirm proxy or DNS logs record full URLs and the requesting user for at least 90 days",
+          "Pre-approve a runbook that lets the SOC force a password reset and revoke sessions without a change ticket",
+          "Keep a list of the official sign-in domains for every SaaS app so lookalike pages are quick to spot"
+        ],
+        "identification": [
+          "Pull the original message from the mailbox and record sender, subject, Message-ID and the harvest URL",
+          "Detonate the harvest URL in an isolated sandbox and capture where the form posts credentials",
+          "Search proxy logs for every user who requested the harvest domain and note who submitted a POST",
+          "Review Entra ID sign-in logs for the clicker for new IPs, countries or user agents after the click time",
+          "Interview the user to confirm whether they typed a password or approved an MFA prompt"
+        ],
+        "containment": [
+          "Reset the password for every user who submitted the form and revoke their refresh tokens",
+          "Block the harvest domain and its hosting IP at the secure web gateway and DNS resolver",
+          "Purge the message from all mailboxes with a compliance search and purge",
+          "Add the sender address and envelope domain to the gateway block list"
+        ],
+        "eradication": [
+          "Check the affected accounts for new MFA methods, app passwords or registered devices and remove unknown ones",
+          "Remove any mailbox forwarding or inbox rules created after the click",
+          "Confirm the same password was not reused on VPN, payroll or other non-SSO systems and reset there too"
+        ],
+        "recovery": [
+          "Have each affected user re-register MFA in person or over a verified video call",
+          "Watch the affected accounts for sign-ins from new locations for 14 days",
+          "Submit the harvest URL to the hosting provider and browser safe-browsing services for takedown"
+        ],
+        "lessons": [
+          "Measure time from first click to password reset and set a target for the next event",
+          "Decide whether phishing-resistant MFA should be required for the users who were targeted",
+          "Add a detection for POST requests to newly registered domains from browsers on corporate devices",
+          "Feed the lure text and sender into the next phishing awareness exercise"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Users who reached the harvest domain",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Web.http_method) as methods min(_time) as first_seen from datamodel=Web where Web.url=\"*<ioc_domain>*\" by Web.user Web.src | convert ctime(first_seen)"
+        },
+        {
+          "title": "Sign-ins for clickers after the lure arrived",
+          "phase": "identification",
+          "spl": "index=* sourcetype=azure:aad:signin userPrincipalName IN (<suspect_user>) earliest=-7d | stats count values(ipAddress) as ips values(location.countryOrRegion) as countries values(appDisplayName) as apps by userPrincipalName status.errorCode"
+        },
+        {
+          "title": "Recipients of the phishing message",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=\"<sender>\" OR All_Email.subject=\"<subject>\" by All_Email.recipient All_Email.action"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-aitm-mfa-bypass",
+      "name": "Adversary-in-the-middle phish stole session cookie and bypassed MFA",
+      "summary": "Use when an EvilProxy- or Evilginx-style reverse proxy captured a user's session token, so MFA was satisfied and the attacker signed in with a stolen cookie.",
+      "tags": [
+        "phishing",
+        "aitm",
+        "mfa-bypass",
+        "session-hijack",
+        "entra-id"
+      ],
+      "attack": [
+        "T1557",
+        "T1539",
+        "T1550.004",
+        "T1566.002"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Enable Entra ID risk detections for anomalous token and token issuer anomaly alerts",
+          "Require compliant or hybrid-joined devices for access to Exchange Online and SharePoint",
+          "Roll out FIDO2 or Windows Hello for Business to staff with access to finance and admin roles",
+          "Retain Entra sign-in and non-interactive sign-in logs in the SIEM for at least 180 days"
+        ],
+        "identification": [
+          "Find the sign-in where MFA succeeded from the proxy IP and note the session ID and correlation ID",
+          "Compare the user agent and IP of the original sign-in with later non-interactive sign-ins using the same session",
+          "Identify the reverse-proxy hostname from proxy logs and check whether it mirrors the Microsoft login page",
+          "List every mailbox, Graph and SharePoint action taken from the attacker IP after token theft",
+          "Check whether the attacker registered a new authenticator app or phone number on the account"
+        ],
+        "containment": [
+          "Revoke all refresh tokens and sessions for the user with Revoke-MgUserSignInSession",
+          "Block the attacker IPs and the proxy domain with a Conditional Access named location and web filter",
+          "Disable the account temporarily if attacker activity continues after token revocation",
+          "Search all sign-in logs for other users authenticating through the same proxy IP range"
+        ],
+        "eradication": [
+          "Delete attacker-added MFA methods and require re-registration with a phishing-resistant method",
+          "Remove OAuth grants, inbox rules and mail forwarding created during the attacker session",
+          "Reset the password even though it was not the main access path, since the proxy also captured it"
+        ],
+        "recovery": [
+          "Enable token protection or sign-in session binding for the affected user group where licensed",
+          "Confirm the user's mailbox contents and sent items show no further attacker messages",
+          "Notify recipients of any internal phish the attacker sent from the account during the session"
+        ],
+        "lessons": [
+          "Record why Conditional Access did not stop a sign-in from an unmanaged device",
+          "Add a detection for successful MFA from an IP that has never been seen for that user and is hosting-provider ASN",
+          "Track the share of privileged users still on push or SMS MFA and set a deadline to move them"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Same session used from more than one IP",
+          "phase": "identification",
+          "spl": "index=* sourcetype=azure:aad:signin userPrincipalName=<suspect_user> earliest=-3d | stats dc(ipAddress) as ip_count values(ipAddress) as ips values(userAgent) as agents by sessionId | where ip_count>1"
+        },
+        {
+          "title": "Other users signing in from the proxy IPs",
+          "phase": "containment",
+          "spl": "index=* sourcetype=azure:aad:signin ipAddress IN (<ioc_ip>) | stats count min(_time) as first max(_time) as last values(appDisplayName) as apps by userPrincipalName | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Mailbox actions from the attacker IP",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity ClientIP=<ioc_ip> | stats count values(Operation) as ops by UserId Workload"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-qr-code-quishing",
+      "name": "QR-code phishing email led users to a fake login on their phones",
+      "summary": "Use when a message carried a QR code (often in a PDF or image) that sent users to a credential page on a personal or unmanaged mobile device, outside corporate web filtering.",
+      "tags": [
+        "phishing",
+        "quishing",
+        "qr-code",
+        "mobile",
+        "credential-theft"
+      ],
+      "attack": [
+        "T1566.001",
+        "T1566.002",
+        "T1056.003"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable QR-code decoding and URL extraction in the email gateway image and PDF scanners",
+          "Enroll corporate phones in MDM with a mobile threat defense app that filters malicious URLs",
+          "Block sign-in to corporate apps from unmanaged mobile browsers with Conditional Access app protection"
+        ],
+        "identification": [
+          "Decode the QR code from the attachment image in a sandbox and record the destination URL",
+          "Search mail logs for messages with the same attachment hash or image dimensions sent to other staff",
+          "Review Entra sign-ins with mobile user agents for recipients in the hours after delivery",
+          "Ask recipients whether they scanned the code and on which device, corporate or personal"
+        ],
+        "containment": [
+          "Reset passwords and revoke sessions for users who scanned the code and entered credentials",
+          "Purge the QR message from mailboxes using the attachment hash as the search key",
+          "Block the decoded domain in DNS filtering and in the MDM web filter profile"
+        ],
+        "eradication": [
+          "Remove attacker-registered MFA devices from the accounts that signed in from unknown mobile IPs",
+          "Check the scanned-from phones for a malicious configuration profile or rogue VPN profile",
+          "Add the PDF sender pattern and QR image hash to the gateway block list"
+        ],
+        "recovery": [
+          "Re-enable affected users after they confirm MFA methods and device list in a verified call",
+          "Send staff a short notice showing the lure and explaining that QR codes in email are treated as links",
+          "Confirm the decoded phishing domain has been reported to the registrar and taken down"
+        ],
+        "lessons": [
+          "Record whether the gateway decoded the QR code, and if not, raise the gap with the vendor",
+          "Add a detection for sign-ins from personal mobile devices immediately after a QR-bearing message",
+          "Decide whether to quarantine all inbound mail where the only content is an image with a QR code"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Messages carrying the QR attachment",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.file_hash=\"<attachment_hash>\" OR All_Email.file_name=\"<attachment_name>\" by All_Email.recipient All_Email.src_user All_Email.action"
+        },
+        {
+          "title": "Mobile sign-ins by recipients after delivery",
+          "phase": "identification",
+          "spl": "index=* sourcetype=azure:aad:signin userPrincipalName IN (<recipient_list>) earliest=-48h | search deviceDetail.operatingSystem IN (iOS, Android) | stats count values(ipAddress) as ips values(deviceDetail.isCompliant) as compliant by userPrincipalName status.errorCode"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-oauth-consent",
+      "name": "OAuth consent phishing granted a malicious app mailbox access",
+      "summary": "Use when a user clicked a consent prompt that granted a third-party app permissions such as Mail.Read or offline_access, giving persistent access that a password reset does not remove.",
+      "tags": [
+        "phishing",
+        "oauth",
+        "consent-grant",
+        "m365",
+        "persistence"
+      ],
+      "attack": [
+        "T1528",
+        "T1566.002",
+        "T1550.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Restrict user consent to verified publishers and low-risk permissions in Entra enterprise app settings",
+          "Turn on the admin consent workflow so users can request apps instead of granting them",
+          "Ingest Entra audit logs with Consent to application events into the SIEM"
+        ],
+        "identification": [
+          "Find the Consent to application audit event and record the app ID, publisher and granted scopes",
+          "Check whether the app is multi-tenant, unverified and was created recently in its home tenant",
+          "List every user in the tenant who consented to the same app ID",
+          "Review Microsoft Graph activity logs for API calls made by the app's service principal"
+        ],
+        "containment": [
+          "Disable the malicious service principal so it can no longer obtain tokens",
+          "Revoke the delegated permission grants for the app with Remove-MgOauth2PermissionGrant",
+          "Block the app ID tenant-wide by setting it as not allowed for user sign-in"
+        ],
+        "eradication": [
+          "Delete the service principal after evidence has been exported",
+          "Check consenting users for inbox rules or sent mail created through Graph by the app",
+          "Remove any certificate or secret the attacker added to other app registrations in the tenant"
+        ],
+        "recovery": [
+          "Tell affected users what data the app could read and what was actually accessed",
+          "Re-run an inventory of all third-party apps with high-privilege scopes and review owners",
+          "Re-enable user consent only for verified publishers once the app review is complete"
+        ],
+        "lessons": [
+          "Track how many apps still hold Mail.ReadWrite or Files.ReadWrite.All grants from user consent",
+          "Add a detection for consent to an unverified app requesting offline_access plus mail scopes",
+          "Decide whether to block user consent entirely for the departments that were targeted"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Consent grants to the suspect app",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity Operation=\"Consent to application.\" | search ModifiedProperties{}.NewValue=\"*<app_id>*\" OR Target{}.ID=\"*<app_id>*\" | stats count min(_time) as first by UserId ClientIP | convert ctime(first)"
+        },
+        {
+          "title": "All recent consents to unverified apps",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity Workload=AzureActiveDirectory Operation=\"Consent to application.\" earliest=-30d | stats count dc(UserId) as users values(UserId) as consenting_users by ObjectId | sort - users"
+        },
+        {
+          "title": "Mail access by the app after consent",
+          "phase": "containment",
+          "spl": "index=* sourcetype=o365:management:activity Workload=Exchange Operation=MailItemsAccessed AppId=<app_id> | stats count sum(OperationCount) as items by MailboxOwnerUPN ClientIPAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-malicious-attachment",
+      "name": "Malicious attachment opened and dropped a loader",
+      "summary": "Use when a user opened an emailed document, ISO, LNK or archive that launched a script or loader on their workstation, and endpoint compromise is suspected.",
+      "tags": [
+        "phishing",
+        "attachment",
+        "malware",
+        "endpoint",
+        "initial-access"
+      ],
+      "attack": [
+        "T1566.001",
+        "T1204.002",
+        "T1059.001",
+        "T1553.005"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Block inbound ISO, IMG, VHD, LNK, HTA and JS attachments at the mail gateway",
+          "Enable ASR rules that stop Office apps from creating child processes and executable content",
+          "Make sure EDR can isolate a host and pull a triage package remotely"
+        ],
+        "identification": [
+          "Retrieve the attachment from quarantine or the mailbox and hash it in a sandbox",
+          "Trace the process tree from the opening app on the host in EDR and note spawned interpreters",
+          "Record files written to user temp and AppData and any scheduled tasks or Run keys created",
+          "List outbound connections from the host in the hour after the attachment was opened",
+          "Search mail logs for the same attachment hash delivered to other mailboxes"
+        ],
+        "containment": [
+          "Isolate the workstation in EDR while keeping it powered on for memory capture",
+          "Block the C2 domains and IPs seen from the host at the firewall and proxy",
+          "Purge the attachment from every mailbox and add its hash to the EDR block list",
+          "Disable the user's account sessions if the loader ran in their logged-on context"
+        ],
+        "eradication": [
+          "Remove the dropped payload, persistence entries and any added local accounts",
+          "Reimage the workstation if a second-stage payload or credential dumping was observed",
+          "Reset passwords for the user and any account that logged on to the host since infection"
+        ],
+        "recovery": [
+          "Return the rebuilt host to the user after a clean EDR scan and patch check",
+          "Hunt across the fleet for the loader's file path and mutex for 30 days",
+          "Restore the user's documents from OneDrive version history if the payload altered files"
+        ],
+        "lessons": [
+          "Record which file type got through and whether the gateway should block it",
+          "Check whether Mark-of-the-Web was bypassed by the container format and tune ASR accordingly",
+          "Measure time from open to isolation and the dwell time before the first alert"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Processes spawned by Office or archive tools",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Endpoint.Processes where Processes.dest=<host> Processes.parent_process_name IN (winword.exe, excel.exe, outlook.exe, explorer.exe) Processes.process_name IN (powershell.exe, wscript.exe, cscript.exe, mshta.exe, rundll32.exe, regsvr32.exe) by Processes.parent_process_name Processes.process_name Processes.process | convert ctime(first)"
+        },
+        {
+          "title": "Other recipients of the attachment",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.file_hash=\"<attachment_hash>\" by All_Email.recipient All_Email.action All_Email.src_user"
+        },
+        {
+          "title": "Network connections from the infected host",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode=3 host=<host> earliest=-24h | stats count values(DestinationPort) as ports by Image DestinationIp DestinationHostname"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-callback-toad",
+      "name": "Callback phishing: user phoned a fake support number and installed remote tool",
+      "summary": "Use when a telephone-oriented attack delivery email (fake invoice or subscription renewal) got a user to call a number, after which a caller talked them into installing remote access software.",
+      "tags": [
+        "phishing",
+        "callback",
+        "toad",
+        "remote-access",
+        "vishing"
+      ],
+      "attack": [
+        "T1566.003",
+        "T1219",
+        "T1204"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Maintain an allow list of approved remote support tools and block others with application control",
+          "Give the help desk a script for staff who report a call that asked them to install software",
+          "Log process creation on workstations so remote tool installs show up in the SIEM"
+        ],
+        "identification": [
+          "Collect the lure email and record the phone number, fake invoice amount and brand impersonated",
+          "Ask the user for the call time, what the caller asked them to do and any codes they read out",
+          "Find remote access tool installs on the host in EDR, such as AnyDesk, ScreenConnect or Quick Assist sessions",
+          "Review the remote session duration and files transferred during it from the tool's own logs",
+          "Search mail logs for the same phone number or invoice text sent to other users"
+        ],
+        "containment": [
+          "Isolate the workstation and end any live remote session",
+          "Block the remote tool's relay domains at the proxy for unapproved instances",
+          "Freeze any online banking or payroll session the user had open during the call"
+        ],
+        "eradication": [
+          "Uninstall the remote tool and remove any service or startup entry it created",
+          "Check for credential stores accessed, new browser extensions or downloaded payloads during the session",
+          "Reset passwords the user typed while the caller watched the screen"
+        ],
+        "recovery": [
+          "Reimage the host if the caller ran scripts or downloaded binaries during the session",
+          "Have the user confirm with their bank or card issuer that no payment was made to the caller",
+          "Restore normal network access after a full EDR scan returns clean"
+        ],
+        "lessons": [
+          "Add an alert for first-seen remote access tool execution on any workstation",
+          "Note that the email had no link or attachment and check why the gateway let it through",
+          "Include callback lures with phone numbers in the next awareness campaign"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Remote access tools started on the host",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Endpoint.Processes where Processes.dest=<host> Processes.process_name IN (anydesk.exe, screenconnect*.exe, quickassist.exe, teamviewer.exe, rustdesk.exe, splashtop*.exe) by Processes.user Processes.process_name Processes.process_path | convert ctime(first)"
+        },
+        {
+          "title": "Fleet-wide first-seen remote tools",
+          "phase": "lessons",
+          "spl": "| tstats summariesonly=false min(_time) as first dc(Processes.dest) as hosts from datamodel=Endpoint.Processes where Processes.process_name IN (anydesk.exe, screenconnect*.exe, rustdesk.exe, atera*.exe) by Processes.process_name | where first>relative_time(now(), \"-7d\") | convert ctime(first)"
+        },
+        {
+          "title": "Lure emails with the callback number",
+          "phase": "identification",
+          "spl": "index=* sourcetype=ms:o365:reporting:messagetrace Subject IN (\"*invoice*\", \"*renewal*\", \"*subscription*\") earliest=-7d | stats count values(RecipientAddress) as recipients by SenderAddress Subject"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-exec-spear-phish",
+      "name": "Targeted spear-phish against an executive",
+      "summary": "Use when a tailored lure aimed at a named executive or their assistant references real projects, board events or travel, and the target may have clicked or replied.",
+      "tags": [
+        "phishing",
+        "spear-phishing",
+        "executive",
+        "whaling",
+        "vip"
+      ],
+      "attack": [
+        "T1566.002",
+        "T1598.003",
+        "T1589.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Maintain a VIP list in the email gateway so messages to executives get stricter impersonation checks",
+          "Agree in advance which executive assistant and chief of staff to contact for VIP incidents",
+          "Enable mailbox auditing at the E5 level for executives, including MailItemsAccessed"
+        ],
+        "identification": [
+          "Record which public details the lure used, such as board meeting dates or a recent press release",
+          "Check whether the executive, their delegate or their assistant clicked, replied or forwarded the lure",
+          "Review mailbox delegate access and Send As permissions on the executive mailbox",
+          "Search for the same sender infrastructure targeting other members of the leadership team",
+          "Review the executive's sign-ins and device registrations for the past 30 days"
+        ],
+        "containment": [
+          "Reset credentials and revoke sessions for the executive and any delegate who interacted with the lure",
+          "Block the sender domain and add display-name impersonation rules for the executive's name",
+          "Brief the executive and assistant in person about the attempt and any follow-up to expect"
+        ],
+        "eradication": [
+          "Remove unknown delegates, forwarding rules or mobile devices from the executive mailbox",
+          "Confirm no calendar items or contact records were planted to support a later pretext",
+          "Remove the lure and any follow-up messages from all leadership mailboxes"
+        ],
+        "recovery": [
+          "Move the executive and their assistant to phishing-resistant MFA if not already in place",
+          "Keep enhanced monitoring on the VIP mailboxes for 30 days",
+          "Prepare a short brief for the leadership team describing the lure and what to watch for"
+        ],
+        "lessons": [
+          "Review how much executive information is public on the company website and social profiles",
+          "Measure whether VIP impersonation rules fired and tune them for the lure style seen",
+          "Decide whether executive assistants need their own targeted training"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Mail to the leadership list from the attacker domain",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=\"*@<ioc_domain>\" All_Email.recipient IN (<vip_list>) by All_Email.recipient All_Email.subject All_Email.action"
+        },
+        {
+          "title": "Delegate and permission changes on VIP mailboxes",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity Workload=Exchange Operation IN (Add-MailboxPermission, Add-RecipientPermission, Set-Mailbox, New-InboxRule, Add-MailboxFolderPermission) ObjectId IN (<vip_mailbox>) earliest=-30d | table _time UserId Operation ObjectId Parameters{}.Value"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-thread-hijack",
+      "name": "Reply-chain thread hijack delivered malware in an existing conversation",
+      "summary": "Use when attackers replied inside a genuine email thread, stolen from another organization's compromised mailbox, with a link or attachment that recipients trusted because the conversation was real.",
+      "tags": [
+        "phishing",
+        "thread-hijack",
+        "reply-chain",
+        "malware",
+        "supply-chain"
+      ],
+      "attack": [
+        "T1566.001",
+        "T1566.002",
+        "T1534"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Keep a contact path for security teams at key partners and suppliers",
+          "Tag inbound mail from external senders with a visible banner even inside existing threads",
+          "Enable gateway detection for In-Reply-To headers that do not match previous sender infrastructure"
+        ],
+        "identification": [
+          "Compare the headers of the hijacked reply with earlier genuine messages in the thread",
+          "Identify whose mailbox the thread was stolen from by checking which side's messages were quoted",
+          "Find every internal recipient of the hijacked reply and whether they opened the link or file",
+          "Analyze the payload in a sandbox and pull C2 indicators",
+          "Check whether the reply came from the partner's real server or a lookalike domain"
+        ],
+        "containment": [
+          "Purge the hijacked reply from all mailboxes by Message-ID",
+          "Block the payload hosting URL and C2 indicators at proxy and DNS",
+          "Isolate any host where the attachment was executed"
+        ],
+        "eradication": [
+          "Notify the partner's security team that their mailbox appears compromised and share headers",
+          "Remove payload artifacts from affected hosts and reset credentials used on them",
+          "Temporarily quarantine further mail from the partner domain until they confirm cleanup"
+        ],
+        "recovery": [
+          "Release held partner mail after the partner confirms the compromised account is secured",
+          "Tell staff who are in the thread to verify any new request from that partner by phone",
+          "Lift isolation on hosts after EDR confirms no persistence"
+        ],
+        "lessons": [
+          "Record how long the partner mailbox was compromised before anyone noticed",
+          "Add a detection for replies whose sending IP differs from earlier messages in the same thread",
+          "Review whether partner domains should be exempt from attachment sandboxing"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Recipients of the hijacked reply",
+          "phase": "identification",
+          "spl": "index=* sourcetype=ms:o365:reporting:messagetrace MessageId=\"<message_id>\" OR (SenderAddress=\"<sender>\" Subject=\"RE:*<thread_subject>*\") | stats count values(Status) as status by RecipientAddress FromIP"
+        },
+        {
+          "title": "Clicks on the payload URL",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Web where Web.url=\"*<ioc_domain>*\" by Web.user Web.src Web.http_user_agent | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-internal-compromised-mailbox",
+      "name": "Compromised internal mailbox sending phish to coworkers",
+      "summary": "Use when one of your own accounts was taken over and is sending phishing mail to colleagues, so the messages pass SPF, DKIM and DMARC and look fully internal.",
+      "tags": [
+        "phishing",
+        "account-takeover",
+        "internal-phish",
+        "m365",
+        "lateral-phishing"
+      ],
+      "attack": [
+        "T1534",
+        "T1078.004",
+        "T1114.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Set outbound spam policies with low recipient-rate limits for normal users",
+          "Create a mail-flow alert for an internal user sending to more than 50 internal recipients in an hour",
+          "Make sure the SOC can block a user from sending mail without disabling the account"
+        ],
+        "identification": [
+          "List every message the compromised account sent since the first suspicious sign-in",
+          "Identify the attacker sign-in that preceded the send burst and record IP and user agent",
+          "Check the sent items for deleted messages using the Recoverable Items folder",
+          "Find coworkers who clicked links in the internal phish using proxy logs",
+          "Review the account's inbox rules for ones that hide replies from recipients"
+        ],
+        "containment": [
+          "Block outbound mail from the account and revoke all its sessions",
+          "Reset the account password and remove attacker MFA methods",
+          "Purge the internal phish from every recipient mailbox",
+          "Treat every coworker who entered credentials as a new compromised account"
+        ],
+        "eradication": [
+          "Delete inbox rules that moved replies to RSS Feeds, Archive or Deleted Items",
+          "Remove any OAuth apps or mailbox delegates added by the attacker",
+          "Check whether the attacker downloaded the global address list for later campaigns"
+        ],
+        "recovery": [
+          "Lift the outbound mail block once the account is clean and MFA re-registered",
+          "Send an all-staff note from a known account telling people to ignore the earlier messages",
+          "Contact any external recipients who also received the phish from the account"
+        ],
+        "lessons": [
+          "Measure how many internal recipients clicked before the first report",
+          "Check whether the outbound spam policy restricted the account and at what volume",
+          "Add a detection for a single internal sender with many messages carrying the same external link"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Messages sent by the compromised account",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(All_Email.recipient) as recipients from datamodel=Email where All_Email.src_user=\"<suspect_user>\" by All_Email.subject _time span=1h"
+        },
+        {
+          "title": "Internal senders with unusual recipient counts",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=ms:o365:reporting:messagetrace SenderAddress=\"*@<your_domain>\" earliest=-24h | bin _time span=1h | stats dc(RecipientAddress) as rcpts by SenderAddress _time | where rcpts>50"
+        },
+        {
+          "title": "Inbox rules created on the account",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=o365:management:activity Operation IN (New-InboxRule, Set-InboxRule, UpdateInboxRules) UserId=<suspect_user> | table _time ClientIP Operation Parameters{}.Name Parameters{}.Value"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-sharepoint-onedrive-lure",
+      "name": "SharePoint or OneDrive file-share lure led to credential theft",
+      "summary": "Use when users received a genuine-looking 'shared a file with you' notification, often from a compromised tenant, that pointed to a document containing a link to a credential page.",
+      "tags": [
+        "phishing",
+        "sharepoint",
+        "onedrive",
+        "file-share",
+        "credential-theft"
+      ],
+      "attack": [
+        "T1566.002",
+        "T1204.001",
+        "T1056.003"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Restrict external sharing so files from untrusted tenants open with a warning",
+          "Make sure proxy logs capture the full sharepoint.com path, not only the hostname",
+          "Configure Safe Links to scan links inside Office documents opened from SharePoint"
+        ],
+        "identification": [
+          "Identify the sharing tenant and the account that sent the share notification",
+          "Open the shared document in a sandbox and extract the embedded link",
+          "Find users who opened the shared file URL and those who then reached the credential page",
+          "Check whether the share came from a partner tenant you already trust"
+        ],
+        "containment": [
+          "Reset credentials for users who reached the credential page and submitted a form",
+          "Block the specific SharePoint path at the proxy without blocking the whole tenant domain",
+          "Purge the share notification emails and report the file to Microsoft as phishing"
+        ],
+        "eradication": [
+          "Remove any guest accounts the attacker tenant created in your directory",
+          "Delete files the compromised users may have shared outward after the click",
+          "Notify the sharing organization that their account is sending lures"
+        ],
+        "recovery": [
+          "Confirm affected users can access their own OneDrive and files are unchanged",
+          "Review the external sharing allow list with the collaboration team",
+          "Monitor for the same tenant sending new share invites for two weeks"
+        ],
+        "lessons": [
+          "Track how often trusted cloud storage domains are used to host lures in your mail flow",
+          "Add a detection for proxy hits to an external tenant's SharePoint followed by a non-Microsoft login page",
+          "Decide whether to require guest access approval for new external tenants"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Users who opened the shared document",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Web where Web.url=\"*<attacker_tenant>.sharepoint.com*\" by Web.user Web.url | convert ctime(first)"
+        },
+        {
+          "title": "Share notifications received",
+          "phase": "containment",
+          "spl": "index=* sourcetype=ms:o365:reporting:messagetrace SenderAddress=\"no-reply@sharepointonline.com\" Subject=\"*shared*\" earliest=-3d | stats count values(RecipientAddress) as recipients by Subject"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-esignature-lure",
+      "name": "Fake DocuSign or e-signature request phish",
+      "summary": "Use when staff received a counterfeit e-signature envelope, or a real envelope from a malicious account, whose Review Document button led to a credential page or malware download.",
+      "tags": [
+        "phishing",
+        "docusign",
+        "e-signature",
+        "brand-lure",
+        "credential-theft"
+      ],
+      "attack": [
+        "T1566.002",
+        "T1656",
+        "T1204.001"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Record which e-signature vendors the company actually uses and the sending addresses they use",
+          "Ask legal and procurement to tell the SOC when they expect envelopes from a new counterparty",
+          "Enable gateway rules that flag e-signature brand names in mail not from the vendor's sending domains"
+        ],
+        "identification": [
+          "Check whether the envelope came from the vendor's real sending infrastructure or a spoofed domain",
+          "If real, record the sender account inside the e-signature platform and the envelope ID",
+          "Follow the Review Document link in a sandbox and record the final landing domain",
+          "Ask legal or finance whether any real agreement with that counterparty was expected"
+        ],
+        "containment": [
+          "Purge the envelope email from all inboxes",
+          "Block the final landing domain and any redirect domains in the chain",
+          "Reset credentials for users who submitted a password on the landing page"
+        ],
+        "eradication": [
+          "Report the abusive sender account and envelope ID to the e-signature vendor's abuse team",
+          "Check affected accounts for new MFA devices or mail rules",
+          "Add the lookalike sending domain to the block list"
+        ],
+        "recovery": [
+          "Remind finance and legal of the approved way to confirm unexpected signature requests",
+          "Release any genuine envelopes that were caught in the purge",
+          "Track whether the vendor disabled the abusive account"
+        ],
+        "lessons": [
+          "Measure how many users clicked versus reported this lure compared with generic phish",
+          "Add a detection for e-signature-themed subjects from senders outside the vendor's domains",
+          "Consider publishing an internal page listing the e-signature vendors in use"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "E-signature themed mail from non-vendor senders",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.subject IN (\"*DocuSign*\", \"*sign*document*\", \"*envelope*\") NOT All_Email.src_user IN (\"*@docusign.net\", \"*@docusign.com\") by All_Email.src_user All_Email.subject All_Email.recipient"
+        },
+        {
+          "title": "Visits to the landing domain",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count values(Web.http_method) as methods from datamodel=Web where Web.url=\"*<ioc_domain>*\" by Web.user Web.src"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-voicemail-lure",
+      "name": "Fake voicemail notification phish with audio attachment or link",
+      "summary": "Use when users received a missed-call or voicemail notification, often with an HTML or audio file, that led to a sign-in page dressed up as the phone system or Microsoft 365.",
+      "tags": [
+        "phishing",
+        "voicemail",
+        "html-attachment",
+        "credential-theft"
+      ],
+      "attack": [
+        "T1566.001",
+        "T1027.006",
+        "T1056.003"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Document what genuine voicemail notifications from the company phone platform look like",
+          "Block or sandbox HTML and HTM attachments from external senders",
+          "Make sure the gateway logs attachment names and file types"
+        ],
+        "identification": [
+          "Open the HTML attachment in a sandbox and decode any base64 or JavaScript that builds the page",
+          "Record where the embedded form sends credentials and any pre-filled email address in the page",
+          "List recipients who opened the attachment using endpoint file-open telemetry or browser history",
+          "Check whether the message spoofs the internal phone system's sender name"
+        ],
+        "containment": [
+          "Purge all voicemail-themed messages with the same attachment hash or naming pattern",
+          "Block the credential POST endpoint domain at the proxy",
+          "Reset passwords for any user whose browser posted to that endpoint"
+        ],
+        "eradication": [
+          "Add a transport rule that quarantines external mail using the phone system's display name",
+          "Remove attacker MFA registrations from affected accounts",
+          "Report the credential endpoint to its hosting provider"
+        ],
+        "recovery": [
+          "Tell staff how real voicemails are delivered so they can spot future fakes",
+          "Release legitimate voicemail notifications from quarantine if the rule caught any",
+          "Watch affected accounts for new sign-ins for 14 days"
+        ],
+        "lessons": [
+          "Count how many voicemail lures arrived in the past quarter and whether HTML blocking would have stopped them",
+          "Add a detection for browsers posting form data to domains first seen in the last 7 days",
+          "Review whether the phone platform can stop emailing voicemails as attachments"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Voicemail-themed messages with HTML attachments",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.subject IN (\"*voicemail*\", \"*missed call*\", \"*voice message*\") All_Email.file_name IN (\"*.htm\", \"*.html\", \"*.shtml\") by All_Email.src_user All_Email.recipient All_Email.file_name"
+        },
+        {
+          "title": "Credential POSTs to the phish endpoint",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.http_method=POST Web.url=\"*<ioc_domain>*\" by Web.user Web.src Web.url"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-calendar-invite-spam",
+      "name": "Malicious calendar invites injected into staff calendars",
+      "summary": "Use when external meeting invites with phishing links appear on users' calendars automatically, bypassing inbox filtering because the calendar app added them on receipt.",
+      "tags": [
+        "phishing",
+        "calendar",
+        "invite-spam",
+        "m365",
+        "google-workspace"
+      ],
+      "attack": [
+        "T1566.002",
+        "T1204.001"
+      ],
+      "severity": "Low",
+      "tasks": {
+        "preparation": [
+          "Set calendar policy so invites from unknown external senders are not added automatically",
+          "Know which admin tool can remove events from all calendars in bulk for your platform",
+          "Include calendar items in compliance search scope"
+        ],
+        "identification": [
+          "Record the organizer address, event title and link in the invite body",
+          "Search all calendars for events from the same organizer or with the same link",
+          "Check proxy logs for users who opened the link from the calendar reminder",
+          "Confirm whether the invite arrived via email or through a shared calendar subscription"
+        ],
+        "containment": [
+          "Delete the malicious events from every calendar with a bulk removal or purge",
+          "Block the link domain at the proxy",
+          "Block the organizer domain from sending calendar invites"
+        ],
+        "eradication": [
+          "Reset credentials for any user who submitted details on the linked page",
+          "Remove unwanted calendar subscriptions added by the invite",
+          "Report the organizer account to its mail provider"
+        ],
+        "recovery": [
+          "Tell staff that invites from unknown senders may now need to be accepted manually",
+          "Check that legitimate external meeting invites still arrive after the policy change",
+          "Confirm no deleted event belonged to a real external meeting"
+        ],
+        "lessons": [
+          "Track whether calendar invites are now a regular lure channel in your environment",
+          "Add a detection for external organizers sending invites to many users at once",
+          "Decide if calendar auto-add from external domains should stay disabled"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Invites from the organizer to many users",
+          "phase": "identification",
+          "spl": "index=* sourcetype=ms:o365:reporting:messagetrace SenderAddress=\"<sender>\" earliest=-7d | stats dc(RecipientAddress) as recipients values(Subject) as subjects by SenderAddress"
+        },
+        {
+          "title": "Google Workspace calendar events from external organizer",
+          "phase": "identification",
+          "spl": "index=* sourcetype=gws:reports:calendar event.name=create_event organizer_calendar_id=\"*@<ioc_domain>\" | stats count values(target_calendar_id) as calendars by event_title"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-mass-campaign",
+      "name": "Mass phishing campaign hit hundreds of mailboxes at once",
+      "summary": "Use when a high-volume campaign landed in many mailboxes within minutes and the priority is fast scoping, bulk purge and finding the few users who clicked.",
+      "tags": [
+        "phishing",
+        "mass-campaign",
+        "email",
+        "bulk-purge",
+        "scoping"
+      ],
+      "attack": [
+        "T1566.002",
+        "T1566.001"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Keep a tested compliance search and purge procedure that can run against all mailboxes",
+          "Pre-build a SIEM dashboard of recipients, clickers and reporters keyed by Message-ID or subject",
+          "Agree with communications on a template banner or all-staff alert for active campaigns"
+        ],
+        "identification": [
+          "Cluster the campaign by sender IPs, subjects, URLs and attachment hashes to catch all variants",
+          "Count delivered versus quarantined messages and list the delivered recipients",
+          "Pull click logs from the gateway's URL rewriting service for the campaign URLs",
+          "Separate clickers from credential submitters using proxy POST data",
+          "Note how many users reported the message and how quickly"
+        ],
+        "containment": [
+          "Run a bulk purge across all variants rather than one subject line at a time",
+          "Block every campaign URL domain and sending IP at the gateway",
+          "Force password resets for the credential submitters"
+        ],
+        "eradication": [
+          "Add the campaign's sending infrastructure to gateway block rules for 30 days",
+          "Check submitters' accounts for rules, MFA devices and app consent changes",
+          "Re-run the cluster search an hour later to catch late-arriving variants"
+        ],
+        "recovery": [
+          "Post a brief all-staff alert showing the lure and confirming it has been removed",
+          "Thank reporters and close out their tickets with the outcome",
+          "Release false-positive quarantined mail caught by the broad purge"
+        ],
+        "lessons": [
+          "Record delivered count, click rate, submit rate and time to purge for trend tracking",
+          "Identify which variant evaded the gateway and send samples to the vendor",
+          "Check whether the report-phish button volume helped scoping and how to speed that up"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Campaign variants by sender and subject",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count dc(All_Email.recipient) as recipients from datamodel=Email where All_Email.src_ip IN (<ioc_ip>) OR All_Email.url=\"*<ioc_domain>*\" by All_Email.src_user All_Email.subject All_Email.action | sort - recipients"
+        },
+        {
+          "title": "Clicks on campaign URLs from the gateway",
+          "phase": "identification",
+          "spl": "index=* sourcetype=ms:defender:atp:alerts OR sourcetype=ms:o365:safelinks Url=\"*<ioc_domain>*\" | stats count values(Action) as action by UserId Url"
+        },
+        {
+          "title": "Credential submissions to campaign domains",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.http_method=POST Web.url IN (\"*<ioc_domain>*\") by Web.user Web.src"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-user-reported-triage",
+      "name": "Single user-reported suspicious email needs triage",
+      "summary": "Use for the routine case of one user reporting one suspicious message: decide quickly if it is malicious, spam or legitimate, and scope it before closing.",
+      "tags": [
+        "phishing",
+        "triage",
+        "user-report",
+        "email"
+      ],
+      "attack": [
+        "T1566"
+      ],
+      "severity": "Low",
+      "tasks": {
+        "preparation": [
+          "Deploy a report-phish button that forwards the original message with full headers",
+          "Keep a triage checklist covering headers, links, attachments and sender reputation",
+          "Set an SLA for responding to user phishing reports"
+        ],
+        "identification": [
+          "Parse the reported message headers and check SPF, DKIM and DMARC results",
+          "Check each URL and attachment hash against threat intel and the gateway verdict",
+          "Search mail logs for other recipients of the same message",
+          "Ask the reporter whether they clicked, opened or replied before reporting",
+          "Classify the message as malicious, spam, simulation or legitimate"
+        ],
+        "containment": [
+          "Purge the message from other recipients if it is classified as malicious",
+          "Block the sender or URL if it is not already blocked",
+          "Escalate to the credential-harvest or attachment playbook if anyone interacted"
+        ],
+        "eradication": [
+          "Add confirmed indicators to the gateway and proxy block lists",
+          "Submit the sample to the email security vendor as a false negative",
+          "Remove the sender from any user safe-sender lists"
+        ],
+        "recovery": [
+          "Reply to the reporter with the verdict and thank them",
+          "Release the message back to the reporter if it was legitimate",
+          "Close the ticket with the classification and indicators recorded"
+        ],
+        "lessons": [
+          "Track report-to-verdict time and the share of reports that were real phish",
+          "Find senders that are reported often but are legitimate and fix their authentication",
+          "Use common reported lures as examples in awareness training"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Other recipients of the reported message",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.message_id=\"<message_id>\" OR (All_Email.src_user=\"<sender>\" All_Email.subject=\"<subject>\") by All_Email.recipient All_Email.action"
+        },
+        {
+          "title": "Did anyone visit the reported URL",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.url=\"*<ioc_domain>*\" by Web.user Web.http_method"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-gateway-bypass",
+      "name": "Phish bypassed the secure email gateway and reached inboxes",
+      "summary": "Use when a malicious message was delivered despite the gateway, and you need to know why: allow-list abuse, direct-to-tenant delivery, time-delayed weaponization or a scanner blind spot.",
+      "tags": [
+        "phishing",
+        "email-gateway",
+        "detection-gap",
+        "mail-flow"
+      ],
+      "attack": [
+        "T1566",
+        "T1036"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Lock down the tenant so inbound mail is only accepted from the gateway's IP ranges",
+          "Keep an inventory of gateway allow-list entries with an owner and expiry date",
+          "Make sure gateway verdict logs and tenant message trace both flow into the SIEM"
+        ],
+        "identification": [
+          "Trace the message path in the headers and confirm whether it passed through the gateway at all",
+          "Check whether the sender, domain or IP matched an allow-list or bypass rule",
+          "Compare the gateway verdict at delivery time with a rescan of the URL or file now",
+          "Check whether the URL was benign at delivery and weaponized later",
+          "Search for other messages delivered by the same bypass path in the last 30 days"
+        ],
+        "containment": [
+          "Remove the allow-list entry or bypass rule that let the message in",
+          "Block direct-to-tenant SMTP from non-gateway IPs with a connector restriction",
+          "Purge the delivered message and any similar ones found through the same path"
+        ],
+        "eradication": [
+          "Submit the sample to the gateway vendor as a missed detection with full headers",
+          "Enable time-of-click URL rescanning if delivery-time scanning was the only control",
+          "Escalate any clicks to the matching phishing playbook"
+        ],
+        "recovery": [
+          "Confirm legitimate mail from the removed allow-list sender still arrives through normal scanning",
+          "Re-test the connector restriction by sending a message directly to the tenant MX",
+          "Inform the vendor relationship owner about the bypass and requested fix"
+        ],
+        "lessons": [
+          "Review all remaining allow-list entries and remove those without a current business owner",
+          "Add a detection for inbound messages lacking the gateway's stamp header",
+          "Track gateway miss rate per quarter using user reports as the ground truth"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Inbound mail not received from gateway IPs",
+          "phase": "identification",
+          "spl": "index=* sourcetype=ms:o365:reporting:messagetrace Direction=Inbound earliest=-7d NOT FromIP IN (<gateway_ip_ranges>) | stats count values(SenderAddress) as senders by FromIP | sort - count"
+        },
+        {
+          "title": "Messages delivered by allow-list rule",
+          "phase": "identification",
+          "spl": "index=* sourcetype=<gateway_sourcetype> action=delivered policy=*allow* earliest=-30d | stats count values(recipient) as recipients by sender policy"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-lookalike-domain-registered",
+      "name": "Lookalike of the company domain registered",
+      "summary": "Use when brand monitoring or a user report shows a newly registered domain that imitates your company domain, before or just after it is used in phishing or fraud.",
+      "tags": [
+        "phishing",
+        "lookalike-domain",
+        "typosquatting",
+        "brand-protection"
+      ],
+      "attack": [
+        "T1583.001",
+        "T1585.002"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Subscribe to a domain monitoring feed that alerts on typo and homoglyph variants of company domains",
+          "Keep evidence templates and contacts for registrar abuse teams and the legal team",
+          "Know which defensive domain registrations the company already owns"
+        ],
+        "identification": [
+          "Record registrar, registration date, name servers and MX records for the lookalike",
+          "Check whether the domain has MX records or an SPF record that suggest it will send mail",
+          "Screenshot any website on the domain and check if it clones your login or careers page",
+          "Search mail logs for inbound or outbound mail involving the lookalike",
+          "Search proxy logs for staff visiting the domain"
+        ],
+        "containment": [
+          "Block the lookalike domain in the email gateway, proxy and DNS resolver",
+          "Add the lookalike to a transport rule that quarantines mail from it",
+          "Warn finance and HR that mail from the lookalike is fraudulent"
+        ],
+        "eradication": [
+          "File an abuse report with the registrar and hosting provider including trademark evidence",
+          "Ask legal whether a UDRP complaint is warranted if the registrar declines",
+          "Request takedown through browser safe-browsing reporting if a phishing page is live"
+        ],
+        "recovery": [
+          "Confirm the domain is suspended or the site is offline and keep it on the block list",
+          "Register remaining high-risk variants defensively",
+          "Tell customers or partners if mail from the lookalike reached them"
+        ],
+        "lessons": [
+          "Measure time from registration to detection and to takedown",
+          "Add the lookalike pattern to the gateway's impersonation detection",
+          "Review whether domain monitoring covers all brand names and subsidiaries"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Mail involving the lookalike domain",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=\"*@<lookalike_domain>\" OR All_Email.recipient=\"*@<lookalike_domain>\" by All_Email.src_user All_Email.recipient All_Email.subject"
+        },
+        {
+          "title": "DNS lookups of the lookalike",
+          "phase": "identification",
+          "spl": "index=* sourcetype=stream:dns query=\"*<lookalike_domain>\" | stats count min(_time) as first by src query | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-brand-impersonation-customers",
+      "name": "Phishing impersonating the company is targeting customers",
+      "summary": "Use when customers report emails or sites pretending to be your company, asking them to log in, pay or download something, and the company must protect customers and its brand.",
+      "tags": [
+        "phishing",
+        "brand-impersonation",
+        "customers",
+        "takedown",
+        "dmarc"
+      ],
+      "attack": [
+        "T1656",
+        "T1583.001",
+        "T1566.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Publish DMARC at p=reject for all company domains, including ones that do not send mail",
+          "Set up a customer-facing address for reporting suspicious messages that claim to be from the company",
+          "Agree with communications and support on a holding statement for customer impersonation"
+        ],
+        "identification": [
+          "Collect samples from customer reports with full headers and the phishing URL",
+          "Check DMARC aggregate reports for spoofed mail claiming to be from your domain",
+          "Identify the phishing site host, registrar and whether it clones the customer portal",
+          "Check customer portal logs for logins from the attacker IPs after the campaign started"
+        ],
+        "containment": [
+          "Submit takedown requests to the host and registrar for the phishing site",
+          "Report the site to browser safe-browsing services and anti-phishing working groups",
+          "Force password resets for customer accounts seen logging in from attacker IPs",
+          "Post a notice on the support site describing the scam and how to verify real messages"
+        ],
+        "eradication": [
+          "Move DMARC to reject if it was still at none or quarantine",
+          "Add attacker IPs to the customer portal's sign-in risk rules",
+          "Track takedown tickets until each site is offline"
+        ],
+        "recovery": [
+          "Brief the customer support team on how to handle affected customers",
+          "Monitor for the campaign returning on new domains for 30 days",
+          "Contact customers who reported losses and route them to the fraud team"
+        ],
+        "lessons": [
+          "Record time to takedown for each phishing site and the slowest providers",
+          "Add customer portal detections for credential stuffing from campaign infrastructure",
+          "Decide whether to adopt BIMI or a brand monitoring service"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Customer portal logins from campaign IPs",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Authentication.user) as users from datamodel=Authentication where Authentication.app=<customer_portal> Authentication.src IN (<ioc_ip>) by Authentication.src Authentication.action"
+        },
+        {
+          "title": "Portal traffic referred from the phishing site",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined referer=\"*<ioc_domain>*\" | stats count values(uri_path) as paths by clientip"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-sms-smishing-staff",
+      "name": "SMS smishing campaign targeting staff phones",
+      "summary": "Use when employees receive text messages pretending to be IT, HR or a delivery service with links to fake login or MFA pages, outside any email control.",
+      "tags": [
+        "phishing",
+        "smishing",
+        "sms",
+        "mobile",
+        "credential-theft"
+      ],
+      "attack": [
+        "T1660",
+        "T1566.002",
+        "T1589.003"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Tell staff that IT never sends login links by SMS and publish how to report smishing",
+          "Enable mobile threat defense URL filtering on managed phones",
+          "Know which staff phone numbers are listed publicly or in data broker sites"
+        ],
+        "identification": [
+          "Collect screenshots of the texts with sender number, time and URL",
+          "Check the URL in a sandbox and identify the brand cloned on the page",
+          "Search Entra or Okta sign-ins for affected users from new devices after the texts arrived",
+          "Estimate how attackers got the phone numbers, such as a vendor leak or public directory",
+          "Count how many staff received the text using reports and help desk tickets"
+        ],
+        "containment": [
+          "Block the smishing domain in DNS filtering and the mobile threat defense policy",
+          "Reset passwords and revoke sessions for any staff who entered credentials",
+          "Send an urgent notice to all staff with a picture of the text"
+        ],
+        "eradication": [
+          "Report the sender number to the carrier's spam reporting short code",
+          "Remove attacker-added MFA devices from affected accounts",
+          "Ask the domain registrar to suspend the smishing domain"
+        ],
+        "recovery": [
+          "Confirm affected users can sign in normally with their own devices",
+          "Watch for follow-up voice calls to the same staff group",
+          "Close help desk tickets with guidance on spotting future texts"
+        ],
+        "lessons": [
+          "Track whether the source of leaked phone numbers was identified",
+          "Add a detection for sign-ins with device names or user agents first seen after a smishing wave",
+          "Decide whether frontline or shift staff need different reporting channels"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Okta sign-ins by targeted staff from new devices",
+          "phase": "identification",
+          "spl": "index=* sourcetype=okta:im2 eventType IN (user.session.start, user.authentication.auth_via_mfa) actor.alternateId IN (<recipient_list>) earliest=-48h | stats count values(client.ipAddress) as ips values(client.userAgent.rawUserAgent) as agents by actor.alternateId outcome.result"
+        },
+        {
+          "title": "DNS lookups of the smishing domain",
+          "phase": "containment",
+          "spl": "index=* sourcetype=stream:dns query=\"*<ioc_domain>*\" | stats count by src query"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-external-chat-teams-slack",
+      "name": "Phishing through external Teams or Slack chat messages",
+      "summary": "Use when an outside account messaged staff through Microsoft Teams external access or Slack Connect, posing as IT support or a partner, with a link or file.",
+      "tags": [
+        "phishing",
+        "teams",
+        "slack",
+        "chat",
+        "external-access"
+      ],
+      "attack": [
+        "T1566.003",
+        "T1534",
+        "T1204.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Restrict Teams external access to an allow list of partner domains",
+          "Require approval before new Slack Connect channels or DMs with outside organizations",
+          "Make sure Teams and Slack audit logs reach the SIEM"
+        ],
+        "identification": [
+          "Record the external tenant or workspace, display name and message content",
+          "Find every user who received a chat request from the same external account",
+          "Check whether recipients accepted the chat, clicked the link or downloaded the file",
+          "Review endpoints of those who accepted for remote tool installs or downloads"
+        ],
+        "containment": [
+          "Block the external tenant domain in Teams admin or disconnect the Slack Connect org",
+          "Delete the messages and files shared through the chat where the platform allows",
+          "Isolate any endpoint where a downloaded file was run"
+        ],
+        "eradication": [
+          "Reset credentials of users who entered them on a linked page",
+          "Remove any remote support tool installed at the attacker's request",
+          "Report the external tenant to Microsoft or Slack trust and safety"
+        ],
+        "recovery": [
+          "Tell staff that IT will never contact them by external chat",
+          "Review the external access allow list with business owners",
+          "Watch for new external chat requests from similar display names"
+        ],
+        "lessons": [
+          "Track whether external chat phishing is replacing email phishing in your logs",
+          "Add a detection for external one-to-one chats with users outside known partner domains",
+          "Decide whether to block external access for users who do not need it"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Teams chats created with external users",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity Workload=MicrosoftTeams Operation IN (ChatCreated, MessageSent) CommunicationType=OneOnOne | search ParticipantInfo.HasForeignTenantUsers=true | stats count values(UserId) as users by ChatThreadId"
+        },
+        {
+          "title": "Slack Connect invites from unknown organizations",
+          "phase": "identification",
+          "spl": "index=* sourcetype=slack:audit action IN (connect_dm_invite_sent, shared_channel_invite_accepted) earliest=-7d | stats count values(actor.user.email) as actors by context.location.domain"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-malicious-inbox-rules",
+      "name": "Malicious inbox rules created after a phishing click",
+      "summary": "Use when a mailbox has new rules that forward, delete or hide mail (often matching words like invoice or payment) after a user fell for a phish, signalling hands-on mailbox abuse.",
+      "tags": [
+        "phishing",
+        "inbox-rules",
+        "mail-forwarding",
+        "m365",
+        "persistence"
+      ],
+      "attack": [
+        "T1564.008",
+        "T1114.003",
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Block automatic external forwarding in the outbound spam policy",
+          "Alert on new inbox rules that move mail to RSS Feeds, Conversation History or Deleted Items",
+          "Keep a script that exports all inbox rules for a mailbox with creation time"
+        ],
+        "identification": [
+          "Export every inbox rule on the mailbox with Get-InboxRule and note conditions and actions",
+          "Find the New-InboxRule audit event and the client IP that created each rule",
+          "Identify keywords in the rule conditions, such as wire, payment or the CFO's name",
+          "Check whether forwarded mail left the tenant and to which external addresses",
+          "Look for the same rule names or patterns on other mailboxes in the tenant"
+        ],
+        "containment": [
+          "Disable and export the malicious rules before deleting them",
+          "Revoke sessions and reset the password for the mailbox owner",
+          "Block the forwarding destination address at the gateway"
+        ],
+        "eradication": [
+          "Delete the malicious rules and any SMTP forwarding set on the mailbox",
+          "Restore mail the rules moved or deleted from Recoverable Items",
+          "Remove any OWA or mobile device sessions the attacker used"
+        ],
+        "recovery": [
+          "Review the restored hidden mail with the user for fraud attempts the attacker intercepted",
+          "Warn contacts in the hidden threads if the attacker replied to them",
+          "Keep a rule-creation alert on the mailbox for 30 days"
+        ],
+        "lessons": [
+          "Record how long the rules existed before discovery",
+          "Add a detection for rules with financial keywords that also delete or move mail",
+          "Confirm external auto-forwarding is blocked for all users, not just the affected one"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Inbox rule creation with hide or forward actions",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity Operation IN (New-InboxRule, Set-InboxRule) earliest=-30d | search Parameters{}.Name IN (MoveToFolder, DeleteMessage, ForwardTo, RedirectTo, ForwardAsAttachmentTo) | table _time UserId ClientIP Parameters{}.Name Parameters{}.Value"
+        },
+        {
+          "title": "Mailbox forwarding set via Set-Mailbox",
+          "phase": "identification",
+          "spl": "index=* sourcetype=o365:management:activity Operation=Set-Mailbox Parameters{}.Name IN (ForwardingSmtpAddress, ForwardingAddress, DeliverToMailboxAndForward) | table _time UserId ObjectId ClientIP Parameters{}.Value"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-spoofed-dmarc-fail",
+      "name": "Spoofed mail from the company's own domain failing DMARC",
+      "summary": "Use when messages that claim to come from your own domain or a key partner's domain fail SPF or DKIM alignment yet still reach inboxes, signalling DMARC policy or enforcement gaps.",
+      "tags": [
+        "phishing",
+        "spoofing",
+        "dmarc",
+        "spf",
+        "dkim"
+      ],
+      "attack": [
+        "T1566",
+        "T1656"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Collect DMARC aggregate and forensic reports in a parser that the SOC can query",
+          "Inventory every legitimate service that sends mail as the company domain",
+          "Configure the gateway to honour sender DMARC p=reject and p=quarantine"
+        ],
+        "identification": [
+          "Read the Authentication-Results header of the spoofed message and record SPF, DKIM and DMARC verdicts",
+          "Check the published DMARC record for the spoofed domain and its policy",
+          "Find the sending IPs in DMARC aggregate reports and whether they belong to any known service",
+          "List recipients and whether the gateway delivered, quarantined or rejected each message"
+        ],
+        "containment": [
+          "Purge delivered spoofed messages from mailboxes",
+          "Add a transport rule quarantining inbound mail claiming your domain that fails DMARC",
+          "Block the spoofing source IPs at the gateway"
+        ],
+        "eradication": [
+          "Fix SPF includes and DKIM signing for legitimate senders flagged in aggregate reports",
+          "Move the domain DMARC policy toward p=reject once legitimate senders align",
+          "Publish null SPF and DMARC reject for parked domains"
+        ],
+        "recovery": [
+          "Confirm legitimate senders such as marketing and ticketing still deliver after the policy change",
+          "Track DMARC report pass rates daily for two weeks",
+          "Tell users that internal-looking mail failing checks will now be quarantined"
+        ],
+        "lessons": [
+          "Record why the gateway delivered DMARC-failing mail and fix the policy override",
+          "Add a detection for inbound mail with header From your domain arriving from external IPs",
+          "Set a target date for p=reject across every company domain"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Inbound mail claiming the company domain that failed DMARC",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.src_user=\"*@<your_domain>\" NOT All_Email.src_ip IN (<authorized_sender_ips>) by All_Email.src_ip All_Email.subject All_Email.recipient All_Email.action"
+        },
+        {
+          "title": "DMARC aggregate failures by source IP",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=dmarc:aggregate header_from=<your_domain> (spf_result!=pass OR dkim_result!=pass) earliest=-14d | stats sum(count) as messages values(disposition) as disposition by source_ip | sort - messages"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-hr-payroll-lure",
+      "name": "HR or payroll themed phish asking staff to confirm pay details",
+      "summary": "Use when a lure posing as HR, benefits enrollment or payroll asked staff to sign in to view a pay slip, bonus letter or policy update, targeting employee portal credentials.",
+      "tags": [
+        "phishing",
+        "hr-lure",
+        "payroll",
+        "credential-theft",
+        "workday"
+      ],
+      "attack": [
+        "T1566.002",
+        "T1056.003",
+        "T1656"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Require MFA and new-device alerts on the HR and payroll portal",
+          "Ask HR to tell the SOC before any real mass email about pay, bonuses or benefits",
+          "Log changes to bank account and tax details in the payroll system"
+        ],
+        "identification": [
+          "Confirm with HR that no real pay or benefits email was sent at that time",
+          "Identify whether the fake page imitates the corporate SSO or the HR portal itself",
+          "Find users who submitted credentials and check HR portal logins from new IPs",
+          "Review payroll audit logs for direct deposit changes since the lure arrived"
+        ],
+        "containment": [
+          "Lock direct deposit changes for affected users until each is verified",
+          "Reset credentials and sessions for users who submitted the form",
+          "Purge the lure and block its domains"
+        ],
+        "eradication": [
+          "Reverse any unverified bank detail change after confirming with the employee by phone",
+          "Remove attacker MFA devices from SSO and the HR portal",
+          "Have HR send a notice from a known sender confirming the earlier message was fake"
+        ],
+        "recovery": [
+          "Confirm the next pay run goes to the correct accounts for affected employees",
+          "Lift the change lock once each user has re-verified their details",
+          "Escalate to the payroll diversion playbook if a change was already processed"
+        ],
+        "lessons": [
+          "Require out-of-band confirmation for any direct deposit change made after a new-device login",
+          "Track how many staff reported versus submitted on this lure",
+          "Add a detection for HR portal logins followed by a bank change within an hour"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "HR portal logins from new IPs after the lure",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Authentication where Authentication.app=<hr_portal> Authentication.user IN (<recipient_list>) by Authentication.user Authentication.src | convert ctime(first)"
+        },
+        {
+          "title": "Direct deposit changes since the campaign",
+          "phase": "identification",
+          "spl": "index=* sourcetype=<payroll_audit> action IN (bank_account_change, direct_deposit_update) earliest=-7d | table _time user employee_id src_ip old_account_last4 new_account_last4"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-mfa-fatigue-after-phish",
+      "name": "MFA push bombing after a phished password",
+      "summary": "Use when a user is flooded with MFA push requests they did not start, meaning the attacker already has the password, typically from an earlier phish, and is trying to wear them down.",
+      "tags": [
+        "phishing",
+        "mfa-fatigue",
+        "push-bombing",
+        "credential-theft",
+        "okta"
+      ],
+      "attack": [
+        "T1621",
+        "T1078",
+        "T1110"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable number matching or verified push in the MFA provider",
+          "Teach staff to deny unexpected prompts and report them with a one-click option",
+          "Alert when one user receives more than five denied pushes in ten minutes"
+        ],
+        "identification": [
+          "Count push requests, denials and approvals for the user and record the source IPs",
+          "Check if any push was approved and whether a session started from that IP",
+          "Find the original phish or leak where the password was exposed",
+          "Look for the same source IPs pushing to other users"
+        ],
+        "containment": [
+          "Reset the user's password to stop new push requests",
+          "Revoke sessions if any push was approved",
+          "Block the source IPs at the identity provider"
+        ],
+        "eradication": [
+          "Remove MFA factors added after an approved push",
+          "Check for mailbox rules, OAuth grants or VPN connections from the attacker session",
+          "Reset passwords for other users the same IPs targeted"
+        ],
+        "recovery": [
+          "Move the user to number-matching or FIDO2 before re-enabling",
+          "Thank the user if they reported and explain what happened",
+          "Monitor for renewed push attempts for 14 days"
+        ],
+        "lessons": [
+          "Record whether number matching was enabled for this user and why not",
+          "Measure time from first push to password reset",
+          "Add a detection for an approved push following several denials"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Push requests and denials per user",
+          "phase": "identification",
+          "spl": "index=* sourcetype=okta:im2 eventType IN (system.push.send_factor_verify_push, user.mfa.okta_verify.deny_push, user.authentication.auth_via_mfa) actor.alternateId=<suspect_user> earliest=-24h | bin _time span=10m | stats count by _time eventType outcome.result client.ipAddress"
+        },
+        {
+          "title": "Denied pushes followed by approval",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=azure:aad:signin status.errorCode=500121 earliest=-24h | stats count as denied by userPrincipalName ipAddress | join type=inner userPrincipalName [search index=* sourcetype=azure:aad:signin status.errorCode=0 earliest=-24h | stats latest(_time) as approved by userPrincipalName] | where denied>3"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-html-smuggling",
+      "name": "HTML smuggling attachment assembled malware in the browser",
+      "summary": "Use when an HTML attachment used JavaScript to build and download a ZIP, ISO or script locally, avoiding gateway file scanning, and a user may have run the result.",
+      "tags": [
+        "phishing",
+        "html-smuggling",
+        "attachment",
+        "malware",
+        "evasion"
+      ],
+      "attack": [
+        "T1027.006",
+        "T1566.001",
+        "T1204.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Sandbox HTML attachments with JavaScript execution enabled, not just static scans",
+          "Enable EDR alerts for browser processes writing archives or disk images to Downloads",
+          "Block execution of scripts from the Downloads folder with ASR or AppLocker"
+        ],
+        "identification": [
+          "Run the HTML file in a sandbox and capture the file it generates",
+          "Hash the generated payload and check whether it matches any file on endpoints",
+          "Find hosts where the browser wrote the payload filename to Downloads",
+          "Trace whether the user mounted or extracted the payload and what ran next"
+        ],
+        "containment": [
+          "Isolate hosts where the payload ran",
+          "Add the generated payload hash and HTML attachment hash to EDR block lists",
+          "Purge the HTML attachment from all mailboxes"
+        ],
+        "eradication": [
+          "Remove payload files and persistence from affected hosts",
+          "Block the C2 indicators from the payload's sandbox run",
+          "Reset credentials for users logged on to affected hosts"
+        ],
+        "recovery": [
+          "Return cleaned hosts after a full EDR scan",
+          "Hunt for the payload filename pattern across endpoints for 30 days",
+          "Notify recipients who did not run the file that it was malicious"
+        ],
+        "lessons": [
+          "Record whether the gateway scanned the HTML dynamically or only statically",
+          "Add a detection for browsers writing ISO or ZIP files followed by script execution",
+          "Consider quarantining all inbound HTML attachments from external senders"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Browser writing archives or images to Downloads",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode=11 Image IN (\"*chrome.exe\", \"*msedge.exe\", \"*firefox.exe\") TargetFilename IN (\"*\\\\Downloads\\\\*.iso\", \"*\\\\Downloads\\\\*.zip\", \"*\\\\Downloads\\\\*.img\", \"*\\\\Downloads\\\\*.js\") | stats count by host User TargetFilename"
+        },
+        {
+          "title": "Recipients of the HTML attachment",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.file_name IN (\"*.htm\", \"*.html\") All_Email.file_hash=\"<attachment_hash>\" by All_Email.recipient All_Email.action"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-encrypted-archive-attachment",
+      "name": "Password-protected archive attachment with the password in the email body",
+      "summary": "Use when a phish carried an encrypted ZIP or 7z with the password in the message text, so the gateway could not inspect it and the user extracted and ran the contents.",
+      "tags": [
+        "phishing",
+        "encrypted-archive",
+        "attachment",
+        "malware",
+        "evasion"
+      ],
+      "attack": [
+        "T1566.001",
+        "T1027.013",
+        "T1204.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Configure the gateway to quarantine encrypted archives from external senders by default",
+          "Let the gateway try passwords found in the message body against attached archives",
+          "Log archive extraction tool launches on endpoints"
+        ],
+        "identification": [
+          "Extract the archive in a sandbox using the password from the email and hash each file",
+          "Find which recipients saved and extracted the archive using EDR file events",
+          "Trace the process tree after extraction on each affected host",
+          "Search for the same password string across mail to find other campaign waves"
+        ],
+        "containment": [
+          "Isolate hosts that executed the extracted payload",
+          "Purge all messages carrying the archive and the matching password text",
+          "Block the extracted payload hashes in EDR"
+        ],
+        "eradication": [
+          "Remove payload files and persistence from affected endpoints",
+          "Reset credentials cached on affected hosts",
+          "Block network indicators found during sandbox detonation"
+        ],
+        "recovery": [
+          "Return hosts after clean scans and confirm the user's files are intact",
+          "Release legitimate encrypted archives only after sender verification",
+          "Hunt for the payload hashes for 30 days"
+        ],
+        "lessons": [
+          "Decide whether encrypted archives from outside should be blocked unless the sender is allow-listed",
+          "Add a detection for archive tools extracting to temp followed by script or executable launch",
+          "Track how many legitimate business processes rely on encrypted archives"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Inbound encrypted archives",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.file_name IN (\"*.zip\", \"*.7z\", \"*.rar\") All_Email.src_user=\"<sender>\" by All_Email.recipient All_Email.file_name All_Email.file_hash All_Email.action"
+        },
+        {
+          "title": "Execution after archive extraction",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.parent_process_name IN (7zfm.exe, 7zg.exe, winrar.exe, explorer.exe) Processes.process_path=\"*\\\\AppData\\\\Local\\\\Temp\\\\*\" by Processes.dest Processes.user Processes.process_name Processes.process_path"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-trusted-saas-hosted-lure",
+      "name": "Phishing page hosted on a trusted SaaS or form-builder platform",
+      "summary": "Use when the phishing page lives on a reputable service such as a form builder, website builder or note-sharing site, so domain reputation checks pass and blocking the whole domain is not practical.",
+      "tags": [
+        "phishing",
+        "saas-abuse",
+        "living-off-trusted-sites",
+        "credential-theft"
+      ],
+      "attack": [
+        "T1566.002",
+        "T1102",
+        "T1583.006"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Make sure the proxy can block by full URL path, not only by domain",
+          "Keep abuse-report contacts for common form and site-builder platforms",
+          "Decide in advance which builder platforms the business actually needs"
+        ],
+        "identification": [
+          "Record the exact page URL and the account or project ID on the platform",
+          "Check if the page asks for corporate passwords, MFA codes or payment details",
+          "Find users who visited that specific path and those who submitted the form",
+          "Search mail for other links to the same platform account or project ID"
+        ],
+        "containment": [
+          "Block the specific URL path at the proxy while leaving the platform reachable",
+          "Purge messages linking to the page",
+          "Reset credentials for users who submitted the form"
+        ],
+        "eradication": [
+          "Report the page to the platform's abuse team and request the account be removed",
+          "Remove attacker MFA registrations from affected accounts",
+          "Add a gateway rule that flags messages linking to form builders with login wording"
+        ],
+        "recovery": [
+          "Confirm the page has been taken down and remove the temporary path block later",
+          "Tell staff that real company logins never happen on form builder sites",
+          "Monitor for new pages on the same platform using the same lure text"
+        ],
+        "lessons": [
+          "Track which trusted platforms are most abused in your mail flow",
+          "Decide whether rarely used builder platforms should be blocked outright with exceptions",
+          "Add a detection for POST requests to form builder domains from users who just clicked an email link"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Visits and submissions to the hosted lure",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(Web.http_method) as methods from datamodel=Web where Web.url=\"*<platform_domain>/<project_path>*\" by Web.user Web.src"
+        },
+        {
+          "title": "Mail linking to the platform account",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.url=\"*<platform_domain>/<project_path>*\" by All_Email.recipient All_Email.src_user All_Email.subject"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-privileged-admin-target",
+      "name": "IT administrator phished and privileged credentials exposed",
+      "summary": "Use when the phished user holds admin roles in the identity provider, cloud console or domain, so the blast radius covers the whole tenant and every minute matters.",
+      "tags": [
+        "phishing",
+        "privileged-account",
+        "admin",
+        "entra-id",
+        "credential-theft"
+      ],
+      "attack": [
+        "T1566.002",
+        "T1078.004",
+        "T1098"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Keep admin roles on separate cloud-only accounts that do not receive email",
+          "Require phishing-resistant MFA and privileged access workstations for admin roles",
+          "Keep two break-glass accounts that are excluded from Conditional Access and monitored"
+        ],
+        "identification": [
+          "List every role the phished user holds, including PIM-eligible roles",
+          "Review directory audit logs for role assignments, app registrations and policy edits since the click",
+          "Check whether Conditional Access, MFA or federation settings were changed",
+          "Look for new service principal secrets or certificates added by the user",
+          "Review on-premises domain admin activity if the account is synced"
+        ],
+        "containment": [
+          "Remove the user's admin role assignments immediately and revoke their sessions",
+          "Reset the password and disable the account until MFA is re-registered on a hardware key",
+          "Revert any Conditional Access or federation changes made after the click",
+          "Rotate secrets on app registrations the user could modify"
+        ],
+        "eradication": [
+          "Remove any accounts, role assignments or apps created by the attacker",
+          "Check for new federated domains or cross-tenant access settings",
+          "Rotate break-glass account passwords if their details could have been read"
+        ],
+        "recovery": [
+          "Restore admin roles only through PIM with approval and time limits",
+          "Run a full tenant configuration comparison against the last known-good export",
+          "Keep heightened alerting on directory changes for 30 days"
+        ],
+        "lessons": [
+          "Record why an admin account could receive and click a phish",
+          "Add a detection for any role assignment change outside the PIM workflow",
+          "Track how many admins still use the same account for mail and administration"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Directory changes by the phished admin",
+          "phase": "identification",
+          "spl": "index=* sourcetype=azure:aad:audit initiatedBy.user.userPrincipalName=<suspect_user> earliest=-7d | stats count values(targetResources{}.displayName) as targets by activityDisplayName category result"
+        },
+        {
+          "title": "Role assignments and Conditional Access edits",
+          "phase": "containment",
+          "spl": "index=* sourcetype=azure:aad:audit activityDisplayName IN (\"Add member to role\", \"Update conditional access policy\", \"Add service principal credentials\", \"Set domain authentication\") earliest=-7d | table _time initiatedBy.user.userPrincipalName activityDisplayName targetResources{}.displayName"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-device-code-phish",
+      "name": "Device code phishing tricked a user into authorizing an attacker",
+      "summary": "Use when a user was sent a device login code and entered it at the genuine Microsoft device login page, which handed tokens to the attacker without exposing a password.",
+      "tags": [
+        "phishing",
+        "device-code",
+        "oauth",
+        "token-theft",
+        "entra-id"
+      ],
+      "attack": [
+        "T1528",
+        "T1566.002",
+        "T1550.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Block the device code flow with Conditional Access for users who do not need it",
+          "Log Entra sign-ins including the authentication protocol field",
+          "Brief staff that a request to enter a code at microsoft.com/devicelogin from a stranger is an attack"
+        ],
+        "identification": [
+          "Find sign-ins with authenticationProtocol deviceCode for the user and record IP and app",
+          "Compare the device code sign-in IP with the user's normal locations",
+          "List Graph, Exchange and SharePoint activity using tokens from that session",
+          "Identify how the code was delivered, such as email, Teams or a fake meeting invite"
+        ],
+        "containment": [
+          "Revoke the user's refresh tokens and sessions",
+          "Apply a Conditional Access block on device code flow for the affected group",
+          "Block the attacker IPs in a named location policy"
+        ],
+        "eradication": [
+          "Remove any device registered to Entra using the stolen token",
+          "Delete mailbox rules or app consents made during the attacker session",
+          "Search for other users with device code sign-ins from the same IPs"
+        ],
+        "recovery": [
+          "Confirm the user's devices list contains only known devices",
+          "Allow device code flow only for named kiosks or conference room devices",
+          "Watch for repeat device code attempts against the same user group"
+        ],
+        "lessons": [
+          "Record how many legitimate device code sign-ins exist so the block can be made tenant-wide",
+          "Add a detection for device code sign-ins from IPs not seen for the user before",
+          "Include device code lures in phishing awareness material"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Device code sign-ins",
+          "phase": "identification",
+          "spl": "index=* sourcetype=azure:aad:signin authenticationProtocol=deviceCode earliest=-14d | stats count values(ipAddress) as ips values(appDisplayName) as apps by userPrincipalName status.errorCode"
+        },
+        {
+          "title": "Devices registered after the device code sign-in",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=azure:aad:audit activityDisplayName IN (\"Register device\", \"Add device\", \"Add registered owner to device\") initiatedBy.user.userPrincipalName=<suspect_user> | table _time activityDisplayName targetResources{}.displayName additionalDetails{}.value"
+        }
+      ]
+    },
+    {
+      "id": "lib-phishing-kit-on-company-website",
+      "name": "Phishing kit found hosted on the company's own web server",
+      "summary": "Use when an outside party reports that a phishing page is being served from one of your domains or servers, often through a vulnerable CMS plugin or abandoned subdomain.",
+      "tags": [
+        "phishing",
+        "phishing-kit",
+        "web-server",
+        "cms",
+        "takedown"
+      ],
+      "attack": [
+        "T1584.004",
+        "T1190",
+        "T1505.003"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Keep an inventory of all public web servers, CMS instances and subdomains with owners",
+          "Send web server access logs and file integrity alerts to the SIEM",
+          "Publish a security.txt with a contact for abuse reports"
+        ],
+        "identification": [
+          "Confirm the reported URL is served from your infrastructure and record the file path",
+          "Copy the kit directory and its config to find where it sends harvested credentials",
+          "Review web server logs for the upload request and the vulnerability used",
+          "Check access logs for visitors who submitted data to the kit",
+          "Look for web shells or other dropped files on the same server"
+        ],
+        "containment": [
+          "Remove public access to the kit directory or take the site offline",
+          "Preserve a disk snapshot of the server before cleanup",
+          "Block the kit's exfiltration endpoint at the egress firewall"
+        ],
+        "eradication": [
+          "Patch or remove the vulnerable CMS plugin used to upload the kit",
+          "Delete the kit and any web shells, and rotate CMS admin and hosting credentials",
+          "Rebuild the server from a known-good image if a web shell was found"
+        ],
+        "recovery": [
+          "Request delisting from safe-browsing and spam block lists once the kit is gone",
+          "Tell the reporting party and any listed takedown services that the page is removed",
+          "Monitor the server's file integrity alerts for 30 days"
+        ],
+        "lessons": [
+          "Record how long the kit was live before the first report",
+          "Add a detection for new PHP or HTML files written under the web root outside deployments",
+          "Decommission abandoned sites and dangling subdomains found during the review"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Requests to the kit path",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined uri_path=\"<kit_path>*\" | stats count values(method) as methods min(_time) as first by clientip status | convert ctime(first) | sort first"
+        },
+        {
+          "title": "Upload requests before the kit appeared",
+          "phase": "identification",
+          "spl": "index=web sourcetype=access_combined host=<host> method=POST (uri_path=\"*upload*\" OR uri_path=\"*wp-admin*\" OR uri_path=\"*.php\") earliest=-30d | stats count by clientip uri_path status | sort - count"
+        }
+      ]
+    }
+  ]
+}

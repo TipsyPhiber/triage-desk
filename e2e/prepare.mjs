@@ -23,11 +23,21 @@ const token = signLicense({
   issued: new Date().toISOString().slice(0, 10),
 }, secret);
 
+const connectedToken = signLicense({
+  lid: 'L-E2E-CONNECTED',
+  name: 'Example Co.',
+  email: 'soc@example.com',
+  plan: 'connected',
+  seats: 1,
+  issued: new Date().toISOString().slice(0, 10),
+}, secret);
+
 mkdirSync(TMP, { recursive: true });
 writeFileSync(join(TMP, 'license.txt'), token);
+writeFileSync(join(TMP, 'license-connected.txt'), connectedToken);
 
 const env = { ...process.env, TRIAGE_DESK_E2E_PUBLIC_KEY: publicKeyHex };
-for (const mode of ['e2e', 'e2e-single']) {
+for (const mode of ['e2e', 'e2e-single', 'e2e-connected']) {
   execSync(`npx vite build --mode ${mode} --logLevel warn`, { cwd: ROOT, env, stdio: 'inherit' });
 }
 console.log('e2e builds ready');

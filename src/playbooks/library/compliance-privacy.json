@@ -1,0 +1,917 @@
+{
+  "category": {
+    "id": "compliance-privacy",
+    "name": "Privacy & compliance breach",
+    "description": "Regulatory and privacy obligations after an incident: breach notification decisions, regulator inquiries, legal hold, insurance and third-party notices."
+  },
+  "playbooks": [
+    {
+      "id": "lib-compliance-privacy-gdpr-72-hour-notification",
+      "name": "GDPR 72-hour supervisory authority notification decision",
+      "summary": "Use when a security incident may involve EU or UK personal data and the controller must decide within 72 hours of awareness whether to notify the supervisory authority and data subjects.",
+      "tags": [
+        "gdpr",
+        "breach-notification",
+        "dpo",
+        "eu"
+      ],
+      "attack": [],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Name the DPO and lead supervisory authority for each EU establishment in the IR contact list",
+          "Keep a GDPR Article 33 notification template with the required fields pre-filled",
+          "Maintain a record of processing activities that maps systems to personal data categories"
+        ],
+        "identification": [
+          "Record the exact time the organization became aware of the breach, since the 72-hour clock starts there",
+          "Identify categories and approximate numbers of data subjects and records involved",
+          "Determine whether the incident affects confidentiality, integrity or availability of personal data",
+          "Assess likely consequences for individuals such as identity theft, discrimination or financial loss",
+          "Check whether the data was encrypted with keys that were not compromised"
+        ],
+        "containment": [
+          "Convene DPO, Legal and IR lead to agree a risk rating and notification decision",
+          "Document the reasoning if the decision is that notification is not required",
+          "Submit the Article 33 notification to the lead authority within 72 hours, with phased updates if facts are incomplete"
+        ],
+        "eradication": [
+          "Assess whether high risk to individuals requires direct Article 34 communication to data subjects",
+          "Draft data subject notices in clear language with recommended protective steps",
+          "Coordinate with processors that hold the affected data for their facts and actions"
+        ],
+        "recovery": [
+          "Send supplementary information to the authority as the investigation progresses",
+          "Answer authority questions through the DPO with a single source of truth",
+          "Record the breach in the internal breach register regardless of notification"
+        ],
+        "lessons": [
+          "Measure time from awareness to notification decision",
+          "Review whether awareness was delayed by slow escalation from the SOC to the DPO",
+          "Update the processing record where systems lacked data mapping"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Earliest detection event for the awareness timeline",
+          "phase": "identification",
+          "spl": "index=notable search_name=\"*\" (dest=\"<affected_host>\" OR user=\"<affected_user>\") | stats earliest(_time) as first_alert values(search_name) as rules values(owner) as owner by dest | convert ctime(first_alert)"
+        },
+        {
+          "title": "Record counts accessed in affected EU systems",
+          "phase": "identification",
+          "spl": "index=* sourcetype IN (\"mssql:audit\",\"mysql:audit\") database_name IN (\"<eu_db>\") earliest=<incident_start> | stats sum(affected_rows) as rows dc(object_name) as tables by server_principal_name client_ip"
+        }
+      ]
+    },
+    {
+      "id": "lib-compliance-privacy-hipaa-breach-risk-assessment",
+      "name": "HIPAA breach risk assessment for a PHI incident",
+      "summary": "Use when an incident involves protected health information and the covered entity or business associate must run the four-factor risk assessment and decide on notification within 60 days.",
+      "tags": [
+        "hipaa",
+        "phi",
+        "risk-assessment",
+        "breach-notification"
+      ],
+      "attack": [],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Keep a HIPAA four-factor breach risk assessment form approved by the Privacy Officer",
+          "List business associate agreements with their breach notification terms",
+          "Know the HHS OCR breach portal submission process and who holds the account"
+        ],
+        "identification": [
+          "Determine the nature and extent of PHI involved, including identifiers and likelihood of re-identification",
+          "Identify the unauthorized person who used or received the PHI",
+          "Establish whether the PHI was actually acquired or viewed, using access logs and forensics",
+          "Record the extent to which risk has been mitigated, such as recipient deletion attestations",
+          "Note the discovery date, which starts the 60-day individual notification limit"
+        ],
+        "containment": [
+          "Have the Privacy Officer conclude whether there is a low probability of compromise",
+          "Document the full assessment in the HIPAA incident log whether or not it is a reportable breach",
+          "Check whether an exception applies, such as unintentional workforce access in good faith"
+        ],
+        "eradication": [
+          "Draft individual notification letters with the required content and toll-free contact if needed",
+          "Prepare media notice and HHS notice if 500 or more residents of a state or jurisdiction are affected",
+          "Notify the covered entity promptly if the organization is acting as a business associate"
+        ],
+        "recovery": [
+          "Mail individual notices without unreasonable delay and no later than 60 days from discovery",
+          "Submit the HHS breach report on the appropriate schedule for the breach size",
+          "Track returned mail and provide substitute notice where contact details are outdated"
+        ],
+        "lessons": [
+          "Review the security rule safeguards that failed and update the risk analysis",
+          "Measure time from discovery to completed risk assessment",
+          "Train the workforce on the specific behavior that caused the incident"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "PHI record access by unauthorized party",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"ehr:audit\" user=\"<unauthorized_user>\" earliest=<incident_start> | stats dc(patient_id) as patients count values(action) as actions by user workstation"
+        },
+        {
+          "title": "Exports and prints of PHI in the window",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"ehr:audit\" action IN (\"export\",\"print\",\"download\") earliest=<incident_start> latest=<incident_end> | stats dc(patient_id) as patients by user action"
+        }
+      ]
+    },
+    {
+      "id": "lib-compliance-privacy-pci-card-data-compromise",
+      "name": "PCI DSS cardholder data compromise",
+      "summary": "Use when payment card data may have been stolen from a POS, e-commerce checkout or cardholder data environment, triggering acquirer and card brand obligations and possibly a PFI investigation.",
+      "tags": [
+        "pci-dss",
+        "cardholder-data",
+        "skimming",
+        "acquirer"
+      ],
+      "attack": [
+        "T1056",
+        "T1005"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Keep the acquiring bank and payment processor incident contacts with contract requirements",
+          "Maintain a current cardholder data environment network diagram and asset list",
+          "Identify a PCI Forensic Investigator firm in advance"
+        ],
+        "identification": [
+          "Determine the compromise vector: POS memory scraper, web skimmer on checkout or database theft",
+          "Identify the window of exposure from the first malicious change to containment",
+          "Estimate the number of PANs processed in the exposure window by brand",
+          "Check whether CVV, track data or PIN blocks could have been captured",
+          "Preserve CDE system images and logs before remediation for the PFI"
+        ],
+        "containment": [
+          "Notify the acquirer within the timeframe required by the merchant agreement",
+          "Isolate compromised POS terminals or remove the malicious script from checkout pages",
+          "Do not wipe or rebuild CDE systems until the PFI agrees evidence is preserved"
+        ],
+        "eradication": [
+          "Remove the malware or skimmer and close the initial access path",
+          "Rotate CDE administrative credentials and payment gateway API keys",
+          "Apply integrity monitoring to checkout scripts and POS binaries"
+        ],
+        "recovery": [
+          "Provide the PFI report and remediation evidence to the acquirer and brands",
+          "Supply at-risk account lists to the acquirer through the approved secure channel",
+          "Assess whether state breach notification to cardholders also applies"
+        ],
+        "lessons": [
+          "Implement client-side script monitoring for payment pages",
+          "Review CDE segmentation that failed to limit the compromise",
+          "Track fines, assessments and remediation costs for the board"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Changes to checkout page scripts",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Change where All_Changes.object=\"*checkout*\" OR All_Changes.object=\"*payment*.js\" by All_Changes.user All_Changes.dest All_Changes.object _time span=1h"
+        },
+        {
+          "title": "Outbound connections from CDE hosts to unknown destinations",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count sum(All_Traffic.bytes_out) as bytes from datamodel=Network_Traffic where All_Traffic.src_zone=\"cde\" All_Traffic.dest_zone=\"untrust\" by All_Traffic.src All_Traffic.dest All_Traffic.dest_port | lookup approved_cde_egress.csv dest as All_Traffic.dest OUTPUT approved | where isnull(approved)"
+        },
+        {
+          "title": "Transaction volume in exposure window",
+          "phase": "identification",
+          "spl": "index=payments sourcetype=\"payment:gateway\" earliest=<exposure_start> latest=<exposure_end> | stats dc(card_token) as cards count by card_brand"
+        }
+      ]
+    },
+    {
+      "id": "lib-compliance-privacy-us-state-breach-notification",
+      "name": "US state data breach notification analysis",
+      "summary": "Use when personal information of US residents was or may have been acquired and you must determine which state laws apply, who to notify and what content and timing each requires.",
+      "tags": [
+        "state-breach-law",
+        "notification",
+        "us",
+        "legal"
+      ],
+      "attack": [],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Retain outside privacy counsel with a current state-by-state breach law matrix",
+          "Keep a notification vendor on contract for mailing, call center and credit monitoring",
+          "Ensure customer and employee records store state of residence"
+        ],
+        "identification": [
+          "Confirm whether the exposed data elements meet state definitions of personal information",
+          "Determine whether data was encrypted and whether the key was also compromised",
+          "Count affected individuals by state of residence from the dataset",
+          "Identify states with attorney general or regulator notice requirements triggered by the counts",
+          "Confirm whether law enforcement has requested a delay in notification"
+        ],
+        "containment": [
+          "Have counsel confirm the list of applicable states and each deadline",
+          "Decide on credit monitoring or identity protection offers, noting states that require them",
+          "Prepare regulator notices for states requiring attorney general filing"
+        ],
+        "eradication": [
+          "Draft consumer notice letters meeting each state's content requirements",
+          "Validate mailing addresses and remove duplicates through the notification vendor",
+          "Set up the call center with an approved FAQ script"
+        ],
+        "recovery": [
+          "Mail notices and submit regulator filings, recording dates sent per state",
+          "Notify consumer reporting agencies if the count exceeds thresholds in applicable states",
+          "Track inbound inquiries and complaints from the call center"
+        ],
+        "lessons": [
+          "Reduce collection or retention of the data elements that triggered notification",
+          "Measure how long data mapping by state took and improve it",
+          "Record total cost per notified individual for insurance and budgeting"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Affected records by state from the exposed dataset index",
+          "phase": "identification",
+          "spl": "index=ir_scoping sourcetype=\"csv\" source=\"*<exposed_dataset>*\" | stats dc(customer_id) as individuals by state | sort - individuals"
+        },
+        {
+          "title": "Data elements present in exposed records",
+          "phase": "identification",
+          "spl": "index=ir_scoping source=\"*<exposed_dataset>*\" | eval has_ssn=if(isnotnull(ssn) AND ssn!=\"\",1,0), has_dl=if(isnotnull(drivers_license) AND drivers_license!=\"\",1,0), has_acct=if(isnotnull(account_number) AND account_number!=\"\",1,0) | stats sum(has_ssn) as ssn sum(has_dl) as dl sum(has_acct) as acct by state"
+        }
+      ]
+    },
+    {
+      "id": "lib-compliance-privacy-sec-8k-materiality",
+      "name": "SEC Form 8-K materiality determination for a cyber incident",
+      "summary": "Use when a US-listed company has a significant cyber incident and must determine materiality, then file Item 1.05 of Form 8-K within four business days of a materiality determination.",
+      "tags": [
+        "sec",
+        "8-k",
+        "materiality",
+        "disclosure",
+        "public-company"
+      ],
+      "attack": [],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Define a disclosure committee with the CFO, General Counsel, CISO and IR lead",
+          "Document materiality criteria with quantitative and qualitative factors in advance",
+          "Keep securities counsel and the filing agent on call"
+        ],
+        "identification": [
+          "Brief the disclosure committee with known facts: systems affected, data impacted, operational disruption",
+          "Estimate financial impact: revenue loss, remediation cost, ransom, legal exposure and customer churn",
+          "Assess qualitative factors such as reputational harm, regulatory scrutiny and customer relationships",
+          "Record the date and rationale of the materiality determination, which starts the four-business-day clock",
+          "Check whether the Attorney General national security delay could apply, through counsel"
+        ],
+        "containment": [
+          "Draft Item 1.05 disclosure describing nature, scope, timing and material impact without operational detail",
+          "Review the draft with counsel to avoid disclosing information that would hinder remediation",
+          "Restrict insider trading by placing relevant insiders under a blackout"
+        ],
+        "eradication": [
+          "File the 8-K within four business days of the materiality determination",
+          "Coordinate customer, employee and press communications to match the filing",
+          "Brief the board audit committee on the filing and next steps"
+        ],
+        "recovery": [
+          "File an 8-K amendment when previously unavailable material information becomes known",
+          "Align 10-K Item 1C risk management disclosures with lessons from the incident",
+          "Keep the disclosure committee minutes and evidence with the incident record"
+        ],
+        "lessons": [
+          "Measure time from incident detection to materiality determination",
+          "Review whether escalation criteria from IR to the disclosure committee worked",
+          "Update the materiality framework based on this incident's facts"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Scope of affected hosts for disclosure briefing",
+          "phase": "identification",
+          "spl": "index=notable earliest=<incident_start> (search_name=\"*Ransomware*\" OR search_name=\"*Exfil*\" OR urgency IN (\"critical\",\"high\")) | stats dc(dest) as hosts dc(user) as users values(search_name) as detections by orig_sourcetype"
+        },
+        {
+          "title": "Business service outage timeline",
+          "phase": "identification",
+          "spl": "index=itsi_summary OR index=* sourcetype=\"nagios:*\" (service=\"<critical_service>\" OR host=\"<critical_host>\") earliest=<incident_start> | timechart span=1h count(eval(status=\"CRITICAL\")) as critical"
+        }
+      ]
+    },
+    {
+      "id": "lib-compliance-privacy-nis2-dora-incident-reporting",
+      "name": "NIS2 or DORA significant incident reporting",
+      "summary": "Use when an EU essential or important entity (NIS2) or financial entity (DORA) has an incident that may be significant or major and must be classified and reported to the CSIRT or competent authority in stages.",
+      "tags": [
+        "nis2",
+        "dora",
+        "eu",
+        "regulatory-reporting",
+        "financial-services"
+      ],
+      "attack": [],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Confirm whether each EU entity falls under NIS2, DORA or both and record its competent authority",
+          "Adopt the classification criteria for significant (NIS2) and major (DORA) incidents in the IR runbook",
+          "Prepare report templates for the initial, intermediate and final stages"
+        ],
+        "identification": [
+          "Classify the incident against criteria: clients affected, duration, geographic spread, data loss, economic impact",
+          "Record awareness and classification timestamps that start the reporting clocks",
+          "Identify critical or important functions and ICT third-party providers affected",
+          "Determine whether the incident has cross-border impact on other member states",
+          "Check whether the incident also triggers GDPR breach notification"
+        ],
+        "containment": [
+          "Submit the NIS2 early warning within 24 hours of awareness where the incident is significant",
+          "Submit the DORA initial notification within the timelines in the regulatory technical standards",
+          "Inform recipients of the service where required about measures they can take"
+        ],
+        "eradication": [
+          "Send the intermediate or incident notification with updated assessment, severity and indicators",
+          "Coordinate with ICT third-party providers for their root-cause data",
+          "Share indicators with the national CSIRT where helpful"
+        ],
+        "recovery": [
+          "Prepare the final report with root cause, mitigation measures and cross-border impact",
+          "Answer follow-up requests from the competent authority through the compliance lead",
+          "Record reporting submissions and acknowledgements in the incident file"
+        ],
+        "lessons": [
+          "Review whether classification was timely and accurate against the criteria",
+          "Update the ICT third-party register and contracts if a provider caused the incident",
+          "Report lessons to the management body, which holds accountability under both regimes"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Affected critical service availability timeline",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.dest=\"<critical_service>\" by Web.status _time span=15m | eval failed=if(match('Web.status',\"^5\"),count,0) | stats sum(failed) as failed sum(count) as total by _time | eval error_rate=round(failed/total*100,1)"
+        },
+        {
+          "title": "Distinct client accounts affected by failed sessions",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"app:transactions\" service=\"<critical_service>\" status=failed earliest=<incident_start> | stats dc(client_id) as clients sum(amount) as value_affected by country"
+        }
+      ]
+    },
+    {
+      "id": "lib-compliance-privacy-dsar-reveals-breach",
+      "name": "Data subject access request reveals a breach",
+      "summary": "Use when fulfilling a DSAR or consumer privacy request uncovers that the person's data was exposed, misused or held in unexpected places, turning a routine request into an incident.",
+      "tags": [
+        "dsar",
+        "privacy-request",
+        "gdpr",
+        "ccpa"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Give the privacy request team an escalation path to IR when they find unexpected data",
+          "Maintain a data inventory so DSAR searches cover all systems",
+          "Track DSAR response deadlines in the privacy request tool"
+        ],
+        "identification": [
+          "Document what the DSAR search found: unexpected systems, unauthorized sharing or evidence of exposure",
+          "Determine whether the issue affects only the requester or a wider set of individuals",
+          "Identify the system owner and how the data came to be there",
+          "Check access logs for the unexpected location to see who viewed the data",
+          "Assess whether the finding is a personal data breach requiring notification"
+        ],
+        "containment": [
+          "Restrict access to the unexpected data location",
+          "Separate the incident handling from the DSAR response so the deadline is still met",
+          "Preserve evidence before any cleanup changes the data"
+        ],
+        "eradication": [
+          "Delete data held without a lawful basis once Legal confirms",
+          "Fix the integration or export job that copied data to the wrong place",
+          "Run the same search for other individuals to scope the problem"
+        ],
+        "recovery": [
+          "Respond to the DSAR completely, including disclosure of recipients where required",
+          "Notify the authority and affected individuals if the breach assessment requires",
+          "Update the data inventory with the newly found data store"
+        ],
+        "lessons": [
+          "Add the discovered data store to regular privacy scans",
+          "Measure how often DSAR work uncovers unmapped data",
+          "Review retention rules that should have removed the data"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Who accessed the unexpected data location",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation IN (\"FileAccessed\",\"FileDownloaded\",\"FileModified\") ObjectId=\"*<unexpected_location>*\" | stats count earliest(_time) as first latest(_time) as last by UserId Operation | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Search other indexes for the data subject identifier",
+          "phase": "eradication",
+          "spl": "index=* earliest=-90d \"<subject_email>\" NOT index=ir_scoping | stats count by index sourcetype source"
+        }
+      ]
+    },
+    {
+      "id": "lib-compliance-privacy-childrens-data-exposure",
+      "name": "Exposure of children's personal data",
+      "summary": "Use when personal data of minors is exposed, for example from a school platform, gaming account, youth program or pediatric records, where heightened legal duties and parental notification apply.",
+      "tags": [
+        "children",
+        "coppa",
+        "minors",
+        "privacy"
+      ],
+      "attack": [],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Identify every system that stores data on children and its age thresholds",
+          "Have counsel map obligations under COPPA, GDPR-K, age-appropriate design codes and education privacy laws",
+          "Prepare parent and guardian notification templates written in plain language"
+        ],
+        "identification": [
+          "Confirm the ages of affected individuals from the dataset to determine which rules apply",
+          "Identify data types exposed: names, school, location, photos, chat messages, health or special needs",
+          "Assess safeguarding risks such as location data or contact details reachable by predators",
+          "Determine whether the data was accessed or downloaded by unauthorized parties",
+          "Check whether a school district or other controller owns the data and must lead notification"
+        ],
+        "containment": [
+          "Remove public access or disable the exposed feature immediately",
+          "Engage safeguarding leads if there is any risk of contact with children",
+          "Notify the controlling school or organization if acting as a processor"
+        ],
+        "eradication": [
+          "Delete data collected beyond what parental consent covered",
+          "Fix the access control or misconfiguration that exposed the records",
+          "Review third-party SDKs or analytics that received children's data"
+        ],
+        "recovery": [
+          "Notify parents and guardians with clear guidance on protective steps",
+          "Make regulator notifications on the timelines advised by counsel",
+          "Provide a dedicated support line for parents"
+        ],
+        "lessons": [
+          "Apply data minimization to children's data in the affected product",
+          "Add an age-flag to datasets so exposures can be scoped faster",
+          "Review vendor contracts for child data protections"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Access to the exposed children's records endpoint",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count dc(Web.src) as sources sum(Web.bytes_out) as bytes from datamodel=Web where Web.url=\"*<exposed_endpoint>*\" Web.status=200 by Web.src Web.http_user_agent | sort - bytes"
+        },
+        {
+          "title": "Third-party SDK traffic from the youth app",
+          "phase": "eradication",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.src_category=\"<youth_app_backend>\" by Web.dest | lookup approved_processors.csv dest as Web.dest OUTPUT approved | where isnull(approved)"
+        }
+      ]
+    },
+    {
+      "id": "lib-compliance-privacy-biometric-data-exposure",
+      "name": "Biometric data exposure (fingerprints, face templates, voiceprints)",
+      "summary": "Use when biometric identifiers or templates from time clocks, access control, identity verification or voice systems are exposed, which cannot be reset like passwords and carry specific legal duties.",
+      "tags": [
+        "biometrics",
+        "bipa",
+        "access-control",
+        "privacy"
+      ],
+      "attack": [],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Inventory systems that capture or store biometric templates and their vendors",
+          "Keep records of biometric consent and retention schedules where laws like Illinois BIPA apply",
+          "Confirm whether vendors store raw images or irreversible templates"
+        ],
+        "identification": [
+          "Determine whether raw biometric images, templates or both were exposed",
+          "Assess whether the templates are vendor-proprietary and usable outside the system",
+          "Identify the individuals affected and their states or countries of residence",
+          "Check whether consent records exist for every affected individual",
+          "Identify whether the exposure occurred at the company or at the biometric vendor"
+        ],
+        "containment": [
+          "Disconnect the exposed biometric database or API from external access",
+          "Suspend enrollment of new biometrics until the cause is fixed",
+          "Require the vendor to preserve logs and provide their incident report"
+        ],
+        "eradication": [
+          "Delete biometric data past its retention period or lacking consent",
+          "Re-enroll users with new templates if the vendor supports template revocation",
+          "Offer alternative authentication such as badges or PINs to affected staff"
+        ],
+        "recovery": [
+          "Notify individuals and regulators as counsel advises, noting biometric-specific laws",
+          "Update consent forms and the public retention policy",
+          "Confirm the vendor's fix through an independent test"
+        ],
+        "lessons": [
+          "Decide whether biometrics are necessary for the use case",
+          "Require template encryption and on-device matching in vendor selection",
+          "Review litigation exposure and insurance coverage for biometric claims"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Access to biometric database from external sources",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count sum(All_Traffic.bytes_out) as bytes from datamodel=Network_Traffic where All_Traffic.dest=\"<biometric_db>\" by All_Traffic.src All_Traffic.dest_port | where NOT cidrmatch(\"10.0.0.0/8\", 'All_Traffic.src')"
+        },
+        {
+          "title": "Biometric API template export calls",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"biometric:api\" (endpoint=\"*/templates*\" OR endpoint=\"*/export*\") http_method=GET | stats count dc(subject_id) as subjects by client_id src_ip"
+        }
+      ]
+    },
+    {
+      "id": "lib-compliance-privacy-regulator-inquiry-received",
+      "name": "Inquiry received from a data protection or security regulator",
+      "summary": "Use when a regulator (data protection authority, FTC, state AG, sector regulator) sends a letter or request for information about a security incident or privacy practice.",
+      "tags": [
+        "regulator",
+        "inquiry",
+        "legal",
+        "evidence"
+      ],
+      "attack": [],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Route all regulator correspondence to Legal and the privacy lead through a single intake address",
+          "Keep incident records, risk assessments and policies organized for production on request",
+          "Retain regulatory defense counsel familiar with the relevant regulator"
+        ],
+        "identification": [
+          "Log the request, the regulator, reference number, questions asked and the response deadline",
+          "Determine which incident or practice the inquiry concerns and whether it is already known internally",
+          "Identify the custodians and systems holding responsive information",
+          "Check whether the inquiry stems from a complaint, media report or prior notification"
+        ],
+        "containment": [
+          "Issue a legal hold to custodians and systems relevant to the inquiry",
+          "Appoint a single point of contact for all communication with the regulator",
+          "Request a deadline extension through counsel if the scope requires it"
+        ],
+        "eradication": [
+          "Gather incident timelines, logs, notifications sent and remediation evidence",
+          "Verify every factual statement in the draft response against source evidence",
+          "Remediate any outstanding gaps the inquiry highlights before responding where possible"
+        ],
+        "recovery": [
+          "Submit the response through counsel and confirm receipt",
+          "Track follow-up questions and commitments made to the regulator",
+          "Brief executives and the board on exposure and next steps"
+        ],
+        "lessons": [
+          "Review whether internal records made the response easy or slow to assemble",
+          "Close commitments made to the regulator on schedule",
+          "Update policies the inquiry showed were outdated or not followed"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Export incident timeline evidence for the response",
+          "phase": "eradication",
+          "spl": "index=notable earliest=<incident_start> latest=<incident_end> (dest=\"<affected_host>\" OR user=\"<affected_user>\") | table _time search_name dest user status owner comment | sort _time"
+        },
+        {
+          "title": "Proof of logging coverage on affected systems",
+          "phase": "eradication",
+          "spl": "| tstats count where index=* host IN (\"<affected_host1>\",\"<affected_host2>\") earliest=<incident_start> by host sourcetype _time span=1d"
+        }
+      ]
+    },
+    {
+      "id": "lib-compliance-privacy-cyber-insurance-claim",
+      "name": "Cyber insurance notice and claim process",
+      "summary": "Use when an incident may be covered by a cyber insurance policy and you need to give timely notice, use panel vendors, track costs and avoid actions that jeopardize coverage.",
+      "tags": [
+        "cyber-insurance",
+        "claim",
+        "breach-coach",
+        "finance"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Keep the policy number, insurer claims hotline and notice requirements in the IR contact sheet",
+          "List the insurer's panel breach coaches, forensics firms and negotiators",
+          "Note policy conditions such as consent before ransom payment or vendor engagement"
+        ],
+        "identification": [
+          "Confirm the incident type falls within insuring agreements: breach response, business interruption, extortion",
+          "Record the date the incident was discovered for notice timing under the policy",
+          "Identify retention or deductible amounts and sublimits relevant to the incident"
+        ],
+        "containment": [
+          "Give notice to the insurer via the claims hotline or portal as early as the policy requires",
+          "Engage panel vendors through the breach coach, or get written consent for non-panel vendors",
+          "Get insurer consent before committing to any ransom or extortion payment"
+        ],
+        "eradication": [
+          "Track every incident-related cost with invoices, labor hours and vendor statements",
+          "Quantify business interruption loss with Finance using the policy's calculation method",
+          "Keep privileged forensic reports under counsel direction"
+        ],
+        "recovery": [
+          "Submit the proof of loss with supporting documents by the policy deadline",
+          "Respond to insurer adjuster questions through counsel",
+          "Reconcile reimbursements against costs and document disputes"
+        ],
+        "lessons": [
+          "Review whether sublimits and retention were adequate for this incident",
+          "Update the renewal application with controls added after the incident",
+          "Record time from discovery to insurer notice"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Downtime duration for business interruption claim",
+          "phase": "eradication",
+          "spl": "| tstats summariesonly=false count from datamodel=Web where Web.dest=\"<revenue_service>\" earliest=<incident_start> by _time span=1h | eval up=if(count>0,1,0) | stats sum(eval(1-up)) as hours_down count as hours_observed"
+        },
+        {
+          "title": "Hosts reimaged or restored during recovery",
+          "phase": "eradication",
+          "spl": "| tstats summariesonly=false dc(All_Changes.dest) as hosts values(All_Changes.dest) as dests from datamodel=Change where All_Changes.command IN (\"*reimage*\",\"*restore*\",\"*rebuild*\") earliest=<incident_start> by All_Changes.user"
+        }
+      ]
+    },
+    {
+      "id": "lib-compliance-privacy-legal-hold-evidence-preservation",
+      "name": "Legal hold and evidence preservation for an incident",
+      "summary": "Use when litigation, regulatory action or law enforcement involvement is reasonably anticipated after an incident and logs, images, mailboxes and records must be preserved defensibly.",
+      "tags": [
+        "legal-hold",
+        "evidence",
+        "chain-of-custody",
+        "ediscovery"
+      ],
+      "attack": [],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Document the process for issuing and releasing legal holds with Legal",
+          "Ensure the SIEM, EDR and cloud log retention can be extended on demand",
+          "Keep forensic imaging tools, write blockers and evidence storage ready"
+        ],
+        "identification": [
+          "Identify custodians, systems, log sources and time ranges relevant to the incident",
+          "Check retention settings that would delete relevant data soon, such as 30-day EDR or 90-day log rollover",
+          "List physical evidence such as laptops, USB drives and printed documents",
+          "Confirm with Legal the scope and date of anticipated litigation"
+        ],
+        "containment": [
+          "Issue legal hold notices to custodians and IT system owners and track acknowledgements",
+          "Place mailboxes and OneDrive accounts on eDiscovery hold",
+          "Suspend automated deletion and retention jobs on relevant systems"
+        ],
+        "eradication": [
+          "Take forensic images of key hosts with hashes recorded",
+          "Export relevant SIEM and cloud logs to write-once storage",
+          "Record chain of custody for each evidence item"
+        ],
+        "recovery": [
+          "Confirm remediation activities like reimaging only happen after images are captured",
+          "Review hold compliance periodically and remind custodians",
+          "Release holds only on written instruction from Legal"
+        ],
+        "lessons": [
+          "Measure time to place holds after incident declaration",
+          "Review gaps where data was lost to retention before a hold applied",
+          "Update the hold template with systems found missing"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Export SIEM events for preservation",
+          "phase": "eradication",
+          "spl": "index=* (host IN (\"<host1>\",\"<host2>\") OR user=\"<custodian>\") earliest=<hold_start> latest=<hold_end> | table _time index sourcetype host user _raw | outputcsv legal_hold_<case_id>.csv"
+        },
+        {
+          "title": "Index retention that will drop relevant data",
+          "phase": "identification",
+          "spl": "| rest /services/data/indexes | table title frozenTimePeriodInSecs maxTotalDataSizeMB | eval retention_days=round(frozenTimePeriodInSecs/86400,0) | where retention_days < 365"
+        },
+        {
+          "title": "Mailbox hold actions applied",
+          "phase": "containment",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation IN (\"New-CaseHoldPolicy\",\"Set-CaseHoldPolicy\",\"New-CaseHoldRule\",\"Set-Mailbox\") | search \"LitigationHoldEnabled\" OR Operation=*CaseHold* | table _time UserId Operation ObjectId"
+        }
+      ]
+    },
+    {
+      "id": "lib-compliance-privacy-processor-breach-notice",
+      "name": "Breach notice received from a third-party processor or vendor",
+      "summary": "Use when a vendor, SaaS provider or data processor notifies you that a breach on their side affected your data, and you must assess your exposure and your own notification duties as controller.",
+      "tags": [
+        "third-party",
+        "vendor-breach",
+        "processor",
+        "supply-chain"
+      ],
+      "attack": [
+        "T1199"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Keep a vendor register with data types shared, contract breach clauses and security contacts",
+          "Require processors to notify without undue delay in data processing agreements",
+          "Maintain integration and credential inventories per vendor"
+        ],
+        "identification": [
+          "Record when and how the vendor notified you, since your own clocks may start on receipt",
+          "Request from the vendor: timeline, data types, records affected, attacker access and indicators",
+          "Determine which of your data sets and customers the vendor held",
+          "Check whether vendor-held credentials, tokens or integrations into your environment were exposed",
+          "Search your logs for vendor indicators or abnormal activity from the vendor's integration"
+        ],
+        "containment": [
+          "Rotate API keys, OAuth tokens and service accounts used by the vendor integration",
+          "Restrict or pause the integration until the vendor confirms containment",
+          "Preserve the vendor's notice and all correspondence"
+        ],
+        "eradication": [
+          "Review vendor-provided indicators against your EDR and network logs",
+          "Remove excess data shared with the vendor beyond what the service needs",
+          "Obtain the vendor's remediation evidence or third-party forensic summary"
+        ],
+        "recovery": [
+          "Decide with Legal and Privacy whether you must notify regulators and individuals as controller",
+          "Coordinate notification content with the vendor to avoid conflicting messages",
+          "Re-enable the integration with new credentials and least-privilege scopes"
+        ],
+        "lessons": [
+          "Reassess the vendor's risk tier and contract terms",
+          "Measure delay between vendor incident and their notice to you",
+          "Review data minimization for all vendors in the same category"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Activity from the vendor integration identity",
+          "phase": "identification",
+          "spl": "index=* (sourcetype=\"azure:aad:signin\" appId=\"<vendor_app_id>\") OR (sourcetype=\"aws:cloudtrail\" userIdentity.arn=\"*<vendor_role>*\") earliest=<vendor_incident_start> | stats count values(ipAddress) as ips values(sourceIPAddress) as aws_ips by sourcetype"
+        },
+        {
+          "title": "Vendor-provided indicators in network logs",
+          "phase": "eradication",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest IN (\"<ioc_ip1>\",\"<ioc_ip2>\") OR All_Traffic.src IN (\"<ioc_ip1>\",\"<ioc_ip2>\") by All_Traffic.src All_Traffic.dest All_Traffic.dest_port"
+        },
+        {
+          "title": "OAuth token use by the vendor app",
+          "phase": "containment",
+          "spl": "index=* sourcetype=\"o365:management:activity\" AppId=\"<vendor_app_id>\" | stats count values(Operation) as ops earliest(_time) as first latest(_time) as last by ClientIP | convert ctime(first) ctime(last)"
+        }
+      ]
+    },
+    {
+      "id": "lib-compliance-privacy-cross-border-transfer-violation",
+      "name": "Unlawful cross-border transfer of personal data discovered",
+      "summary": "Use when you find personal data being transferred or stored in a country without an adequate legal mechanism, such as a new SaaS region, offshore support or replicated backups.",
+      "tags": [
+        "data-transfer",
+        "gdpr",
+        "data-residency",
+        "scc"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Record approved transfer mechanisms such as SCCs, adequacy decisions or BCRs per vendor and region",
+          "Configure cloud policy to restrict resource creation to approved regions",
+          "Require transfer impact assessments before onboarding offshore processors"
+        ],
+        "identification": [
+          "Identify the data set, destination country and system or vendor involved",
+          "Determine how long the transfer has occurred and the volume of records",
+          "Check whether any transfer mechanism or impact assessment exists",
+          "Identify whether data residency laws in the source country prohibit the transfer outright",
+          "Establish who approved the configuration or vendor"
+        ],
+        "containment": [
+          "Pause replication or transfer to the non-approved region where operationally possible",
+          "Restrict access by offshore personnel to the data set pending review",
+          "Document the facts for the DPO and Legal"
+        ],
+        "eradication": [
+          "Move data back to an approved region or put SCCs and supplementary measures in place",
+          "Delete copies stored in the non-approved region once migration is verified",
+          "Apply region restriction policies to prevent recurrence"
+        ],
+        "recovery": [
+          "Update the record of processing and transfer register",
+          "Assess with counsel whether regulator engagement or disclosure is warranted",
+          "Confirm the service runs correctly in the approved region"
+        ],
+        "lessons": [
+          "Add region compliance checks to cloud deployment pipelines",
+          "Review procurement checks that missed the vendor's hosting location",
+          "Brief engineering teams on data residency requirements"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Resources created in non-approved cloud regions",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"aws:cloudtrail\" eventName IN (\"CreateBucket\",\"RunInstances\",\"CreateDBInstance\",\"PutBucketReplication\") NOT awsRegion IN (\"<approved_region1>\",\"<approved_region2>\") | stats count values(eventName) as events by awsRegion userIdentity.arn"
+        },
+        {
+          "title": "Data flows to non-approved countries",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false sum(All_Traffic.bytes_out) as bytes from datamodel=Network_Traffic where All_Traffic.src_category=\"pii_store\" by All_Traffic.dest | iplocation All_Traffic.dest | lookup approved_countries.csv Country OUTPUT approved | where isnull(approved)"
+        }
+      ]
+    },
+    {
+      "id": "lib-compliance-privacy-records-retention-failure",
+      "name": "Records retention failure: data kept too long or deleted too early",
+      "summary": "Use when records were retained past their schedule (expanding breach impact or violating law) or destroyed before their required retention period, including during a legal hold.",
+      "tags": [
+        "records-retention",
+        "data-lifecycle",
+        "compliance",
+        "legal-hold"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Maintain a records retention schedule mapping record types to systems and periods",
+          "Automate deletion jobs and log every purge with record counts",
+          "Make legal holds override automated deletion in each system"
+        ],
+        "identification": [
+          "Determine whether the failure is over-retention, premature deletion or deletion under hold",
+          "Identify the record types, systems, volumes and date ranges affected",
+          "Find the cause: disabled purge job, misconfigured policy, manual deletion or migration error",
+          "Check if deleted records were subject to a legal hold or regulatory retention rule",
+          "Assess whether over-retained data increased the impact of any related breach"
+        ],
+        "containment": [
+          "Stop the faulty deletion job or policy immediately if premature deletion is ongoing",
+          "Preserve remaining records and backups that might allow restoration",
+          "Notify Legal if records under hold were affected so counsel can address spoliation risk"
+        ],
+        "eradication": [
+          "Restore prematurely deleted records from backup where possible",
+          "Purge over-retained records under a documented and approved disposal run",
+          "Correct the retention policy configuration in the affected system"
+        ],
+        "recovery": [
+          "Verify purge and retention jobs run correctly on the next cycle",
+          "Record the disposal certificate or restoration evidence",
+          "Report to the regulator or court through counsel if required"
+        ],
+        "lessons": [
+          "Add monitoring for purge jobs that fail or delete unexpected volumes",
+          "Review migration runbooks for retention metadata handling",
+          "Reconcile the retention schedule against systems annually"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Purge and retention job runs with counts",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"o365:management:activity\" Operation IN (\"ApplyRecordLabel\",\"HardDelete\",\"DispositionReviewAction\",\"RetentionPolicyApplied\") | timechart span=1d count by Operation"
+        },
+        {
+          "title": "Mass deletions on records systems",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Change where All_Changes.action=deleted All_Changes.dest IN (\"<records_system>\") by All_Changes.user _time span=1h | where count > 1000"
+        },
+        {
+          "title": "Data older than retention in Splunk indexes",
+          "phase": "eradication",
+          "spl": "| tstats min(_time) as oldest where index=* by index | eval age_days=round((now()-oldest)/86400,0) | lookup retention_schedule.csv index OUTPUT max_days | where age_days > max_days"
+        }
+      ]
+    }
+  ]
+}

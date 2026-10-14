@@ -6,15 +6,15 @@ import { X } from 'lucide-react';
 
 export const btn = {
   primary: 'inline-flex items-center justify-center gap-2 bg-signal text-signal-ink px-3.5 py-2 rounded-lg text-sm font-semibold hover:brightness-110 active:brightness-95 transition disabled:opacity-40 disabled:cursor-not-allowed',
-  solid: 'inline-flex items-center justify-center gap-2 bg-ink text-canvas px-3.5 py-2 rounded-lg text-sm font-semibold hover:bg-white transition disabled:opacity-40 disabled:cursor-not-allowed',
+  solid: 'inline-flex items-center justify-center gap-2 bg-ink text-canvas px-3.5 py-2 rounded-lg text-sm font-semibold hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed',
   secondary: 'inline-flex items-center justify-center gap-2 bg-raised border border-line-2 text-ink px-3.5 py-2 rounded-lg text-sm font-medium hover:bg-hover hover:border-ink-4 transition disabled:opacity-40 disabled:cursor-not-allowed',
   ghost: 'inline-flex items-center justify-center gap-2 text-ink-2 px-3 py-2 rounded-lg text-sm hover:bg-hover hover:text-ink transition disabled:opacity-40',
-  danger: 'inline-flex items-center justify-center gap-2 border border-rose-500/30 text-rose-300 px-3.5 py-2 rounded-lg text-sm font-medium hover:bg-rose-500/10 transition',
-  pro: 'inline-flex items-center justify-center gap-2 bg-pro text-[#160b33] px-3.5 py-2 rounded-lg text-sm font-semibold hover:brightness-110 transition',
-  ok: 'inline-flex items-center justify-center gap-2 bg-ok text-[#04150c] px-3.5 py-2 rounded-lg text-sm font-semibold hover:brightness-110 transition',
+  danger: 'inline-flex items-center justify-center gap-2 border border-danger/30 text-danger px-3.5 py-2 rounded-lg text-sm font-medium hover:bg-danger/10 transition',
+  pro: 'inline-flex items-center justify-center gap-2 bg-pro text-pro-ink px-3.5 py-2 rounded-lg text-sm font-semibold hover:brightness-110 transition',
+  ok: 'inline-flex items-center justify-center gap-2 bg-ok text-ok-ink px-3.5 py-2 rounded-lg text-sm font-semibold hover:brightness-110 transition',
 };
 
-export const inputCls = 'w-full bg-canvas border border-line-2 rounded-lg px-3 py-2 text-sm text-ink placeholder-ink-4 outline-none focus:border-ink-3 focus:ring-2 focus:ring-white/5 transition';
+export const inputCls = 'w-full bg-canvas border border-line-2 rounded-lg px-3 py-2 text-sm text-ink placeholder-ink-4 outline-none focus:border-signal focus:ring-2 focus:ring-signal/15 transition';
 
 export const labelCls = 'text-[11px] font-medium uppercase tracking-[0.08em] text-ink-3';
 
@@ -33,14 +33,14 @@ export function Modal({ title, subtitle, icon: Icon, onClose, children, footer, 
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center p-4 sm:p-10 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/70 backdrop-blur-[2px]" onClick={onClose} />
+      <div className="fixed inset-0 scrim backdrop-blur-[2px]" onClick={onClose} />
       <div
         ref={panel}
         tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`anim-in relative w-full ${wide ? 'max-w-4xl' : 'max-w-lg'} bg-surface-2 border border-line-2 rounded-2xl shadow-[0_30px_80px_-20px_rgba(0,0,0,.8)] flex flex-col max-h-[calc(100vh-5rem)] outline-none`}
+        className={`anim-in relative w-full ${wide === 'xl' ? 'max-w-6xl' : wide ? 'max-w-4xl' : 'max-w-lg'} bg-surface-2 border border-line rounded-2xl shadow-pop flex flex-col max-h-[calc(100vh-5rem)] outline-none`}
       >
         <div className="px-6 pt-5 pb-4 flex items-start justify-between gap-4">
           <div className="flex items-start gap-3 min-w-0">
@@ -123,9 +123,8 @@ export function Card({ className = '', children }) {
 export function Logo({ size = 22 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
-      <rect width="32" height="32" rx="8" fill="#13161a" />
-      <rect x="0.5" y="0.5" width="31" height="31" rx="7.5" fill="none" stroke="#2a2f36" />
-      <path d="M7 17h4l2.5-6 4 11 2.5-5H25" fill="none" stroke="#ffb224" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+      <rect width="32" height="32" rx="8" className="fill-signal" />
+      <path d="M7 17h4l2.5-6 4 11 2.5-5H25" fill="none" className="stroke-signal-ink" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

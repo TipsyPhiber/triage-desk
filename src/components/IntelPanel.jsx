@@ -1,11 +1,11 @@
 // Right-hand panel: the auto-recorded timeline and the incident-wide IOC
 // index. Static column on wide screens, overlay drawer on narrow ones.
 
+import { copyText } from '../lib/clipboard.js';
+import { iocHuntSearches, iocsOf } from '../lib/splunk.js';
+import { SearchCard, SplunkMark } from './SplunkSearches.jsx';
 import { useMemo, useState } from 'react';
-import {
-  ArrowRightLeft, CheckSquare, ClipboardCopy, Flag, Gauge, MessageSquareText,
-  Radar, ShieldCheck, Square, X,
-} from 'lucide-react';
+import { ArrowRightLeft, CheckSquare, ClipboardCopy, Database, Download, Flag, Gauge, MessageSquareText, Radar, Send, ShieldCheck, Square, X } from 'lucide-react';
 import { PHASES } from '../data.js';
 import { aggregateIocs } from '../state/iocIndex.js';
 import { formatClock, formatElapsed } from '../lib/time.js';
@@ -20,25 +20,8 @@ const EVENT_META = {
   uncheck: { icon: Square, color: '#6e7681', label: 'Task' },
   ioc: { icon: Radar, color: '#c084fc', label: 'IOCs' },
   note: { icon: MessageSquareText, color: '#818cf8', label: 'Note' },
+  splunk: { icon: Database, color: '#65a637', label: 'Splunk' },
 };
-
-async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    // Fallback for browsers that block the async clipboard on file://.
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    return ok;
-  }
-}
 
 function Timeline({ events, startTime }) {
   const reversed = useMemo(() => [...events].reverse(), [events]);
@@ -140,16 +123,53 @@ function IocIndex({ iocIndex, onCopied }) {
   );
 }
 
-export function IntelPanel({ open, onClose, tab, onTab, incident, onCopied }) {
+function SplunkHunt({ incident, onCopied, splunk }) {
+  const searches = useMemo(() => iocHuntSearches(iocsOf(incident)), [incident]);
+  const exportBtn = 'w-full inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-line-2 bg-raised text-[13px] text-ink hover:bg-hover transition';
+  return (
+    <div className="px-4 py-4 space-y-4">
+      <div className="flex items-start gap-2.5">
+        <SplunkMark size={18} />
+        <p className="text-[12.5px] text-ink-2 leading-relaxed">
+          {splunk.connected
+            ? 'Hunt for this incident’s indicators in your Splunk, and send the timeline back as events.'
+            : 'Searches built from this incident’s indicators. Copy them into Splunk, or export files to upload.'}
+        </p>
+      </div>
+      {searches.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-line-2 px-4 py-6 text-center text-[12.5px] text-ink-3">
+          Extract IOCs in any response phase and hunting searches appear here.
+        </div>
+      ) : (
+        <div className="space-y-2.5">
+          {searches.map((s) => <SearchCard key={s.title} search={s} onCopied={onCopied} onRun={splunk.onRun} />)}
+        </div>
+      )}
+      <div className="pt-2 space-y-1.5">
+        <h4 className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-3 mb-1">Export for Splunk</h4>
+        <button className={exportBtn} onClick={() => splunk.onExport('lookup')}><Download size={14} /> IOC lookup table (.csv)</button>
+        <button className={exportBtn} onClick={() => splunk.onExport('hec')}><Download size={14} /> Timeline as HEC events (.json)</button>
+        {splunk.connected && (
+          <button className={`${exportBtn} !bg-signal !text-signal-ink !border-transparent hover:brightness-110`} onClick={splunk.onSendHec} disabled={!incident.events.length}>
+            <Send size={14} /> Send timeline to Splunk ({incident.events.length})
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function IntelPanel({ open, onClose, tab, onTab, incident, onCopied, splunk }) {
   if (!open) return null;
   const iocCount = aggregateIocs(incident.iocIndex, PHASES).size;
   const tabs = [
     { id: 'timeline', label: 'Timeline', count: incident.events.length },
     { id: 'iocs', label: 'IOCs', count: iocCount },
+    { id: 'splunk', label: 'Splunk', count: null },
   ];
   return (
     <>
-      <div className="fixed inset-0 z-30 bg-black/50 xl:hidden" onClick={onClose} />
+      <div className="fixed inset-0 z-30 scrim xl:hidden" onClick={onClose} />
       <aside
         aria-label="Incident intel"
         className="anim-in fixed right-0 inset-y-0 z-40 w-[360px] max-w-[90vw] xl:static xl:z-auto xl:w-[340px] shrink-0 border-l border-line bg-surface flex flex-col min-h-0"
@@ -163,7 +183,7 @@ export function IntelPanel({ open, onClose, tab, onTab, incident, onCopied }) {
               className={`px-3 py-1.5 rounded-lg text-[13px] font-medium flex items-center gap-2 transition ${tab === t.id ? 'bg-raised text-ink ring-1 ring-line-2' : 'text-ink-3 hover:text-ink'}`}
             >
               {t.label}
-              <span className="tabular text-[11px] text-ink-3">{t.count}</span>
+              {t.count !== null && <span className="tabular text-[11px] text-ink-3">{t.count}</span>}
             </button>
           ))}
           <button onClick={onClose} aria-label="Close timeline" className="ml-auto w-8 h-8 rounded-lg flex items-center justify-center text-ink-3 hover:text-ink hover:bg-hover">
@@ -171,9 +191,9 @@ export function IntelPanel({ open, onClose, tab, onTab, incident, onCopied }) {
           </button>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto">
-          {tab === 'timeline'
-            ? <Timeline events={incident.events} startTime={incident.startTime} />
-            : <IocIndex iocIndex={incident.iocIndex} onCopied={onCopied} />}
+          {tab === 'timeline' && <Timeline events={incident.events} startTime={incident.startTime} />}
+          {tab === 'iocs' && <IocIndex iocIndex={incident.iocIndex} onCopied={onCopied} />}
+          {tab === 'splunk' && <SplunkHunt incident={incident} onCopied={onCopied} splunk={splunk} />}
         </div>
       </aside>
     </>

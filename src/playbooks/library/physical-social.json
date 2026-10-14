@@ -1,0 +1,642 @@
+{
+  "category": {
+    "id": "physical-social",
+    "name": "Physical & social engineering",
+    "description": "On-site intrusions and human manipulation: tailgating, rogue devices, badge misuse, vishing, help desk pretexting and USB drops."
+  },
+  "playbooks": [
+    {
+      "id": "lib-physical-social-tailgating-intrusion",
+      "name": "Unauthorized person tailgated into a secured office area",
+      "summary": "Use when someone followed an employee through a badge-controlled door without badging, was seen inside, and you need to know where they went and what they touched.",
+      "tags": [
+        "physical-security",
+        "tailgating",
+        "intrusion",
+        "badge-access"
+      ],
+      "attack": [
+        "T1200"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Keep CCTV footage for at least 30 days on doors to secure areas",
+          "Send badge reader events to the SIEM with door names and badge holder IDs",
+          "Agree with facilities on who can pull CCTV and badge logs at short notice"
+        ],
+        "identification": [
+          "Pull CCTV for the entry door at the reported time and capture images of the person",
+          "Match the entry against badge logs to identify which employee badged in with them",
+          "Trace the person's route through internal cameras and note rooms entered",
+          "Interview the employee who held the door and any staff who spoke with the person",
+          "Check the visitor log and reception sign-in for a matching name"
+        ],
+        "containment": [
+          "Have security escort the person out if still on site and record their details",
+          "Sweep the rooms they entered for left-behind devices, cables or USB drives",
+          "Check desks and printers in those rooms for missing documents or equipment"
+        ],
+        "eradication": [
+          "Inspect network ports and conference room equipment in visited areas for rogue devices",
+          "Lock workstations left unlocked in the visited area and check them for new logins",
+          "Report the intrusion to police if theft or damage is found"
+        ],
+        "recovery": [
+          "Confirm all equipment in visited areas is accounted for",
+          "Reissue access instructions to staff on challenging people without visible badges",
+          "Restore normal door operation after any temporary guard posting"
+        ],
+        "lessons": [
+          "Record which door was tailgated and whether it has anti-tailgating hardware",
+          "Add a door-held-open alarm alert to the SOC queue for that entrance",
+          "Run a follow-up tailgating test to measure staff challenge rates"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Badge events at the door around the intrusion time",
+          "phase": "identification",
+          "spl": "index=physical sourcetype=<badge_system> door=\"<door_name>\" earliest=<start_time> latest=<end_time> | table _time badge_id cardholder event_type door"
+        },
+        {
+          "title": "Door held or forced open alarms",
+          "phase": "lessons",
+          "spl": "index=physical sourcetype=<badge_system> event_type IN (door_held_open, door_forced_open) earliest=-30d | stats count by door event_type | sort - count"
+        },
+        {
+          "title": "Network port activity in visited rooms",
+          "phase": "eradication",
+          "spl": "index=network sourcetype=cisco:ios (\"%LINK-3-UPDOWN\" OR \"%DOT1X\") host=<access_switch> earliest=<start_time> | table _time host interface message"
+        }
+      ]
+    },
+    {
+      "id": "lib-physical-social-rogue-drop-box",
+      "name": "Rogue device found plugged into the network",
+      "summary": "Use when staff find an unfamiliar small computer, wireless access point, or network implant connected to a port, power strip or behind equipment, possibly left by an intruder.",
+      "tags": [
+        "physical-security",
+        "rogue-device",
+        "drop-box",
+        "network-implant",
+        "nac"
+      ],
+      "attack": [
+        "T1200",
+        "T1557",
+        "T1133"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable 802.1X or NAC on wired ports so unknown devices land in a quarantine VLAN",
+          "Keep switch port mapping current so a MAC address can be traced to a wall jack",
+          "Set up wireless intrusion detection for rogue access points"
+        ],
+        "identification": [
+          "Photograph the device in place, including cables, labels and the port it uses",
+          "Record the device MAC address and look it up in DHCP leases and switch MAC tables",
+          "Find the first time the MAC appeared on the network and what IPs it used",
+          "Review firewall logs for outbound connections from the device, such as VPN or cellular backhaul",
+          "Pull CCTV and badge logs for the area to find who placed the device"
+        ],
+        "containment": [
+          "Shut down the switch port the device is connected to",
+          "Block the device's outbound destinations at the firewall",
+          "Bag the device as evidence with chain of custody without powering it on again"
+        ],
+        "eradication": [
+          "Hunt for traffic from the device's IP to internal servers and treat accessed systems as exposed",
+          "Reset credentials for any service the device captured traffic from",
+          "Sweep other network closets and conference rooms for similar devices"
+        ],
+        "recovery": [
+          "Re-enable the port with NAC enforcement",
+          "Hand the device to forensics or law enforcement for analysis",
+          "Confirm no further unknown MAC addresses on the access layer"
+        ],
+        "lessons": [
+          "Record why the port allowed an unknown device and fix NAC coverage gaps",
+          "Add a detection for new MAC addresses on access switches outside change windows",
+          "Review physical access to the area where the device was found"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "DHCP leases for the rogue MAC",
+          "phase": "identification",
+          "spl": "index=* sourcetype=DhcpSrvLog OR sourcetype=infoblox:dhcp dest_mac=\"<mac_address>\" | stats min(_time) as first max(_time) as last values(dest_ip) as ips values(dest_nt_host) as names | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Outbound traffic from the device",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count sum(All_Traffic.bytes_out) as bytes_out from datamodel=Network_Traffic where All_Traffic.src_ip=<device_ip> by All_Traffic.dest_ip All_Traffic.dest_port All_Traffic.app | sort - bytes_out"
+        },
+        {
+          "title": "Internal systems contacted by the device",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=pan:traffic src_ip=<device_ip> dest_zone=internal | stats count values(dest_port) as ports by dest_ip app"
+        }
+      ]
+    },
+    {
+      "id": "lib-physical-social-helpdesk-password-reset",
+      "name": "Help desk socially engineered into resetting a user's password or MFA",
+      "summary": "Use when a caller posing as an employee convinced the service desk to reset a password or enroll a new MFA device, and the attacker may now hold that account.",
+      "tags": [
+        "social-engineering",
+        "help-desk",
+        "password-reset",
+        "mfa-reset",
+        "account-takeover"
+      ],
+      "attack": [
+        "T1656",
+        "T1098.005",
+        "T1078"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Require identity verification by video with ID or a manager callback before MFA resets",
+          "Record help desk calls and log every reset with the ticket number",
+          "Alert the SOC on any MFA method change made by a help desk agent"
+        ],
+        "identification": [
+          "Pull the ticket and call recording for the reset and record the caller ID and verification answers",
+          "Confirm with the real employee through their manager that they did not call",
+          "Review sign-ins to the account after the reset for new IPs and devices",
+          "List actions taken by the account since the reset, such as mailbox, VPN or SaaS access",
+          "Search help desk tickets for other resets from the same caller number or pattern"
+        ],
+        "containment": [
+          "Disable the account and revoke all sessions",
+          "Remove the MFA device the attacker enrolled",
+          "Freeze further help desk resets for privileged accounts pending review"
+        ],
+        "eradication": [
+          "Reverse any access, group or role changes made by the attacker",
+          "Check whether the attacker used the account to call the help desk again for other users",
+          "Reset the account again with in-person verification for the real employee"
+        ],
+        "recovery": [
+          "Re-enable the employee with a phishing-resistant MFA method",
+          "Brief all help desk agents on the caller's script and number",
+          "Restore normal reset handling once new verification steps are in place"
+        ],
+        "lessons": [
+          "Record which verification step was weak or skipped and replace it",
+          "Add a detection for an MFA reset followed by sign-in from a new country within an hour",
+          "Measure how many resets are verified by video or manager callback"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "MFA method changes by help desk agents",
+          "phase": "identification",
+          "spl": "index=* sourcetype=azure:aad:audit activityDisplayName IN (\"Admin registered security info\", \"Admin deleted security info\", \"Reset user password\", \"Reset password (by admin)\") earliest=-7d | table _time initiatedBy.user.userPrincipalName activityDisplayName targetResources{}.userPrincipalName"
+        },
+        {
+          "title": "Sign-ins after the reset",
+          "phase": "identification",
+          "spl": "index=* sourcetype=azure:aad:signin userPrincipalName=<suspect_user> earliest=<reset_time> | stats count values(appDisplayName) as apps by ipAddress location.countryOrRegion deviceDetail.displayName"
+        }
+      ]
+    },
+    {
+      "id": "lib-physical-social-stolen-badge",
+      "name": "Employee access badge lost or stolen and possibly used",
+      "summary": "Use when a badge is reported lost or stolen, especially if badge logs show it being used after the report or in places the owner was not.",
+      "tags": [
+        "physical-security",
+        "badge",
+        "access-control",
+        "stolen-credential"
+      ],
+      "attack": [
+        "T1200"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Give staff a 24-hour way to report a lost badge that reaches security immediately",
+          "Make sure badge deactivation takes effect on every reader within minutes",
+          "Check whether badges double as smart cards for workstation login"
+        ],
+        "identification": [
+          "Record when and where the badge was lost and when it was last used by the owner",
+          "Pull badge reader logs for the badge from the last known good use until now",
+          "Pull CCTV for any reader where the badge was used after it was reported lost",
+          "Check whether the badge holds a smart card certificate for logon or VPN"
+        ],
+        "containment": [
+          "Deactivate the badge in the access control system",
+          "Revoke any smart card certificate tied to the badge",
+          "Alert guards to stop anyone presenting that badge"
+        ],
+        "eradication": [
+          "Inspect areas entered with the badge after the loss for tampering or missing items",
+          "Check for logins to workstations near those doors at the matching times",
+          "Report the theft to police if the badge was stolen"
+        ],
+        "recovery": [
+          "Issue a new badge with a new card number to the employee",
+          "Confirm the old badge number shows as denied on readers",
+          "Review the employee's access level while issuing the new badge"
+        ],
+        "lessons": [
+          "Record the time between the loss and deactivation",
+          "Add an alert for any attempt to use a deactivated badge",
+          "Decide whether badges should show less information, such as the company name"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Use of the badge since the last good use",
+          "phase": "identification",
+          "spl": "index=physical sourcetype=<badge_system> badge_id=<badge_id> earliest=<last_known_good> | table _time door event_type result"
+        },
+        {
+          "title": "Attempts to use deactivated badges",
+          "phase": "lessons",
+          "spl": "index=physical sourcetype=<badge_system> result=denied reason IN (inactive, lost, revoked) earliest=-30d | stats count values(door) as doors by badge_id cardholder"
+        }
+      ]
+    },
+    {
+      "id": "lib-physical-social-vishing-employees",
+      "name": "Vishing calls to employees fishing for credentials or internal details",
+      "summary": "Use when several staff report phone calls from someone claiming to be IT, a vendor or an executive, asking for passwords, MFA codes, VPN details or internal information.",
+      "tags": [
+        "social-engineering",
+        "vishing",
+        "phone",
+        "pretexting"
+      ],
+      "attack": [
+        "T1598.004",
+        "T1656",
+        "T1589"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Publish a clear rule that IT never asks for passwords or MFA codes by phone",
+          "Keep phone system call detail records long enough to trace inbound calls",
+          "Give staff a quick reporting channel for suspicious calls"
+        ],
+        "identification": [
+          "Collect caller ID, time, pretext and questions asked from each reporting employee",
+          "Search call detail records for the same caller ID calling other extensions",
+          "Check whether any employee gave a password, MFA code or remote session",
+          "Note what internal details the caller already knew, such as names and system names"
+        ],
+        "containment": [
+          "Reset credentials for any employee who shared a password or code",
+          "Block the caller ID numbers on the phone system",
+          "Warn staff about the active campaign with the pretext used"
+        ],
+        "eradication": [
+          "Review sign-ins for employees who shared details for attacker activity",
+          "Report the numbers to the phone carrier",
+          "Restrict the internal directory information that the caller seemed to know"
+        ],
+        "recovery": [
+          "Confirm accounts of affected employees show only their own activity",
+          "Thank staff who reported and share how the pretext worked",
+          "Keep monitoring call detail records for the same numbers for 30 days"
+        ],
+        "lessons": [
+          "Record how the caller got staff direct dial numbers",
+          "Add a detection for one external number calling many internal extensions in a short period",
+          "Include the pretext in the next awareness session"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "External numbers calling many extensions",
+          "phase": "identification",
+          "spl": "index=voice sourcetype=<cdr_sourcetype> direction=inbound earliest=-7d | stats dc(called_extension) as extensions count by calling_number | where extensions>5 | sort - extensions"
+        },
+        {
+          "title": "Sign-ins for employees who shared details",
+          "phase": "eradication",
+          "spl": "index=* sourcetype=azure:aad:signin userPrincipalName IN (<affected_users>) earliest=-3d | stats count values(ipAddress) as ips by userPrincipalName appDisplayName status.errorCode"
+        }
+      ]
+    },
+    {
+      "id": "lib-physical-social-document-theft-dumpster-diving",
+      "name": "Sensitive documents recovered from trash or stolen from the office",
+      "summary": "Use when confidential paper records were found in open recycling or dumpsters, or someone was seen taking printouts, and you must work out what data was exposed.",
+      "tags": [
+        "physical-security",
+        "dumpster-diving",
+        "document-theft",
+        "data-exposure"
+      ],
+      "attack": [
+        "T1591",
+        "T1589"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Provide locked shred bins near printers and in every department",
+          "Use a certified shredding vendor with certificates of destruction",
+          "Enable secure print release so documents only print at the device when the user badges"
+        ],
+        "identification": [
+          "Inventory the recovered documents and classify the data types they contain",
+          "Identify the department and print job owners using print server logs",
+          "Determine how long the documents were exposed and who had access to the bin",
+          "Review CCTV of the bin area or dumpster for people searching it"
+        ],
+        "containment": [
+          "Secure the remaining documents and move the bin to a locked area",
+          "Collect any other unsecured documents in the same area",
+          "Notify the shredding vendor if their pickup was missed or bins were left open"
+        ],
+        "eradication": [
+          "Rotate any passwords, account numbers or access codes printed in the documents",
+          "Escalate to legal and privacy for a breach assessment if personal data was exposed",
+          "Report trespassing on the property to building management"
+        ],
+        "recovery": [
+          "Shred the recovered documents once the investigation no longer needs them",
+          "Confirm the department is using locked shred bins",
+          "Notify affected individuals if legal determines notice is required"
+        ],
+        "lessons": [
+          "Record which policy or vendor process failed",
+          "Add print server reports for large print jobs containing sensitive labels",
+          "Run a clean-desk and bin audit across offices"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Print jobs matching the recovered documents",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"WinEventLog:Microsoft-Windows-PrintService/Operational\" EventCode=307 Document=\"*<document_name>*\" | table _time host Param3 Param5 Param6"
+        },
+        {
+          "title": "Large sensitive print jobs by user",
+          "phase": "lessons",
+          "spl": "index=* sourcetype=\"WinEventLog:Microsoft-Windows-PrintService/Operational\" EventCode=307 earliest=-30d | stats count sum(Param8) as pages by Param3 | sort - pages"
+        }
+      ]
+    },
+    {
+      "id": "lib-physical-social-fake-vendor-technician",
+      "name": "Fake vendor technician gained access to the site",
+      "summary": "Use when someone posing as an HVAC, copier, elevator, ISP or IT vendor technician was let in, possibly into network closets, and their visit cannot be matched to any real work order.",
+      "tags": [
+        "physical-security",
+        "impersonation",
+        "vendor",
+        "pretexting",
+        "on-site"
+      ],
+      "attack": [
+        "T1656",
+        "T1200"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Require vendors to be on a scheduled work order list held by reception and facilities",
+          "Escort all vendor technicians in network closets and data rooms",
+          "Keep a vendor contact list so reception can confirm a visit by phone"
+        ],
+        "identification": [
+          "Check the visitor log and the vendor's real dispatch team for the claimed work order",
+          "Pull CCTV and badge logs for the areas the technician entered",
+          "List all equipment the technician touched, opened or connected to",
+          "Interview staff who let the technician in and record what ID was shown"
+        ],
+        "containment": [
+          "Inspect every network closet, printer and device the technician accessed for added hardware",
+          "Shut network ports that show new devices since the visit",
+          "Alert reception at other sites to refuse entry to the same person"
+        ],
+        "eradication": [
+          "Remove and preserve any implanted device or altered cabling",
+          "Check copiers or printers serviced by the technician for firmware or address book changes",
+          "Report the impersonation to the real vendor and to police"
+        ],
+        "recovery": [
+          "Restore equipment configuration from backups if it was changed",
+          "Brief reception and facilities on the vendor verification steps",
+          "Confirm the network shows no new unknown devices for 14 days"
+        ],
+        "lessons": [
+          "Record which check would have stopped the entry and make it mandatory",
+          "Add an alert for network closet doors opened by visitor badges",
+          "Run a pretext test with a fake technician to measure reception's response"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Door activity in network closets during the visit",
+          "phase": "identification",
+          "spl": "index=physical sourcetype=<badge_system> door IN (<closet_doors>) earliest=<visit_start> latest=<visit_end> | table _time door badge_id cardholder event_type"
+        },
+        {
+          "title": "New MAC addresses on switches since the visit",
+          "phase": "containment",
+          "spl": "index=* sourcetype=DhcpSrvLog earliest=<visit_start> | stats min(_time) as first values(dest_ip) as ips by dest_mac | where first>=strptime(\"<visit_start>\", \"%Y-%m-%d %H:%M\") | convert ctime(first)"
+        }
+      ]
+    },
+    {
+      "id": "lib-physical-social-usb-drop",
+      "name": "USB drives found in the parking lot or lobby",
+      "summary": "Use when one or more unknown USB drives are found on the premises, possibly dropped deliberately, and someone may already have plugged one into a work computer.",
+      "tags": [
+        "physical-security",
+        "usb-drop",
+        "removable-media",
+        "malware"
+      ],
+      "attack": [
+        "T1091",
+        "T1200",
+        "T1204.002"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Block mass storage USB devices on endpoints except approved encrypted models",
+          "Log USB device insertions with vendor and serial in EDR",
+          "Give staff a drop-off point for found media instead of plugging it in"
+        ],
+        "identification": [
+          "Collect all found drives, record where and when each was found, and bag them",
+          "Search EDR for any USB insertions of the same vendor and product IDs on endpoints",
+          "Analyze one drive on an isolated forensic workstation to see if it is storage or a keystroke injector",
+          "Check CCTV of the parking lot or lobby for who dropped the drives"
+        ],
+        "containment": [
+          "Isolate any endpoint where one of the drives was inserted",
+          "Block the drive's vendor and serial IDs in device control policy",
+          "Ask all staff to hand in any other found drives"
+        ],
+        "eradication": [
+          "Remove payloads or persistence from any endpoint where the drive ran",
+          "Reset credentials for users of affected endpoints",
+          "Preserve drives as evidence for law enforcement if malware is found"
+        ],
+        "recovery": [
+          "Return cleaned endpoints after EDR scans",
+          "Confirm device control policy applies to all endpoints",
+          "Tell staff the result and thank those who handed in drives"
+        ],
+        "lessons": [
+          "Record whether any drive was plugged in and why device control did not block it",
+          "Add a detection for HID devices that type commands immediately after insertion",
+          "Run a sanctioned USB drop test to measure staff behavior"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "USB insertions matching the found drives",
+          "phase": "identification",
+          "spl": "index=* sourcetype=\"XmlWinEventLog:Microsoft-Windows-Kernel-PnP/Configuration\" OR sourcetype=WinEventLog:Security EventCode IN (6416, 400) earliest=-7d | search DeviceDescription=\"*USB*\" OR ClassName=DiskDrive | stats count values(host) as hosts by DeviceId DeviceDescription"
+        },
+        {
+          "title": "Processes launched from removable drives",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.process_path IN (\"D:\\\\*\", \"E:\\\\*\", \"F:\\\\*\") by Processes.dest Processes.user Processes.process_name Processes.process_path"
+        }
+      ]
+    },
+    {
+      "id": "lib-physical-social-impersonated-it-call",
+      "name": "Caller posing as internal IT got an employee to install remote support",
+      "summary": "Use when someone phoned an employee claiming to be the company's IT department, often after spam floods, and walked them through opening Quick Assist or installing a remote tool.",
+      "tags": [
+        "social-engineering",
+        "it-impersonation",
+        "remote-access",
+        "quick-assist",
+        "vishing"
+      ],
+      "attack": [
+        "T1656",
+        "T1219",
+        "T1566.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Restrict Quick Assist and remote support tools to IT staff with application control",
+          "Tell staff how real IT contacts them and that IT always uses ticket numbers",
+          "Alert on new remote support sessions to workstations outside IT tickets"
+        ],
+        "identification": [
+          "Record the caller ID, the name the caller used and any ticket number they gave",
+          "Check whether the user received a spam flood or Teams message before the call",
+          "Find the remote session in EDR or the tool's logs and note start time and duration",
+          "List commands, scripts or files run during the session",
+          "Check whether the caller asked the user to sign in or approve MFA during the session"
+        ],
+        "containment": [
+          "Isolate the workstation and end the remote session",
+          "Revoke the user's sessions and reset their password",
+          "Block the remote tool's relay domains for unapproved use"
+        ],
+        "eradication": [
+          "Remove any tool, script or scheduled task left by the caller",
+          "Reimage the workstation if the caller ran unknown binaries",
+          "Check for lateral movement from the workstation using the user's credentials"
+        ],
+        "recovery": [
+          "Return the user to work on a clean device",
+          "Send staff a warning that describes the caller's script",
+          "Watch for repeat calls to the same department"
+        ],
+        "lessons": [
+          "Record whether Quick Assist was allowed for normal users and remove it if not needed",
+          "Add a detection for remote support sessions started shortly after an email bombing event",
+          "Decide whether IT should use an in-app verification step when calling users"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Quick Assist and remote tools started by non-IT users",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Endpoint.Processes where Processes.process_name IN (quickassist.exe, anydesk.exe, screenconnect*.exe, teamviewer.exe) NOT Processes.user IN (<it_staff>) by Processes.dest Processes.user Processes.process_name | convert ctime(first)"
+        },
+        {
+          "title": "Spam flood to the user before the call",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Email where All_Email.recipient=\"<suspect_user>\" by _time span=10m | where count>50"
+        }
+      ]
+    },
+    {
+      "id": "lib-physical-social-server-room-after-hours",
+      "name": "After-hours unauthorized entry into the server room or data closet",
+      "summary": "Use when badge logs, alarms or CCTV show someone entering a server room, data center cage or wiring closet outside working hours without a change ticket.",
+      "tags": [
+        "physical-security",
+        "server-room",
+        "after-hours",
+        "insider",
+        "access-control"
+      ],
+      "attack": [
+        "T1200",
+        "T1078"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Restrict server room badge access to a named list reviewed every quarter",
+          "Send server room door events and rack door sensors to the SIEM",
+          "Keep console and KVM login logs for servers in the room"
+        ],
+        "identification": [
+          "Identify the badge used and the holder's name and role",
+          "Pull CCTV for the room and note which racks the person opened",
+          "Check for an approved change ticket or on-call callout covering the entry",
+          "Review console, iLO, iDRAC and KVM logins during the entry window",
+          "Check switch logs for port changes and new links in the room at that time"
+        ],
+        "containment": [
+          "Suspend the badge pending review if the entry is unexplained",
+          "Inspect the opened racks for added devices, removed drives or cabling changes",
+          "Disable accounts used for console logins during the window"
+        ],
+        "eradication": [
+          "Remove and preserve any device added to the racks",
+          "Check servers for boot changes, new local accounts or USB insertions",
+          "Escalate to HR and legal if an employee entered without authorization"
+        ],
+        "recovery": [
+          "Restore server room access only to staff with a current need",
+          "Confirm all drives and hardware match the asset inventory",
+          "Re-enable accounts after password resets"
+        ],
+        "lessons": [
+          "Record why the badge had server room access and whether it should have",
+          "Add an alert for server room entry outside business hours without a linked change ticket",
+          "Review whether two-person rules are needed for the room"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Server room entries outside business hours",
+          "phase": "identification",
+          "spl": "index=physical sourcetype=<badge_system> door IN (<server_room_doors>) result=granted earliest=-30d | eval hour=tonumber(strftime(_time, \"%H\")) | where hour<7 OR hour>19 | table _time door badge_id cardholder"
+        },
+        {
+          "title": "Console and BMC logins during the entry",
+          "phase": "identification",
+          "spl": "index=* (sourcetype=WinEventLog:Security EventCode=4624 Logon_Type=2) OR sourcetype=<bmc_audit> earliest=<entry_start> latest=<entry_end> | table _time host user Logon_Type src"
+        }
+      ]
+    }
+  ]
+}

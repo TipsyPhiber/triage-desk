@@ -30,12 +30,23 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      - name: Build (hosted + single file)
+      - name: Playbook library quality gate
+        run: npm run library:check
+
+      - name: Build (offline + connected, hosted + single file)
         run: |
           npm run build
           npm run build:single
+          npm run build:connected
           test -f dist/index.html
           test -f dist-single/triage-desk.html
+          test -f dist-connected/index.html
+          test -f dist-connected-single/triage-desk-connected.html
+          # the offline editions must never be able to reach the network
+          node scripts/check-csp.mjs dist/index.html offline
+          node scripts/check-csp.mjs dist-single/triage-desk.html offline
+          node scripts/check-csp.mjs dist-connected/index.html connected
+          node scripts/check-csp.mjs dist-connected-single/triage-desk-connected.html connected
 
       - name: Install browsers
         run: npx playwright install --with-deps chromium firefox webkit
@@ -52,6 +63,9 @@ jobs:
           if npm run license:keygen; then echo "keygen overwrote an existing key"; exit 1; fi
           KEY=$(npm run -s license:issue -- --name "CI Org" --email ci@example.test --seats 2 --updates-until 2099-01-01)
           npm run -s license:verify -- "$KEY"
+          CKEY=$(npm run -s license:issue -- --name "CI Org" --email ci@example.test --plan connected)
+          npm run -s license:verify -- "$CKEY" | grep -qi connected
+          if npm run -s license:issue -- --name x --email y --plan bogus; then echo "bad plan accepted"; exit 1; fi
           # a tampered key must fail verification
           if npm run -s license:verify -- "${KEY}x"; then echo "tampered key verified"; exit 1; fi
 
@@ -60,6 +74,7 @@ jobs:
           npm run release
           ls release
           test -f release/triage-desk-v*.zip
+          test -f release/triage-desk-v*/connected/triage-desk-connected.html
 
       - name: Upload browser test report
         if: failure()

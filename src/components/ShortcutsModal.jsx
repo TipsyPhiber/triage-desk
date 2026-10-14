@@ -2,10 +2,12 @@ import { Keyboard } from 'lucide-react';
 import { Kbd, Modal } from './Modal.jsx';
 
 export const SHORTCUTS = [
+  { keys: ['Ctrl', 'K'], label: 'Command palette: search anything, run any action' },
   { keys: ['1', '–', '6'], label: 'Jump to phase' },
   { keys: ['N'], label: 'Write a quick note' },
-  { keys: ['T'], label: 'Toggle timeline & IOC panel' },
+  { keys: ['T'], label: 'Toggle timeline, IOC & Splunk panel' },
   { keys: ['C'], label: 'New incident' },
+  { keys: ['I'], label: 'Import a Splunk alert' },
   { keys: ['?'], label: 'Show this list' },
   { keys: ['Esc'], label: 'Close dialogs and panels' },
 ];

@@ -1,5 +1,6 @@
 import { PHASES } from '../data.js';
 import { BUILTIN_PLAYBOOKS, GENERAL_PLAYBOOK_ID } from '../playbooks/builtins.js';
+import { LIBRARY_PLAYBOOKS } from '../playbooks/library.js';
 
 export const PLAYBOOK_FILE_FORMAT = 'triage-desk-playbook';
 const MAX_NAME = 120;
@@ -28,6 +29,26 @@ export function sanitizeTasks(raw) {
   return out;
 }
 
+const MAX_SEARCHES = 24;
+const PHASE_IDS = new Set(PHASES.map((p) => p.id));
+
+// Saved Splunk searches travel with the incident snapshot, like tasks.
+export function sanitizeSearches(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const s of raw) {
+    if (out.length >= MAX_SEARCHES) break;
+    if (!s || typeof s !== 'object') continue;
+    if (typeof s.spl !== 'string' || !s.spl.trim() || s.spl.length > 4000) continue;
+    out.push({
+      title: typeof s.title === 'string' ? s.title.slice(0, 120) : 'Search',
+      phase: PHASE_IDS.has(s.phase) ? s.phase : 'identification',
+      spl: s.spl,
+    });
+  }
+  return out;
+}
+
 export function newPlaybookId() {
   const rand = Math.random().toString(36).slice(2, 10);
   return `custom-${Date.now().toString(36)}-${rand}`;
@@ -49,6 +70,8 @@ export function sanitizePlaybook(raw, { keepId = true } = {}) {
     tier: 'pro',
     builtIn: false,
     tasks: sanitizeTasks(raw.tasks),
+    splunk: sanitizeSearches(raw.splunk),
+    attack: Array.isArray(raw.attack) ? raw.attack.filter((t) => typeof t === 'string' && /^T\d{4}(\.\d{3})?$/.test(t)).slice(0, 20) : [],
   };
 }
 
@@ -66,7 +89,7 @@ export function sanitizeCustomPlaybooks(raw) {
 }
 
 export function allPlaybooks(customPlaybooks) {
-  return [...BUILTIN_PLAYBOOKS, ...(customPlaybooks || [])];
+  return [...BUILTIN_PLAYBOOKS, ...LIBRARY_PLAYBOOKS, ...(customPlaybooks || [])];
 }
 
 export function findPlaybook(id, customPlaybooks) {
@@ -87,6 +110,8 @@ export function duplicatePlaybook(pb) {
     tier: 'pro',
     builtIn: false,
     tasks: sanitizeTasks(pb.tasks),
+    splunk: sanitizeSearches(pb.splunk),
+    attack: [...(pb.attack || [])],
   };
 }
 
@@ -97,6 +122,8 @@ export function serializePlaybook(pb) {
     name: pb.name,
     description: pb.description,
     tasks: pb.tasks,
+    splunk: pb.splunk || [],
+    attack: pb.attack || [],
   }, null, 2);
 }
 

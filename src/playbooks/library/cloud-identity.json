@@ -1,0 +1,1836 @@
+{
+  "category": {
+    "id": "cloud-identity",
+    "name": "Cloud identity & SSO",
+    "description": "Identity attacks across Entra ID, Okta, Google Workspace, and Duo: token theft, MFA abuse, OAuth consent, federation persistence, and admin takeover."
+  },
+  "playbooks": [
+    {
+      "id": "lib-cloud-identity-impossible-travel",
+      "name": "Impossible travel sign-in for a single user",
+      "summary": "Use when one user successfully signs in from two distant locations faster than travel allows, in Entra ID, Okta, or Google Workspace logs.",
+      "tags": [
+        "cloud-identity",
+        "entra-id",
+        "okta",
+        "impossible-travel"
+      ],
+      "attack": [
+        "T1078.004"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Ingest Entra sign-in logs, Okta System Log, and Google login audit into the SIEM",
+          "Maintain a lookup of corporate VPN egress and SASE IP ranges",
+          "Know how to revoke sessions in each IdP for a single user"
+        ],
+        "identification": [
+          "Compare the two sign-in IPs, ASNs, and user agents against the user's 30-day history",
+          "Rule out VPN, SASE, or mobile carrier egress as the cause of the second location",
+          "Check whether MFA was satisfied or a token was replayed for the distant sign-in",
+          "Contact the user out of band to confirm their actual location"
+        ],
+        "containment": [
+          "Revoke the user's sessions and refresh tokens in the IdP",
+          "Reset the user's password if the distant sign-in is not theirs",
+          "Block the suspicious IP in a named location or network zone"
+        ],
+        "eradication": [
+          "Review mailbox rules, OAuth grants, and MFA methods added from the suspicious session",
+          "Remove any devices registered from the suspicious location",
+          "Re-register MFA methods with the user present"
+        ],
+        "recovery": [
+          "Confirm the user can sign in from their real location after reset",
+          "Monitor the account for new-country sign-ins for 14 days",
+          "Close the alert with the verified cause recorded"
+        ],
+        "lessons": [
+          "Tune impossible travel rules with known VPN egress to cut false positives",
+          "Report the true positive rate of impossible travel alerts",
+          "Consider sign-in risk conditional access for unfamiliar locations"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Successful sign-ins by country for the user",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" userPrincipalName=\"<suspect_user>\" status.errorCode=0 | iplocation ipAddress | table _time, ipAddress, Country, City, appDisplayName, userAgent | sort _time"
+        },
+        {
+          "title": "Okta sign-ins for the user with geo",
+          "phase": "identification",
+          "spl": "index=okta sourcetype=\"okta:im2\" eventType=\"user.session.start\" actor.alternateId=\"<suspect_user>\" | table _time, client.ipAddress, client.geographicalContext.country, client.userAgent.rawUserAgent, outcome.result"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-token-replay",
+      "name": "Stolen session cookie or PRT replayed to bypass MFA",
+      "summary": "Use when a session token, cookie, or Primary Refresh Token is used from a new device or IP without a fresh MFA prompt, often after infostealer malware or AiTM phishing.",
+      "tags": [
+        "cloud-identity",
+        "token-theft",
+        "session-hijack",
+        "entra-id"
+      ],
+      "attack": [
+        "T1539",
+        "T1550.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable token protection or continuous access evaluation for supported apps",
+          "Collect Entra non-interactive sign-in logs, not just interactive",
+          "Deploy EDR detections for browser cookie database access by non-browser processes"
+        ],
+        "identification": [
+          "Find non-interactive sign-ins sharing the user's session ID from a new IP or ASN",
+          "Check the user's endpoint for infostealer activity or AiTM phishing clicks",
+          "Compare device ID and compliance state between original and replayed sessions",
+          "List resources accessed by the replayed session such as mail, files, and admin portals"
+        ],
+        "containment": [
+          "Revoke all refresh tokens and sessions for the user",
+          "Disable the device object if a PRT from that device was stolen",
+          "Block the attacker IP in conditional access named locations"
+        ],
+        "eradication": [
+          "Reimage the endpoint that leaked the token",
+          "Reset the user password and any credentials saved in the browser",
+          "Remove inbox rules, OAuth consents, or MFA methods created by the attacker"
+        ],
+        "recovery": [
+          "Re-register the device and require compliant device for the user's sign-ins",
+          "Monitor for further session ID reuse from new IPs",
+          "Confirm continuous access evaluation is enforced for Exchange and SharePoint"
+        ],
+        "lessons": [
+          "Add detection for one session ID used from multiple ASNs",
+          "Track infostealer infections and their link to token theft",
+          "Evaluate phishing-resistant MFA to reduce AiTM token capture"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Session ID used from multiple IPs",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" userPrincipalName=\"<suspect_user>\" | stats dc(ipAddress) as ips values(ipAddress) as addrs values(deviceDetail.deviceId) as devices by sessionId | where ips > 1"
+        },
+        {
+          "title": "Browser cookie store access by non-browser processes",
+          "phase": "identification",
+          "spl": "index=sysmon sourcetype=\"XmlWinEventLog:Microsoft-Windows-Sysmon/Operational\" EventCode IN (10,11) (TargetFilename=\"*\\\\Network\\\\Cookies\" OR TargetFilename=\"*\\\\Login Data\") NOT Image IN (\"*\\\\chrome.exe\",\"*\\\\msedge.exe\",\"*\\\\firefox.exe\") | table _time, host, Image, TargetFilename"
+        },
+        {
+          "title": "Okta session reuse from new IPs",
+          "phase": "identification",
+          "spl": "index=okta sourcetype=\"okta:im2\" actor.alternateId=\"<suspect_user>\" | stats dc(client.ipAddress) as ips values(client.ipAddress) as addrs by authenticationContext.externalSessionId | where ips > 1"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-mfa-method-added",
+      "name": "New MFA method registered by an attacker",
+      "summary": "Use when a phone number, authenticator app, or FIDO key is added to a user's account from an unfamiliar location or right after a suspicious sign-in.",
+      "tags": [
+        "cloud-identity",
+        "mfa",
+        "persistence",
+        "account-manipulation"
+      ],
+      "attack": [
+        "T1098.005"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Alert on MFA method registration in Entra audit logs and Okta factor enrollment events",
+          "Require MFA or a Temporary Access Pass to register new security info",
+          "Restrict security info registration to trusted locations or compliant devices"
+        ],
+        "identification": [
+          "Find the audit event registering the new method and the IP and user agent used",
+          "Correlate the registration with the preceding sign-in and its risk level",
+          "Ask the user whether they added the method",
+          "Check whether the new method was then used to satisfy MFA from a new location"
+        ],
+        "containment": [
+          "Delete the attacker-registered MFA method",
+          "Revoke sessions and reset the user password",
+          "Require re-registration of all methods with identity verification"
+        ],
+        "eradication": [
+          "Check other users for methods registered from the same IP or device",
+          "Remove mailbox rules and app consents created during the session",
+          "Block the phone number or device used across the tenant if possible"
+        ],
+        "recovery": [
+          "Confirm the user's remaining methods are all theirs",
+          "Monitor for new method registrations on the account for 30 days",
+          "Verify conditional access for security info registration is enforced"
+        ],
+        "lessons": [
+          "Add detection for method registration within an hour of a risky sign-in",
+          "Count accounts where attackers registered methods successfully",
+          "Review whether registration policy allowed untrusted networks"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Entra security info registrations",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName IN (\"User registered security info\",\"User registered all required security info\",\"Admin registered security info\") | table _time, targetResources{}.userPrincipalName, initiatedBy.user.ipAddress, additionalDetails{}.value"
+        },
+        {
+          "title": "Okta factor enrollments",
+          "phase": "identification",
+          "spl": "index=okta sourcetype=\"okta:im2\" eventType IN (\"user.mfa.factor.activate\",\"system.mfa.factor.activate\") | table _time, actor.alternateId, client.ipAddress, target{}.displayName, outcome.result"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-mfa-fatigue",
+      "name": "MFA push fatigue ends in an approved attacker sign-in",
+      "summary": "Use when a user receives a burst of push MFA prompts and eventually approves one, granting an attacker who holds the password access to the account.",
+      "tags": [
+        "cloud-identity",
+        "mfa-fatigue",
+        "duo",
+        "okta-verify"
+      ],
+      "attack": [
+        "T1621",
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable number matching and location context for push MFA in Entra, Okta, and Duo",
+          "Give users a one-click way to report unexpected MFA prompts",
+          "Alert on more than five denied or timed-out pushes for a user in an hour"
+        ],
+        "identification": [
+          "Count denied, timed-out, and approved push events for the user in the window",
+          "Identify the source IP of the sign-in that triggered the approved push",
+          "Interview the user about the approval and any phone calls received",
+          "Review what the attacker session accessed after approval"
+        ],
+        "containment": [
+          "Revoke the user's sessions and reset the password the attacker held",
+          "Temporarily disable push and require a phishing-resistant method for the user",
+          "Block the source IP across the IdP"
+        ],
+        "eradication": [
+          "Remove MFA methods, app passwords, or devices added after the approval",
+          "Check how the password was obtained such as reuse, phishing, or infostealer",
+          "Search for the same source IP pushing other users"
+        ],
+        "recovery": [
+          "Re-enable MFA with number matching for the user",
+          "Monitor the account for unusual push volume for 14 days",
+          "Brief the user on reporting unexpected prompts"
+        ],
+        "lessons": [
+          "Track the rate of approved pushes after repeated denials",
+          "Move high-risk groups to FIDO2 or passkeys",
+          "Add MFA fatigue examples to security awareness training"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Duo push burst for one user",
+          "phase": "identification",
+          "spl": "index=duo sourcetype=\"cisco:duo:authentication\" factor=duo_push user.name=\"<suspect_user>\" | bin _time span=1h | stats count(eval(result=\"denied\")) as denied count(eval(result=\"success\")) as approved values(access_device.ip) as ips by _time"
+        },
+        {
+          "title": "Okta Verify push denials then success",
+          "phase": "identification",
+          "spl": "index=okta sourcetype=\"okta:im2\" eventType=\"system.push.send_factor_verify_push\" OR eventType=\"user.authentication.auth_via_mfa\" actor.alternateId=\"<suspect_user>\" | stats count by eventType, outcome.result, client.ipAddress"
+        },
+        {
+          "title": "Entra MFA denials by user",
+          "phase": "lessons",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" status.errorCode IN (500121,50074) | bin _time span=1h | stats count by _time, userPrincipalName | where count > 5"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-illicit-oauth-consent",
+      "name": "Illicit OAuth app consent grants mailbox or file access",
+      "summary": "Use when a user or admin consents to an unfamiliar multi-tenant app requesting scopes like Mail.Read, Files.ReadWrite.All, or offline_access.",
+      "tags": [
+        "cloud-identity",
+        "oauth",
+        "consent-phishing",
+        "entra-id"
+      ],
+      "attack": [
+        "T1528",
+        "T1566.002"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Restrict user consent to verified publishers and low-risk permissions",
+          "Enable the admin consent workflow for everything else",
+          "Ingest Entra audit logs for Consent to application events"
+        ],
+        "identification": [
+          "Find Consent to application events and list app ID, publisher, and scopes granted",
+          "Identify all users who consented to the same app",
+          "Review the app's sign-in activity and Graph API calls in service principal sign-in logs",
+          "Check the reply URL domain and app creation date for signs of a malicious app"
+        ],
+        "containment": [
+          "Disable the service principal for the app in the tenant",
+          "Revoke OAuth2 permission grants for all consenting users",
+          "Revoke refresh tokens of the consenting users"
+        ],
+        "eradication": [
+          "Delete the service principal after evidence capture",
+          "Review mailbox and OneDrive access by the app for data exposure",
+          "Report the malicious app to Microsoft"
+        ],
+        "recovery": [
+          "Confirm no remaining grants exist for the app ID",
+          "Notify affected users and data owners of exposure",
+          "Monitor for new consents to apps from the same publisher"
+        ],
+        "lessons": [
+          "Add detection for consent to apps with high-privilege scopes",
+          "Review consent settings that allowed the grant",
+          "Track number of user-consented apps in the tenant"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Consent to application events",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName=\"Consent to application\" | spath path=targetResources{}.modifiedProperties{}.newValue output=scopes | table _time, initiatedBy.user.userPrincipalName, targetResources{}.displayName, scopes"
+        },
+        {
+          "title": "O365 activity by the app",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=\"o365:management:activity\" AppId=\"<app_id>\" | stats count by Operation, UserId, ClientIP"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-service-principal-credential",
+      "name": "Secret or certificate added to a service principal",
+      "summary": "Use when a new client secret or certificate is added to an app registration or service principal, giving the attacker non-interactive, MFA-free access to its permissions.",
+      "tags": [
+        "cloud-identity",
+        "service-principal",
+        "persistence",
+        "entra-id"
+      ],
+      "attack": [
+        "T1098.001"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Alert on Add service principal credentials and certificate events in Entra audit logs",
+          "Inventory high-privilege app registrations and their owners",
+          "Limit who can manage application credentials"
+        ],
+        "identification": [
+          "Find the audit event adding the credential and the actor and IP",
+          "List the app roles and Graph permissions the service principal holds",
+          "Review service principal sign-in logs for use of the new credential",
+          "Confirm with the app owner whether the credential is expected"
+        ],
+        "containment": [
+          "Remove the attacker-added secret or certificate",
+          "Disable the service principal if actively abused",
+          "Revoke tokens issued to the service principal"
+        ],
+        "eradication": [
+          "Audit all credentials on the app and remove any others that are unexplained",
+          "Review resources the service principal accessed for data exposure",
+          "Reset credentials of the actor account that added the secret"
+        ],
+        "recovery": [
+          "Confirm the app still functions with only legitimate credentials",
+          "Monitor service principal sign-ins for unexpected IPs",
+          "Verify credential management is limited to owners"
+        ],
+        "lessons": [
+          "Detect credential additions to privileged service principals",
+          "Report app registrations with secrets expiring beyond policy",
+          "Review whether managed identities could replace static secrets"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Service principal credential additions",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName IN (\"Add service principal credentials\",\"Update application - Certificates and secrets management\") | table _time, initiatedBy.user.userPrincipalName, initiatedBy.user.ipAddress, targetResources{}.displayName"
+        },
+        {
+          "title": "Non-interactive sign-ins by the service principal",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" servicePrincipalName=\"<app_name>\" | stats count by ipAddress, resourceDisplayName, status.errorCode"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-global-admin-assigned",
+      "name": "Global Administrator or privileged role newly assigned",
+      "summary": "Use when a user is granted Global Admin, Privileged Role Admin, or another high-tier Entra role without a change request, indicating privilege escalation.",
+      "tags": [
+        "cloud-identity",
+        "entra-id",
+        "privilege-escalation",
+        "role-assignment"
+      ],
+      "attack": [
+        "T1098.003"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Alert on Add member to role events for privileged directory roles",
+          "Manage privileged roles through PIM with approval and time limits",
+          "Keep a baseline of standing Global Admin assignments"
+        ],
+        "identification": [
+          "Identify who assigned the role, to whom, and whether via PIM activation or direct add",
+          "Confirm a change ticket exists for the assignment",
+          "Review what the newly privileged user did after assignment",
+          "Check whether the assigning account was itself recently compromised"
+        ],
+        "containment": [
+          "Remove the unauthorized role assignment",
+          "Revoke sessions for both the assignee and the assigner",
+          "Reset passwords and re-verify MFA for both accounts"
+        ],
+        "eradication": [
+          "Review all tenant changes the assignee made with the role",
+          "Remove persistence such as new apps, secrets, or federation changes",
+          "Audit other recent privileged role changes for the same pattern"
+        ],
+        "recovery": [
+          "Reconcile current role holders against the approved baseline",
+          "Re-enable legitimate accounts after review",
+          "Monitor privileged role assignment events at high sensitivity"
+        ],
+        "lessons": [
+          "Enforce PIM with approval for all Global Admin activations",
+          "Measure count of standing versus eligible privileged assignments",
+          "Review how the assigner obtained the rights to grant the role"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Privileged role assignments",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName=\"Add member to role\" | spath path=targetResources{}.modifiedProperties{} | search \"Global Administrator\" OR \"Privileged Role Administrator\" | table _time, initiatedBy.user.userPrincipalName, targetResources{}.userPrincipalName"
+        },
+        {
+          "title": "Actions by the new admin",
+          "phase": "eradication",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" initiatedBy.user.userPrincipalName=\"<suspect_user>\" | stats count by activityDisplayName, result | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-conditional-access-disabled",
+      "name": "Conditional access policy disabled or weakened",
+      "summary": "Use when a conditional access policy enforcing MFA or device compliance is disabled, scoped out, or set to report-only, removing a control attackers want gone.",
+      "tags": [
+        "cloud-identity",
+        "conditional-access",
+        "defense-evasion",
+        "entra-id"
+      ],
+      "attack": [
+        "T1562.001",
+        "T1484"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Alert on Update and Delete conditional access policy events",
+          "Export and version all conditional access policies nightly",
+          "Restrict policy editing to a small, monitored admin group"
+        ],
+        "identification": [
+          "Find the policy change event, the actor, and the before and after state",
+          "Determine which control was removed such as MFA or compliant device",
+          "Identify sign-ins that benefited from the gap during the change window",
+          "Confirm whether a change ticket covers the modification"
+        ],
+        "containment": [
+          "Re-enable or restore the policy from the saved baseline",
+          "Revoke sessions for the actor who made the change",
+          "Reset the actor password if the change is unauthorized"
+        ],
+        "eradication": [
+          "Review all policy changes by the actor for other weakenings",
+          "Investigate sign-ins that bypassed MFA during the gap",
+          "Remove any accounts or apps excluded from policies without justification"
+        ],
+        "recovery": [
+          "Confirm policies match the approved baseline and are enforcing",
+          "Monitor conditional access change events closely for 30 days",
+          "Validate MFA enforcement with a test sign-in"
+        ],
+        "lessons": [
+          "Add detection for CA policies set to disabled or report-only",
+          "Require change tickets and dual approval for CA edits",
+          "Track the number of accounts excluded from MFA policies"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Conditional access policy changes",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName IN (\"Update conditional access policy\",\"Delete conditional access policy\",\"Disable Strong Authentication\") | table _time, initiatedBy.user.userPrincipalName, initiatedBy.user.ipAddress, targetResources{}.displayName"
+        },
+        {
+          "title": "Sign-ins without MFA during the change window",
+          "phase": "eradication",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" earliest=<change_start> latest=<change_end> authenticationRequirement=singleFactorAuthentication status.errorCode=0 | stats count by userPrincipalName, appDisplayName, ipAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-golden-saml",
+      "name": "Federation trust or domain added for Golden SAML persistence",
+      "summary": "Use when a new federated domain or trust is added in Entra ID, letting an attacker with the token-signing key forge SAML assertions for any user.",
+      "tags": [
+        "cloud-identity",
+        "golden-saml",
+        "federation",
+        "persistence"
+      ],
+      "attack": [
+        "T1484.002",
+        "T1606.002"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Alert on Set domain authentication and Add partner to federation events",
+          "Baseline all federated domains and their legitimate IdP endpoints",
+          "Protect AD FS token-signing certificates and monitor their export"
+        ],
+        "identification": [
+          "Find the domain federation change event, actor, and the new issuer URI",
+          "Verify whether the federated domain and issuer are legitimate",
+          "Look for sign-ins asserting the new or modified federated domain",
+          "Check AD FS servers for token-signing key export if federation is on-prem"
+        ],
+        "containment": [
+          "Remove the rogue federated domain or revert it to managed authentication",
+          "Revoke sessions tenant-wide for likely impersonated accounts",
+          "Rotate the AD FS token-signing certificate if it may be compromised"
+        ],
+        "eradication": [
+          "Reset the actor account and review other federation and domain changes",
+          "Audit sign-ins that used forged assertions for data access",
+          "Rebuild AD FS and rotate all signing material if key theft is confirmed"
+        ],
+        "recovery": [
+          "Confirm only legitimate federated domains remain configured",
+          "Monitor federation configuration events for 30 days",
+          "Validate real federation still authenticates users"
+        ],
+        "lessons": [
+          "Detect any domain authentication type change in Entra",
+          "Move eligible domains to cloud-managed authentication",
+          "Track token-signing certificate rotation cadence"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Domain federation changes",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName IN (\"Set domain authentication\",\"Add unverified domain\",\"Set federation settings on domain\") | table _time, initiatedBy.user.userPrincipalName, targetResources{}.displayName, modifiedProperties{}.newValue"
+        },
+        {
+          "title": "Sign-ins using the federated domain",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" | spath path=authenticationDetails{}.authenticationMethod output=method | search userPrincipalName=\"*@<federated_domain>\" | stats count by userPrincipalName, ipAddress, method"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-okta-admin-compromise",
+      "name": "Okta admin console access by an unauthorized account",
+      "summary": "Use when an Okta super admin or org admin performs sensitive changes from an unfamiliar IP or device, or a new admin is granted rights without approval.",
+      "tags": [
+        "cloud-identity",
+        "okta",
+        "privilege-escalation",
+        "admin-console"
+      ],
+      "attack": [
+        "T1078.004",
+        "T1098.003"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Stream the Okta System Log to the SIEM with admin role grant events",
+          "Restrict admin console access by network zone and require phishing-resistant MFA",
+          "Keep a baseline of super admin and org admin assignments"
+        ],
+        "identification": [
+          "Review user.account.privilege.grant events and who granted admin rights",
+          "Check admin actions from IPs or devices outside the admin network zone",
+          "List policy, app, and user changes made in the suspicious admin session",
+          "Confirm the admin assignment against change records"
+        ],
+        "containment": [
+          "Revoke the unauthorized admin role and clear the account's sessions",
+          "Reset the account password and reset its MFA factors",
+          "Restrict admin console access to a trusted network zone"
+        ],
+        "eradication": [
+          "Revert configuration changes made in the session such as IdP, policy, or app edits",
+          "Review all admin grants for other unauthorized assignments",
+          "Reset credentials of the account that performed the grant"
+        ],
+        "recovery": [
+          "Reconcile admin role holders against the baseline",
+          "Monitor admin actions from new IPs for 30 days",
+          "Confirm network zone and MFA controls are enforced on the console"
+        ],
+        "lessons": [
+          "Alert on admin role grants and admin actions from untrusted networks",
+          "Reduce standing super admins and add approval for grants",
+          "Review how the attacker reached an admin-capable account"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Okta admin privilege grants",
+          "phase": "identification",
+          "spl": "index=okta sourcetype=\"okta:im2\" eventType=\"user.account.privilege.grant\" | table _time, actor.alternateId, client.ipAddress, target{}.alternateId, debugContext.debugData.privilegeGranted"
+        },
+        {
+          "title": "Admin console actions from new IPs",
+          "phase": "identification",
+          "spl": "index=okta sourcetype=\"okta:im2\" eventType IN (\"policy.lifecycle.update\",\"application.lifecycle.update\",\"system.idp.lifecycle.create\") | stats count values(eventType) as actions by actor.alternateId, client.ipAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-okta-har-session-hijack",
+      "name": "Okta support HAR file session token abuse",
+      "summary": "Use when session tokens from an uploaded HAR file or support case are replayed against the Okta tenant, letting an attacker impersonate users or admins.",
+      "tags": [
+        "cloud-identity",
+        "okta",
+        "session-hijack",
+        "supply-chain"
+      ],
+      "attack": [
+        "T1539",
+        "T1199"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Teach admins to sanitize HAR files before sharing with any vendor",
+          "Bind Okta admin sessions to network and enable session token limits",
+          "Stream impersonation and session events to the SIEM"
+        ],
+        "identification": [
+          "Identify sessions replayed from IPs that differ from where the token was issued",
+          "Correlate recent support cases and HAR uploads with the session IDs seen",
+          "List admin actions taken by the hijacked sessions",
+          "Check which users or admins the tokens belonged to"
+        ],
+        "containment": [
+          "Revoke all active sessions for affected admins and clear their tokens",
+          "Reset passwords and MFA factors for the affected admins",
+          "Restrict admin sessions to trusted network zones immediately"
+        ],
+        "eradication": [
+          "Revert any configuration changes made with the hijacked sessions",
+          "Rotate API tokens that may have been exposed in the same cases",
+          "Confirm no new IdPs, policies, or admin grants were added"
+        ],
+        "recovery": [
+          "Shorten admin session lifetimes and require reauthentication",
+          "Monitor for replayed session IDs for 30 days",
+          "Validate that only sanitized diagnostics are shared going forward"
+        ],
+        "lessons": [
+          "Add detection for one session token used from multiple IPs",
+          "Create a policy for sanitizing diagnostics shared with vendors",
+          "Track vendor support interactions as a supply-chain risk"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Session token reuse across IPs",
+          "phase": "identification",
+          "spl": "index=okta sourcetype=\"okta:im2\" | stats dc(client.ipAddress) as ips values(client.ipAddress) as addrs values(eventType) as events by authenticationContext.externalSessionId | where ips > 1 AND events=\"user.session.start\""
+        },
+        {
+          "title": "Admin actions by hijacked sessions",
+          "phase": "eradication",
+          "spl": "index=okta sourcetype=\"okta:im2\" authenticationContext.externalSessionId IN (<suspect_sessions>) | table _time, eventType, actor.alternateId, target{}.displayName, client.ipAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-okta-idp-added",
+      "name": "Rogue identity provider added in Okta for inbound federation",
+      "summary": "Use when a new external IdP or routing rule is created in Okta so an attacker-controlled IdP can authenticate as existing users via account linking.",
+      "tags": [
+        "cloud-identity",
+        "okta",
+        "federation",
+        "persistence"
+      ],
+      "attack": [
+        "T1484.002",
+        "T1556"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Alert on system.idp.lifecycle.create and routing rule changes in the System Log",
+          "Baseline legitimate IdPs and their metadata endpoints",
+          "Restrict IdP and routing rule management to a monitored admin group"
+        ],
+        "identification": [
+          "Review the IdP creation event, actor, and the external IdP issuer and endpoints",
+          "Check whether account linking maps external identities to existing Okta users",
+          "Find sign-ins that authenticated through the new IdP",
+          "Confirm the IdP is not a legitimate new integration"
+        ],
+        "containment": [
+          "Deactivate and delete the rogue IdP and any routing rule steering to it",
+          "Revoke sessions for users who authenticated through it",
+          "Reset the actor account that created the IdP"
+        ],
+        "eradication": [
+          "Review account linking settings abused by the IdP",
+          "Audit other IdP and routing rule changes by the actor",
+          "Reset passwords for users whose accounts were linked"
+        ],
+        "recovery": [
+          "Confirm only legitimate IdPs and routing rules remain",
+          "Monitor IdP lifecycle events for 30 days",
+          "Verify real federated logins still work"
+        ],
+        "lessons": [
+          "Detect IdP creation and routing rule changes immediately",
+          "Review who can manage inbound federation",
+          "Track the count of configured IdPs and their owners"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Okta IdP lifecycle events",
+          "phase": "identification",
+          "spl": "index=okta sourcetype=\"okta:im2\" eventType IN (\"system.idp.lifecycle.create\",\"system.idp.lifecycle.activate\",\"policy.rule.add\") | table _time, actor.alternateId, client.ipAddress, target{}.displayName, outcome.result"
+        },
+        {
+          "title": "Sign-ins via the new IdP",
+          "phase": "identification",
+          "spl": "index=okta sourcetype=\"okta:im2\" eventType=\"user.authentication.auth_via_IDP\" | search target{}.displayName=\"<idp_name>\" | stats count by actor.alternateId, client.ipAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-gws-super-admin-compromise",
+      "name": "Google Workspace super admin account compromised",
+      "summary": "Use when a Google Workspace super admin shows logins from unfamiliar locations or makes sensitive admin console changes without authorization.",
+      "tags": [
+        "cloud-identity",
+        "google-workspace",
+        "privilege-escalation",
+        "admin-console"
+      ],
+      "attack": [
+        "T1078.004",
+        "T1098.003"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Stream Admin audit and login audit logs to the SIEM",
+          "Enforce 2-Step Verification with security keys for all super admins",
+          "Keep a baseline of super admin role holders and a break-glass account"
+        ],
+        "identification": [
+          "Review login audit for the admin's IPs and challenge results",
+          "List ADMIN_SETTINGS changes such as added admins, disabled 2SV, or new app passwords",
+          "Check for OAuth tokens or app passwords created by the account",
+          "Confirm the admin activity against change records"
+        ],
+        "containment": [
+          "Suspend or reset the compromised super admin and sign out all its sessions",
+          "Revoke app passwords and OAuth tokens for the account",
+          "Temporarily remove super admin role if a lower role suffices for recovery"
+        ],
+        "eradication": [
+          "Revert admin console changes made by the account",
+          "Remove any new admins or roles the account created",
+          "Review Gmail delegation and forwarding added by the account"
+        ],
+        "recovery": [
+          "Re-enroll the admin with a security key and restore least privilege",
+          "Monitor super admin logins and admin changes for 30 days",
+          "Verify break-glass account is intact and untouched"
+        ],
+        "lessons": [
+          "Alert on 2SV disablement and new super admin creation",
+          "Reduce the number of standing super admins",
+          "Review how the account was phished or credential-stuffed"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Super admin logins with geo",
+          "phase": "identification",
+          "spl": "index=gws sourcetype=\"gws:reports:login\" | search \"<suspect_user>\" | iplocation ipAddress | table _time, email, ipAddress, Country, login_challenge_method, event.name"
+        },
+        {
+          "title": "Admin console changes",
+          "phase": "identification",
+          "spl": "index=gws sourcetype=\"gws:reports:admin\" | search actor.email=\"<suspect_user>\" | table _time, actor.email, event.name, parameters.USER_EMAIL, parameters.ROLE_NAME"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-gws-domain-wide-delegation",
+      "name": "Google domain-wide delegation abused by a service account",
+      "summary": "Use when a service account with domain-wide delegation impersonates many users to read Gmail or Drive, or when new delegation scopes are added in the admin console.",
+      "tags": [
+        "cloud-identity",
+        "google-workspace",
+        "service-account",
+        "data-access"
+      ],
+      "attack": [
+        "T1098.001",
+        "T1114"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Inventory service accounts with domain-wide delegation and their scopes",
+          "Alert on changes to API client access authorizations in the admin console",
+          "Restrict who can manage service accounts in the linked Google Cloud project"
+        ],
+        "identification": [
+          "Review admin audit for added OAuth client scopes granting delegation",
+          "Find Gmail and Drive access events performed by the delegated service account",
+          "Count distinct users the service account impersonated",
+          "Check the Google Cloud project for a newly added service account key"
+        ],
+        "containment": [
+          "Remove the domain-wide delegation authorization for the client ID",
+          "Disable or delete the service account key used",
+          "Revoke tokens issued to the service account"
+        ],
+        "eradication": [
+          "Rotate remaining keys and remove unneeded delegation scopes",
+          "Review which mailboxes and files the service account read",
+          "Lock down the Google Cloud project IAM that allowed key creation"
+        ],
+        "recovery": [
+          "Confirm only approved delegation authorizations remain",
+          "Monitor the service account for impersonation activity",
+          "Notify data owners of any confirmed access"
+        ],
+        "lessons": [
+          "Detect new delegation scope authorizations immediately",
+          "Report service accounts with broad Gmail or Drive scopes",
+          "Review whether delegation is needed or can be scoped per user"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Delegation scope authorization changes",
+          "phase": "identification",
+          "spl": "index=gws sourcetype=\"gws:reports:admin\" event.name=\"AUTHORIZE_API_CLIENT_ACCESS\" OR event.name=\"CHANGE_API_CLIENT_ACCESS\" | table _time, actor.email, parameters.API_CLIENT_NAME, parameters.API_SCOPES"
+        },
+        {
+          "title": "Drive access by the service account",
+          "phase": "identification",
+          "spl": "index=gws sourcetype=\"gws:reports:drive\" actor.email=\"<service_account>\" | stats dc(parameters.owner) as users count by event.name | sort - count"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-legacy-auth-spray",
+      "name": "Password spray over legacy authentication protocols",
+      "summary": "Use when attackers spray credentials via legacy protocols like IMAP, POP, SMTP AUTH, or basic auth that bypass modern MFA and conditional access.",
+      "tags": [
+        "cloud-identity",
+        "legacy-auth",
+        "password-spray",
+        "entra-id"
+      ],
+      "attack": [
+        "T1110.003",
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Block legacy authentication with conditional access where possible",
+          "Report which users and mailboxes still allow basic auth protocols",
+          "Ingest Entra sign-in logs with clientAppUsed detail"
+        ],
+        "identification": [
+          "Find sign-ins where clientAppUsed is a legacy protocol and group by source IP",
+          "Count distinct users targeted by each source over legacy auth",
+          "Identify successful legacy sign-ins that bypassed MFA",
+          "Map the mailboxes accessed after successful legacy sign-ins"
+        ],
+        "containment": [
+          "Block the spraying IPs in named locations",
+          "Reset passwords for accounts with successful legacy sign-ins",
+          "Disable legacy auth protocols for the targeted mailboxes"
+        ],
+        "eradication": [
+          "Remove mailbox forwarding or rules added via legacy access",
+          "Migrate remaining legacy-auth apps to modern authentication",
+          "Confirm no app passwords remain for the affected accounts"
+        ],
+        "recovery": [
+          "Confirm legacy auth is blocked tenant-wide or per mailbox",
+          "Monitor for legacy auth sign-in attempts for 30 days",
+          "Verify legitimate mail clients use modern auth"
+        ],
+        "lessons": [
+          "Alert on any successful legacy auth sign-in",
+          "Track the count of mailboxes still permitting basic auth",
+          "Plan full legacy authentication retirement"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Legacy auth spray by source",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" clientAppUsed IN (\"IMAP4\",\"POP3\",\"SMTP\",\"Other clients\",\"Authenticated SMTP\") | stats dc(userPrincipalName) as users count by ipAddress, clientAppUsed | where users > 10"
+        },
+        {
+          "title": "Successful legacy sign-ins",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" clientAppUsed IN (\"IMAP4\",\"POP3\",\"Authenticated SMTP\") status.errorCode=0 | table _time, userPrincipalName, ipAddress, clientAppUsed"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-guest-b2b-abuse",
+      "name": "Guest or B2B account abused for internal access",
+      "summary": "Use when an external guest account is used to access resources beyond its intended scope, or a flood of guest invitations is sent to establish footholds.",
+      "tags": [
+        "cloud-identity",
+        "entra-id",
+        "b2b",
+        "guest-access"
+      ],
+      "attack": [
+        "T1078.004",
+        "T1136.003"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Restrict who can invite guests and require sponsors for B2B accounts",
+          "Alert on bulk guest invitations and guest access to sensitive apps",
+          "Run periodic access reviews of guest accounts"
+        ],
+        "identification": [
+          "List resources the guest accessed and compare against its intended scope",
+          "Review who invited the guest and whether a sponsor is recorded",
+          "Check for a spike in invitations from one inviter or source IP",
+          "Determine whether the guest's home tenant is trusted"
+        ],
+        "containment": [
+          "Block or delete the abusive guest account",
+          "Revoke the guest's sessions and app access",
+          "Restrict external collaboration settings to allowlisted domains"
+        ],
+        "eradication": [
+          "Remove the guest from groups and apps it should not have had",
+          "Review other guests invited by the same inviter",
+          "Reset the inviter account if the invitations were unauthorized"
+        ],
+        "recovery": [
+          "Run an access review to confirm remaining guests are justified",
+          "Monitor guest sign-ins and resource access for 30 days",
+          "Confirm external collaboration settings are tightened"
+        ],
+        "lessons": [
+          "Alert on guest access to Tier 0 or sensitive applications",
+          "Enforce sponsors and expiration on all guest accounts",
+          "Track the count of stale guest accounts"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Guest invitation spikes",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName=\"Invite external user\" | bin _time span=1h | stats count by _time, initiatedBy.user.userPrincipalName | where count > 20"
+        },
+        {
+          "title": "Guest sign-ins to sensitive apps",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" userType=Guest appDisplayName IN (<sensitive_apps>) status.errorCode=0 | stats count by userPrincipalName, appDisplayName, ipAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-device-code-phishing",
+      "name": "Device code phishing grants attacker a token",
+      "summary": "Use when a user is tricked into entering a device code on a legitimate login page, issuing the attacker a token for the user's account without a password.",
+      "tags": [
+        "cloud-identity",
+        "device-code",
+        "phishing",
+        "entra-id"
+      ],
+      "attack": [
+        "T1566.002",
+        "T1528"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Block device code flow with conditional access except where required",
+          "Ingest sign-in logs capturing authenticationProtocol deviceCode",
+          "Teach users that legitimate services rarely ask them to enter a device code"
+        ],
+        "identification": [
+          "Find sign-ins using the device code protocol and the resulting IP and client",
+          "Correlate with phishing emails or messages containing a device code prompt",
+          "Identify the resources the issued token accessed",
+          "List other users who received the same phishing lure"
+        ],
+        "containment": [
+          "Revoke tokens and sessions for the affected user",
+          "Reset the user password and re-verify MFA methods",
+          "Block device code flow for the affected population"
+        ],
+        "eradication": [
+          "Remove any OAuth grants, rules, or methods added with the token",
+          "Review other recipients of the lure for successful code entry",
+          "Report the phishing infrastructure and block its domains"
+        ],
+        "recovery": [
+          "Confirm device code flow is disabled where not needed",
+          "Monitor for further device code sign-ins for 14 days",
+          "Brief affected users on the lure"
+        ],
+        "lessons": [
+          "Alert on device code sign-ins from unmanaged clients",
+          "Track whether device code flow is needed by any legitimate app",
+          "Add device code phishing to awareness training"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Device code protocol sign-ins",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" authenticationProtocol=deviceCode | table _time, userPrincipalName, ipAddress, appDisplayName, deviceDetail.operatingSystem, status.errorCode"
+        },
+        {
+          "title": "Resource access by device code token",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=\"o365:management:activity\" UserId=\"<suspect_user>\" earliest=<token_time> | stats count by Operation, ClientIP"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-sspr-abuse",
+      "name": "Self-service password reset abused to take over an account",
+      "summary": "Use when an attacker completes SSPR using phished or weak verification answers, or after seeding their own contact methods, to reset a target's password.",
+      "tags": [
+        "cloud-identity",
+        "sspr",
+        "account-takeover",
+        "entra-id"
+      ],
+      "attack": [
+        "T1098.005",
+        "T1556"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Require two strong methods for SSPR and disable security questions",
+          "Alert on SSPR events and recent security info changes before a reset",
+          "Register SSPR activity in the SIEM via audit logs"
+        ],
+        "identification": [
+          "Find the SSPR reset event, the IP used, and the methods that satisfied it",
+          "Check whether contact methods were added just before the reset",
+          "Confirm with the user whether they performed the reset",
+          "Review sign-ins immediately after the reset"
+        ],
+        "containment": [
+          "Reset the user password again to a known value and revoke sessions",
+          "Remove attacker-added verification methods",
+          "Temporarily disable SSPR for the user"
+        ],
+        "eradication": [
+          "Review actions taken in sessions after the reset",
+          "Remove OAuth grants or rules created post-reset",
+          "Check for the same IP abusing SSPR on other users"
+        ],
+        "recovery": [
+          "Re-enable SSPR after the user re-registers trusted methods",
+          "Monitor SSPR and security info events on the account for 30 days",
+          "Confirm SSPR policy requires strong methods"
+        ],
+        "lessons": [
+          "Alert when SSPR follows a security info change within an hour",
+          "Report SSPR resets originating from untrusted networks",
+          "Review whether SSPR methods are strong enough"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "SSPR reset events",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName IN (\"Reset password (self-service)\",\"Self-service password reset flow activity progress\") | table _time, targetResources{}.userPrincipalName, initiatedBy.user.ipAddress, resultReason"
+        },
+        {
+          "title": "Security info change before reset",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName=\"User registered security info\" targetResources{}.userPrincipalName=\"<suspect_user>\" | table _time, initiatedBy.user.ipAddress, additionalDetails{}.value"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-break-glass-used",
+      "name": "Break-glass emergency account used",
+      "summary": "Use whenever an emergency access account signs in, since these accounts are excluded from MFA and conditional access and must only be used in true emergencies.",
+      "tags": [
+        "cloud-identity",
+        "break-glass",
+        "entra-id",
+        "privileged-access"
+      ],
+      "attack": [
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Create a high-priority alert on any sign-in by the break-glass accounts",
+          "Store break-glass credentials split and offline with documented custody",
+          "Define the exact conditions under which break-glass use is authorized"
+        ],
+        "identification": [
+          "Confirm the sign-in matches an authorized emergency and custodian",
+          "Review the IP, device, and actions taken by the account",
+          "Verify the credential was retrieved from secure storage with a chain of custody",
+          "Rule out compromise by checking for failed attempts preceding success"
+        ],
+        "containment": [
+          "If unauthorized, revoke the session and reset the break-glass credentials",
+          "Re-split and re-seal the new credentials in offline storage",
+          "Review what the account changed if misused"
+        ],
+        "eradication": [
+          "Revert any changes made outside the authorized emergency scope",
+          "Investigate how the credential was obtained if misused",
+          "Confirm the account retains its exclusions but nothing else was altered"
+        ],
+        "recovery": [
+          "Return the break-glass account to standby with sealed credentials",
+          "Document the usage event and outcome",
+          "Verify monitoring on the account still fires with a test"
+        ],
+        "lessons": [
+          "Review whether the emergency required break-glass or normal admin access",
+          "Track time between break-glass use and SOC acknowledgment",
+          "Reconfirm custody and storage of emergency credentials"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Break-glass account sign-ins",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" userPrincipalName IN (<breakglass_accounts>) | table _time, userPrincipalName, ipAddress, appDisplayName, status.errorCode, deviceDetail.operatingSystem"
+        },
+        {
+          "title": "Actions taken by the break-glass account",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" initiatedBy.user.userPrincipalName IN (<breakglass_accounts>) | table _time, activityDisplayName, targetResources{}.displayName, result"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-dormant-account-reactivated",
+      "name": "Dormant cloud account reactivated and used",
+      "summary": "Use when a long-inactive cloud account is re-enabled or signs in after months, which may mean an attacker revived a forgotten account to blend in.",
+      "tags": [
+        "cloud-identity",
+        "dormant-account",
+        "entra-id",
+        "valid-accounts"
+      ],
+      "attack": [
+        "T1078.004"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Report cloud accounts with no interactive sign-in for 90 days monthly",
+          "Disable accounts automatically after a defined inactivity period",
+          "Tie each account to an active HR identity"
+        ],
+        "identification": [
+          "Confirm the account's last prior sign-in and whether it was recently re-enabled",
+          "Review who enabled or reset the account and from what IP",
+          "Check whether the account holds roles, licenses, or app access of value",
+          "Verify with HR whether the owner is still active"
+        ],
+        "containment": [
+          "Disable the account and revoke its sessions",
+          "Reset the password to a random value",
+          "Remove any roles added at reactivation"
+        ],
+        "eradication": [
+          "Review actions taken since reactivation",
+          "Delete the account if no owner claims it",
+          "Find other dormant accounts enabled by the same actor"
+        ],
+        "recovery": [
+          "Re-run the dormant account report and confirm it is clean",
+          "Monitor for reuse attempts of the disabled account",
+          "Document the outcome with the owning team"
+        ],
+        "lessons": [
+          "Alert on re-enable of accounts dormant beyond 90 days",
+          "Integrate leaver processes with cloud account disablement",
+          "Track the count of licensed but unused accounts"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Account re-enable events",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName IN (\"Enable account\",\"Reset user password\") targetResources{}.userPrincipalName=\"<suspect_user>\" | table _time, initiatedBy.user.userPrincipalName, initiatedBy.user.ipAddress, activityDisplayName"
+        },
+        {
+          "title": "First sign-in after dormancy",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" userPrincipalName=\"<suspect_user>\" status.errorCode=0 | stats min(_time) as first max(_time) as last values(ipAddress) as ips by userPrincipalName"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-helpdesk-mfa-reset",
+      "name": "Helpdesk-assisted MFA reset leads to account takeover",
+      "summary": "Use when a social-engineered helpdesk agent resets a target's MFA or password, letting an attacker enroll their own factor and seize the account.",
+      "tags": [
+        "cloud-identity",
+        "social-engineering",
+        "mfa",
+        "helpdesk"
+      ],
+      "attack": [
+        "T1098.005",
+        "T1656"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Require strong caller identity verification before any MFA or password reset",
+          "Log helpdesk reset actions with the agent, target, and ticket",
+          "Alert on an MFA reset followed by factor enrollment from a new IP"
+        ],
+        "identification": [
+          "Find the helpdesk reset event, the agent, and the target account",
+          "Check whether a new MFA factor was enrolled right after the reset and from where",
+          "Confirm with the real user whether they requested the reset",
+          "Review the verification steps the agent followed from the ticket"
+        ],
+        "containment": [
+          "Reset the account again and revoke sessions",
+          "Remove the attacker-enrolled factor",
+          "Freeze further resets on the account pending verification"
+        ],
+        "eradication": [
+          "Review actions taken by the attacker session",
+          "Check for other resets handled by the same agent under suspicious pretexts",
+          "Remove OAuth grants or rules added after takeover"
+        ],
+        "recovery": [
+          "Re-enroll the legitimate user with verified identity in person or via manager",
+          "Monitor the account for new factor enrollments for 30 days",
+          "Reinforce verification procedure with the helpdesk team"
+        ],
+        "lessons": [
+          "Add detection for factor enrollment within minutes of a helpdesk reset",
+          "Strengthen identity proofing for high-value accounts",
+          "Track helpdesk resets that led to incidents"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Admin-initiated MFA resets",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName IN (\"Admin reset user's MFA\",\"Reset user password\",\"Delete security info\") | table _time, initiatedBy.user.userPrincipalName, targetResources{}.userPrincipalName, activityDisplayName"
+        },
+        {
+          "title": "Factor enrollment after reset",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName=\"User registered security info\" targetResources{}.userPrincipalName=\"<suspect_user>\" | table _time, initiatedBy.user.ipAddress, additionalDetails{}.value"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-scim-provisioning-abuse",
+      "name": "SCIM provisioning abused to create or elevate accounts",
+      "summary": "Use when a SCIM integration or its bearer token is abused to auto-create accounts, add group memberships, or push attributes that grant access.",
+      "tags": [
+        "cloud-identity",
+        "scim",
+        "provisioning",
+        "persistence"
+      ],
+      "attack": [
+        "T1136.003",
+        "T1098"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Inventory SCIM-enabled apps, their tokens, and the attributes they can write",
+          "Alert on account and group changes attributed to provisioning service principals",
+          "Rotate SCIM bearer tokens on a schedule and store them in a vault"
+        ],
+        "identification": [
+          "Review accounts created or modified by the provisioning service principal",
+          "Check for group memberships or roles pushed via SCIM that grant access",
+          "Identify the source IP using the SCIM token if it differs from the app",
+          "Confirm whether the provisioning job is legitimate"
+        ],
+        "containment": [
+          "Disable the SCIM integration or revoke its bearer token",
+          "Remove accounts and memberships the integration created maliciously",
+          "Block the source IP abusing the token"
+        ],
+        "eradication": [
+          "Rotate the SCIM token and tighten its scope",
+          "Review attribute mappings for ones that grant privilege",
+          "Reset any accounts the integration elevated"
+        ],
+        "recovery": [
+          "Re-enable provisioning with a fresh token after review",
+          "Reconcile provisioned accounts against the source of truth",
+          "Monitor provisioning events for 30 days"
+        ],
+        "lessons": [
+          "Detect privileged group changes made by provisioning principals",
+          "Store and rotate SCIM tokens in a secrets vault",
+          "Review which attributes SCIM apps may write"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Accounts changed by provisioning principals",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" initiatedBy.app.displayName=\"<scim_app>\" activityDisplayName IN (\"Add user\",\"Add member to group\",\"Update user\") | table _time, activityDisplayName, targetResources{}.userPrincipalName"
+        },
+        {
+          "title": "Okta SCIM API token use",
+          "phase": "identification",
+          "spl": "index=okta sourcetype=\"okta:im2\" actor.type=\"PublicClientApp\" OR eventType=\"application.provision.user.push\" | stats count by eventType, client.ipAddress, target{}.alternateId"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-app-secret-leaked",
+      "name": "App registration secret leaked in code or logs",
+      "summary": "Use when an app registration client secret or certificate is exposed in a repository, pipeline log, or config file and may be used by anyone who found it.",
+      "tags": [
+        "cloud-identity",
+        "secret-leak",
+        "app-registration",
+        "credential-exposure"
+      ],
+      "attack": [
+        "T1552.001",
+        "T1528"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Run secret scanning on repositories and pipeline logs",
+          "Inventory app registrations and the permissions each secret unlocks",
+          "Prefer managed identities and short-lived credentials over static secrets"
+        ],
+        "identification": [
+          "Confirm the exposure location, the app ID, and the secret value exposed",
+          "Determine the permissions and data the app can reach",
+          "Review service principal sign-ins for use of the secret from unexpected IPs",
+          "Establish how long the secret was exposed and who could access it"
+        ],
+        "containment": [
+          "Remove the leaked secret from the app registration",
+          "Add a new secret and update legitimate consumers",
+          "Revoke tokens issued to the service principal"
+        ],
+        "eradication": [
+          "Purge the secret from source history and caches",
+          "Review resources the app accessed during the exposure window",
+          "Scope down the app's permissions if over-privileged"
+        ],
+        "recovery": [
+          "Confirm legitimate apps work with the new secret",
+          "Monitor service principal sign-ins for use of the old secret",
+          "Verify secret scanning covers the leak source"
+        ],
+        "lessons": [
+          "Add pre-commit secret scanning to block future leaks",
+          "Track the number of app registrations using static secrets",
+          "Migrate eligible apps to managed identities"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Service principal sign-ins from new IPs",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" servicePrincipalName=\"<app_name>\" | stats count values(resourceDisplayName) as resources by ipAddress | sort - count"
+        },
+        {
+          "title": "App activity during exposure window",
+          "phase": "identification",
+          "spl": "index=o365 sourcetype=\"o365:management:activity\" AppId=\"<app_id>\" earliest=<exposure_start> latest=<exposure_end> | stats count by Operation, ClientIP"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-anonymizer-signins",
+      "name": "Sign-ins from TOR or anonymizing proxies",
+      "summary": "Use when successful sign-ins originate from TOR exit nodes, commercial VPNs, or anonymizing proxies, which legitimate users rarely use for corporate access.",
+      "tags": [
+        "cloud-identity",
+        "anonymizer",
+        "tor",
+        "entra-id"
+      ],
+      "attack": [
+        "T1090.003",
+        "T1078.004"
+      ],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Maintain a feed of TOR exit nodes and anonymizer ASNs",
+          "Enable sign-in risk detections for anonymous IP addresses",
+          "Block or step up authentication from anonymizing networks via conditional access"
+        ],
+        "identification": [
+          "Match successful sign-in IPs against the anonymizer and TOR feeds",
+          "Identify which users and apps were accessed from anonymized IPs",
+          "Check whether MFA was satisfied or a token replayed",
+          "Confirm whether any user has a business reason for anonymizer use"
+        ],
+        "containment": [
+          "Revoke sessions for accounts with anonymized successful sign-ins",
+          "Reset passwords where account takeover is suspected",
+          "Enable a conditional access block for anonymizer IPs"
+        ],
+        "eradication": [
+          "Review actions taken from the anonymized sessions",
+          "Remove persistence such as rules, grants, or methods",
+          "Report confirmed malicious infrastructure"
+        ],
+        "recovery": [
+          "Confirm the anonymizer block policy is enforcing",
+          "Monitor for further anonymized sign-in attempts",
+          "Close benign cases with the business reason recorded"
+        ],
+        "lessons": [
+          "Keep the anonymizer and TOR feeds fresh",
+          "Report the rate of anonymized sign-ins over time",
+          "Decide policy on VPN use for corporate sign-in"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Successful sign-ins from anonymizer IPs",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" status.errorCode=0 [| inputlookup anonymizer_ips.csv | fields ipAddress] | table _time, userPrincipalName, ipAddress, appDisplayName, authenticationRequirement"
+        },
+        {
+          "title": "Entra anonymous IP risk detections",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:riskdetection\" riskEventType=\"anonymizedIPAddress\" | table _time, userPrincipalName, ipAddress, riskLevel, riskState"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-mass-session-revocation",
+      "name": "Tenant-wide session and token revocation after broad compromise",
+      "summary": "Use when a confirmed broad identity compromise requires revoking sessions and refresh tokens for many users or the whole tenant in a controlled way.",
+      "tags": [
+        "cloud-identity",
+        "containment",
+        "token-revocation",
+        "entra-id"
+      ],
+      "attack": [],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Document the commands and portals to revoke sessions in bulk per IdP",
+          "Identify service accounts and apps that break when tokens are revoked",
+          "Pre-arrange communications for the forced reauthentication"
+        ],
+        "identification": [
+          "Define the scope: all users, a group, or a set of impacted accounts",
+          "List high-impact accounts and apps to sequence first and stage",
+          "Confirm the compromise warrants mass revocation over targeted action",
+          "Record a baseline of current active sessions for comparison"
+        ],
+        "containment": [
+          "Revoke refresh tokens and sign-in sessions for the defined scope",
+          "Force password change for compromised accounts in the scope",
+          "Raise conditional access to require MFA on next sign-in for all"
+        ],
+        "eradication": [
+          "Revoke and reissue service principal credentials in scope",
+          "Remove attacker persistence found across the impacted accounts",
+          "Confirm no exempted accounts retain valid attacker tokens"
+        ],
+        "recovery": [
+          "Monitor reauthentication success and triage lockouts",
+          "Restore service account access with rotated credentials",
+          "Confirm active session counts return to a clean baseline"
+        ],
+        "lessons": [
+          "Measure time to complete tenant-wide revocation",
+          "List apps that broke and plan token-resilient alternatives",
+          "Refine the runbook with sequencing lessons"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Token revocation events",
+          "phase": "containment",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName IN (\"Revoke sign-in sessions\",\"Reset user password\") | bin _time span=5m | stats count by _time, initiatedBy.user.userPrincipalName"
+        },
+        {
+          "title": "Reauthentication after revocation",
+          "phase": "recovery",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" earliest=<revocation_time> | timechart span=10m count by status.errorCode"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-sso-outage-vs-attack",
+      "name": "SSO authentication outage: distinguish failure from attack",
+      "summary": "Use when users cannot sign in through SSO and you must quickly tell a benign IdP or federation outage apart from an attack such as a config change or DoS.",
+      "tags": [
+        "cloud-identity",
+        "availability",
+        "sso",
+        "troubleshooting"
+      ],
+      "attack": [],
+      "severity": "Medium",
+      "tasks": {
+        "preparation": [
+          "Keep an IdP health dashboard and vendor status page links handy",
+          "Baseline normal sign-in success rates per app and region",
+          "Define escalation paths to the IdP vendor and identity team"
+        ],
+        "identification": [
+          "Chart sign-in failure codes over time to see when and how errors spiked",
+          "Check the IdP and federation vendor status pages for declared incidents",
+          "Review recent conditional access, certificate, and federation changes",
+          "Determine whether failures are broad or scoped to one app, region, or protocol"
+        ],
+        "containment": [
+          "If a bad config change is the cause, roll it back under change control",
+          "If a certificate expired, replace it and update federation metadata",
+          "If a DoS is suspected, enable rate limiting and engage the vendor"
+        ],
+        "eradication": [
+          "Correct the root cause: config, certificate, token-signing, or capacity",
+          "Verify no malicious change masqueraded as an outage",
+          "Clear cached bad metadata on relying parties"
+        ],
+        "recovery": [
+          "Confirm sign-in success rates return to baseline across apps",
+          "Validate a test sign-in for each affected app and region",
+          "Stand down the incident with the confirmed cause"
+        ],
+        "lessons": [
+          "Add proactive expiry alerts for signing and federation certificates",
+          "Document the outage timeline and detection gaps",
+          "Tune monitoring to separate outage signatures from attack signatures"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Sign-in failure codes over time",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" status.errorCode!=0 | timechart span=5m count by status.errorCode"
+        },
+        {
+          "title": "Recent federation and certificate changes",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName IN (\"Set federation settings on domain\",\"Update conditional access policy\",\"Set domain authentication\") | table _time, initiatedBy.user.userPrincipalName, activityDisplayName"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-entra-connect-sync-abuse",
+      "name": "Entra Connect sync account token abused in the cloud",
+      "summary": "Use when the cloud Sync_ account or Seamless SSO computer identity shows anomalous activity such as writing to users or issuing tokens outside sync operations.",
+      "tags": [
+        "cloud-identity",
+        "entra-connect",
+        "hybrid-identity",
+        "service-principal"
+      ],
+      "attack": [
+        "T1078.004",
+        "T1098"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Baseline the Sync_ account's normal source IP and operation set",
+          "Alert on Seamless SSO AZUREADSSOACC-related sign-in anomalies",
+          "Document the directory sync service principal and its allowed writes"
+        ],
+        "identification": [
+          "Review Sync_ account sign-ins for source IPs other than the sync server",
+          "Find directory writes by the sync principal beyond normal attribute sync",
+          "Check for password hash sync or writeback changes that are unexpected",
+          "Correlate with any on-premises sync server access events"
+        ],
+        "containment": [
+          "Rotate the cloud sync account credentials via the Entra Connect wizard",
+          "Revoke tokens issued to the sync service principal",
+          "Pause synchronization while investigating"
+        ],
+        "eradication": [
+          "Reset the Seamless SSO computer account password twice if abused",
+          "Remove unexpected accounts or group changes made by the sync principal",
+          "Confirm the on-premises sync server is not compromised"
+        ],
+        "recovery": [
+          "Resume sync and confirm cycles complete cleanly",
+          "Verify Seamless SSO still authenticates users",
+          "Monitor sync principal activity for 30 days"
+        ],
+        "lessons": [
+          "Detect sync account sign-ins from non-sync-server IPs",
+          "Rotate the Seamless SSO account password on a schedule",
+          "Review hybrid identity trust boundaries"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Sync account sign-ins from unexpected IPs",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" userPrincipalName=\"Sync_*\" OR servicePrincipalName=\"*DirectorySync*\" | stats count values(resourceDisplayName) as resources by ipAddress | sort - count"
+        },
+        {
+          "title": "Directory writes by the sync principal",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" initiatedBy.app.displayName=\"*Directory Synchronization*\" activityDisplayName IN (\"Add member to group\",\"Update user\",\"Add user\") | table _time, activityDisplayName, targetResources{}.userPrincipalName"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-cross-tenant-access-abuse",
+      "name": "Cross-tenant access policy abused for lateral access",
+      "summary": "Use when a cross-tenant access or B2B direct connect policy is widened so users from an attacker-controlled tenant gain inbound access to resources.",
+      "tags": [
+        "cloud-identity",
+        "cross-tenant",
+        "entra-id",
+        "persistence"
+      ],
+      "attack": [
+        "T1199",
+        "T1484"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Baseline cross-tenant access settings and trusted partner tenants",
+          "Alert on cross-tenant access policy changes in audit logs",
+          "Restrict inbound trust of partner MFA and device claims"
+        ],
+        "identification": [
+          "Review cross-tenant access policy changes and the actor who made them",
+          "Identify the partner tenant IDs newly trusted or widened",
+          "Find inbound sign-ins from the new partner tenant and resources accessed",
+          "Confirm whether the partner relationship is legitimate"
+        ],
+        "containment": [
+          "Revert the cross-tenant access policy to the trusted baseline",
+          "Block inbound access from the attacker tenant",
+          "Revoke sessions of external users from that tenant"
+        ],
+        "eradication": [
+          "Remove any B2B direct connect trust added maliciously",
+          "Review what external users accessed during the window",
+          "Reset the actor account that changed the policy"
+        ],
+        "recovery": [
+          "Confirm cross-tenant settings match the approved baseline",
+          "Monitor cross-tenant policy events for 30 days",
+          "Validate legitimate partner access still works"
+        ],
+        "lessons": [
+          "Detect any cross-tenant access policy change",
+          "Review which partner tenants are trusted and why",
+          "Require change tickets for cross-tenant trust edits"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Cross-tenant access policy changes",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:audit\" activityDisplayName IN (\"Update a partner cross-tenant access setting\",\"Add a partner to cross-tenant access setting\") | table _time, initiatedBy.user.userPrincipalName, targetResources{}.displayName, modifiedProperties{}.newValue"
+        },
+        {
+          "title": "Inbound sign-ins from partner tenant",
+          "phase": "identification",
+          "spl": "index=azure sourcetype=\"azure:aad:signin\" crossTenantAccessType!=\"none\" homeTenantId=\"<partner_tenant_id>\" | stats count by userPrincipalName, resourceDisplayName, ipAddress"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-okta-credential-stuffing",
+      "name": "Credential stuffing against the Okta org sign-in",
+      "summary": "Use when distributed sources attempt many username and password pairs against Okta, flagged by ThreatInsight or a surge of login failures across accounts.",
+      "tags": [
+        "cloud-identity",
+        "okta",
+        "credential-stuffing",
+        "brute-force"
+      ],
+      "attack": [
+        "T1110.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Enable Okta ThreatInsight in log-and-block mode",
+          "Require MFA for all sign-ins and enable rate limiting",
+          "Stream authentication failures to the SIEM"
+        ],
+        "identification": [
+          "Find security.threat.detected events and the volume of failed logins by source",
+          "Count distinct usernames attempted per source IP or ASN",
+          "Identify accounts that authenticated successfully during the campaign",
+          "Check whether successful accounts then passed MFA or were stopped"
+        ],
+        "containment": [
+          "Block the offending IPs and enable ThreatInsight blocking",
+          "Force password reset for accounts with successful logins",
+          "Apply network zone restrictions or CAPTCHA for the sign-in page"
+        ],
+        "eradication": [
+          "Remove MFA factors added by the attacker on compromised accounts",
+          "Expire reused passwords that matched known breach lists",
+          "Review app access by compromised accounts"
+        ],
+        "recovery": [
+          "Monitor failed login volume until it returns to baseline",
+          "Confirm compromised accounts are secured and MFA re-verified",
+          "Validate ThreatInsight is blocking repeat offenders"
+        ],
+        "lessons": [
+          "Track credential-stuffing attempt volume and block rate",
+          "Enforce breached-password detection at sign-in",
+          "Add behavior-based rate limiting to the sign-in flow"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Okta ThreatInsight detections",
+          "phase": "identification",
+          "spl": "index=okta sourcetype=\"okta:im2\" eventType=\"security.threat.detected\" | stats count by client.ipAddress, outcome.reason, debugContext.debugData.threatDetections"
+        },
+        {
+          "title": "Failed logins across many accounts",
+          "phase": "identification",
+          "spl": "index=okta sourcetype=\"okta:im2\" eventType=\"user.session.start\" outcome.result=FAILURE | bin _time span=10m | stats dc(actor.alternateId) as users count by _time, client.ipAddress | where users > 25"
+        }
+      ]
+    },
+    {
+      "id": "lib-cloud-identity-duo-enrollment-bypass",
+      "name": "Duo self-enrollment abused to add an attacker device",
+      "summary": "Use when a user in Duo pre-enrollment or with self-service enrollment gets an attacker device enrolled, letting the attacker satisfy MFA with the password alone.",
+      "tags": [
+        "cloud-identity",
+        "duo",
+        "mfa",
+        "account-takeover"
+      ],
+      "attack": [
+        "T1098.005",
+        "T1078.004"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Restrict Duo self-enrollment to trusted networks or managed devices",
+          "Alert on new device enrollment in the Duo Admin audit log",
+          "Require identity verification before first Duo enrollment"
+        ],
+        "identification": [
+          "Find the Duo enrollment event, the device added, and the source IP",
+          "Check whether the enrolled account was in pre-enrollment or reset state",
+          "Confirm with the user whether they enrolled the device",
+          "Review authentications satisfied by the new device"
+        ],
+        "containment": [
+          "Delete the attacker-enrolled Duo device",
+          "Reset the user's upstream password and revoke sessions",
+          "Restrict enrollment for the account to a verified channel"
+        ],
+        "eradication": [
+          "Review access the attacker obtained after enrollment",
+          "Check for other enrollments from the same source IP",
+          "Remove persistence created in the attacker sessions"
+        ],
+        "recovery": [
+          "Re-enroll the legitimate user with verified identity",
+          "Monitor Duo enrollment events for the account for 30 days",
+          "Confirm enrollment policy requires a trusted channel"
+        ],
+        "lessons": [
+          "Detect Duo enrollment from untrusted networks",
+          "Tighten first-enrollment identity proofing",
+          "Track enrollments that led to takeover"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Duo device enrollments",
+          "phase": "identification",
+          "spl": "index=duo sourcetype=\"cisco:duo:administrator\" action=\"user_update\" OR action=\"enroll\" | search description=\"*phone*\" OR description=\"*device*\" | table _time, username, action, description, actor"
+        },
+        {
+          "title": "Authentications by the new device",
+          "phase": "identification",
+          "spl": "index=duo sourcetype=\"cisco:duo:authentication\" user.name=\"<suspect_user>\" result=success | stats count by access_device.ip, auth_device.name, factor"
+        }
+      ]
+    }
+  ]
+}

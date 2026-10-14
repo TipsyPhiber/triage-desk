@@ -1,0 +1,1066 @@
+{
+  "category": {
+    "id": "ot-ics",
+    "name": "OT & industrial control",
+    "description": "Incidents in operational technology: PLCs, HMIs, SCADA, safety systems, building and medical devices, where safety and process continuity come first."
+  },
+  "playbooks": [
+    {
+      "id": "lib-ot-ics-unauthorized-plc-logic-change",
+      "name": "Unauthorized PLC logic change detected",
+      "summary": "Use when a PLC program, ladder logic block, or firmware checksum differs from the approved baseline with no matching change ticket, or an engineering tool shows an unexpected download.",
+      "tags": [
+        "ot",
+        "ics",
+        "plc",
+        "integrity",
+        "change-management"
+      ],
+      "attack": [
+        "T0889",
+        "T0843",
+        "T0836"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Store signed golden copies of every PLC project file and firmware version offline",
+          "Enable controller change auditing in the asset management or OT monitoring platform",
+          "Document which engineering workstations are allowed to download logic to each PLC",
+          "Agree with plant operations who can authorize putting a controller into manual or hold"
+        ],
+        "identification": [
+          "Compare the running PLC logic against the golden project using the vendor compare tool",
+          "Pull OT monitoring alerts for program download, online edit, or mode change to the PLC",
+          "Identify the engineering workstation and user account that issued the download command",
+          "Check the change management system for any approved work order covering the PLC",
+          "Ask operators whether the process has shown setpoint drift or unusual actuator behavior"
+        ],
+        "containment": [
+          "Coordinate with the shift supervisor before touching the controller or its network path",
+          "Switch the PLC key switch to RUN-only to block further remote program downloads",
+          "Block the source engineering workstation at the cell or zone firewall",
+          "Place affected process loops under operator manual control if the logic is untrusted"
+        ],
+        "eradication": [
+          "Export and preserve the modified logic and controller diagnostic buffer as evidence",
+          "Diff the modified logic block by block to document every changed rung and tag",
+          "Reload the verified golden logic during an operations-approved window",
+          "Rotate engineering software project passwords and PLC access passwords"
+        ],
+        "recovery": [
+          "Run a functional checkout of interlocks and alarms with control engineers after reload",
+          "Return loops from manual to automatic one at a time under operator observation",
+          "Monitor the controller for repeat download or mode-change events for two weeks"
+        ],
+        "lessons": [
+          "Measure how long the unauthorized change ran before detection and why",
+          "Add a detection for PLC program downloads outside approved maintenance windows",
+          "Review whether key switch positions are verified during routine rounds",
+          "Decide whether controller-level logic signing or integrity checks can be enabled"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "PLC program download and mode change events from OT monitoring",
+          "phase": "identification",
+          "spl": "index=ot sourcetype=ot:alerts (alert_type=\"Program Download\" OR alert_type=\"Online Edit\" OR alert_type=\"PLC Mode Change\") dest_ip=<plc_ip> | table _time src_ip src_host dest_ip alert_type protocol user | sort - _time"
+        },
+        {
+          "title": "Engineering protocol traffic to the PLC by source",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first max(_time) as last from datamodel=Network_Traffic where All_Traffic.dest_ip=<plc_ip> All_Traffic.dest_port IN (102, 502, 44818, 2222) by All_Traffic.src_ip All_Traffic.dest_port | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "Logons on the engineering workstation around the download",
+          "phase": "containment",
+          "spl": "index=wineventlog sourcetype=WinEventLog:Security host=<ews_host> EventCode IN (4624, 4648) | table _time user Logon_Type src_ip | sort - _time"
+        }
+      ]
+    },
+    {
+      "id": "lib-ot-ics-hmi-compromise",
+      "name": "HMI workstation compromised or showing operator-unseen actions",
+      "summary": "Use when an HMI shows signs of compromise: unknown processes, remote control sessions, screens changing on their own, or setpoint changes no operator made.",
+      "tags": [
+        "ot",
+        "ics",
+        "hmi",
+        "malware",
+        "operator-safety"
+      ],
+      "attack": [
+        "T0823",
+        "T0831",
+        "T0886"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Keep an HMI asset inventory with OS version, SCADA software version, and backup location",
+          "Stage spare HMI hardware or a preimaged VM that can replace a failed operator station",
+          "Configure the SCADA server to log every setpoint change with operator ID and station",
+          "Train operators to report screens acting on their own instead of rebooting the HMI"
+        ],
+        "identification": [
+          "Review the SCADA alarm and event journal for writes originating from the suspect HMI",
+          "Check the HMI for remote access tools such as VNC or RDP sessions from unknown sources",
+          "Collect running processes and autoruns from the HMI using an approved offline tool",
+          "Confirm with operators which actions on the HMI they actually performed during the shift",
+          "Determine whether other HMIs on the same SCADA server show the same indicators"
+        ],
+        "containment": [
+          "Move operations to a known-good HMI or local panel before isolating the suspect station",
+          "Disconnect the suspect HMI network cable at the switch after operations confirms coverage",
+          "Revoke the HMI's write privileges on the SCADA server so it can only display data",
+          "Increase field rounds to verify physical process values against displayed values"
+        ],
+        "eradication": [
+          "Capture a forensic disk image of the HMI before rebuilding it",
+          "Rebuild the HMI from the vendor-approved image and reapply the verified project",
+          "Reset local and domain accounts that were used on the compromised HMI",
+          "Remove any remote access software not on the approved OT software list"
+        ],
+        "recovery": [
+          "Validate tag mapping and screen navigation on the rebuilt HMI with a lead operator",
+          "Restore write permissions for the HMI only after control engineering sign-off",
+          "Watch the HMI's network flows for new external or cross-zone connections"
+        ],
+        "lessons": [
+          "Determine how the attacker reached the HMI and which zone boundary failed",
+          "Add alerting for interactive remote sessions to HMIs outside approved vendor windows",
+          "Track time from operator report to security engagement and shorten it",
+          "Review application allowlisting coverage on all operator stations"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Remote interactive logons to HMI hosts",
+          "phase": "identification",
+          "spl": "index=wineventlog sourcetype=WinEventLog:Security host=<hmi_host> EventCode=4624 Logon_Type IN (3, 10) | stats count min(_time) as first max(_time) as last by user src_ip Logon_Type | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "New processes on the HMI from Sysmon",
+          "phase": "identification",
+          "spl": "index=* sourcetype=XmlWinEventLog:Microsoft-Windows-Sysmon/Operational host=<hmi_host> EventCode=1 | stats count by Image ParentImage User CommandLine | sort count"
+        },
+        {
+          "title": "Network connections leaving the HMI to non-OT destinations",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.src_ip=<hmi_ip> by All_Traffic.dest_ip All_Traffic.dest_port All_Traffic.action | where NOT cidrmatch(\"10.50.0.0/16\", 'All_Traffic.dest_ip')"
+        }
+      ]
+    },
+    {
+      "id": "lib-ot-ics-engineering-workstation-malware",
+      "name": "Malware on an OT engineering workstation",
+      "summary": "Use when EDR, AV, or OT monitoring flags malware on a workstation that holds PLC projects and can program controllers, before it can tamper with logic.",
+      "tags": [
+        "ot",
+        "ics",
+        "engineering-workstation",
+        "malware",
+        "plc"
+      ],
+      "attack": [
+        "T0853",
+        "T0863",
+        "T0845"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Inventory every engineering workstation and the controllers each one can program",
+          "Keep vendor engineering software installers and license keys in an offline repository",
+          "Hash and back up PLC project folders on each workstation to an offline share weekly",
+          "Confirm the EDR agent is vendor-certified for the engineering software in use"
+        ],
+        "identification": [
+          "Pull the AV or EDR detection details including file path, hash, and first seen time",
+          "Check whether PLC project files on the workstation were modified after the infection time",
+          "Review the engineering software's connection history for controllers contacted since infection",
+          "Look for the same malware hash on other hosts in the OT DMZ and engineering VLAN"
+        ],
+        "containment": [
+          "Unplug the engineering workstation from the control network and keep it powered on",
+          "Suspend any planned PLC downloads that would use project files from this workstation",
+          "Block the workstation's MAC and IP at the OT core switch and zone firewall",
+          "Notify control engineering that projects from this host are untrusted until verified"
+        ],
+        "eradication": [
+          "Acquire memory and disk images before cleaning the workstation",
+          "Reimage the workstation and reinstall engineering software from the offline repository",
+          "Restore PLC project files only from the pre-infection offline backup with matching hashes",
+          "Compare every controller this workstation touched against its golden logic"
+        ],
+        "recovery": [
+          "Reconnect the rebuilt workstation only to its permitted engineering VLAN",
+          "Have a second engineer verify the first download from the rebuilt host",
+          "Rotate credentials stored in the engineering software for controller access"
+        ],
+        "lessons": [
+          "Trace the infection vector such as USB, email, or a file transfer from IT",
+          "Decide whether engineering workstations should be dedicated and non-internet facing",
+          "Add file integrity monitoring on PLC project directories",
+          "Record whether golden logic comparisons were fast enough to be routine"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Malware detections on engineering workstations",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count min(_time) as first from datamodel=Malware where Malware_Attacks.dest IN (<ews_host>) by Malware_Attacks.signature Malware_Attacks.file_path Malware_Attacks.file_hash | convert ctime(first)"
+        },
+        {
+          "title": "File writes to PLC project directories",
+          "phase": "identification",
+          "spl": "index=* sourcetype=XmlWinEventLog:Microsoft-Windows-Sysmon/Operational host=<ews_host> EventCode=11 (TargetFilename=\"*\\\\Projects\\\\*\" OR TargetFilename=\"*.ACD\" OR TargetFilename=\"*.ap*\") | table _time Image TargetFilename User"
+        },
+        {
+          "title": "Same malware hash elsewhere in the OT environment",
+          "phase": "eradication",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.process_hash=\"*<file_hash>*\" by Processes.dest Processes.process_path"
+        }
+      ]
+    },
+    {
+      "id": "lib-ot-ics-it-ransomware-toward-ot",
+      "name": "IT ransomware spreading toward OT network (OT-side response)",
+      "summary": "Use when ransomware is active on the corporate network and OT must decide whether to isolate, keep running, or shut down safely while protecting the control network.",
+      "tags": [
+        "ot",
+        "ics",
+        "ransomware",
+        "segmentation",
+        "it-ot"
+      ],
+      "attack": [
+        "T0866",
+        "T0886",
+        "T1486"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Pre-approve an IT/OT separation procedure that names who can pull the conduit links",
+          "Document which OT functions depend on IT services like AD, DNS, licensing, or MES",
+          "Test that the plant can run in island mode without the corporate network for 72 hours",
+          "Keep offline backups of historian, SCADA servers, and domain controllers in the OT zone"
+        ],
+        "identification": [
+          "Confirm with the IT incident lead which ransomware strain and spread methods are in play",
+          "Review the IT/OT DMZ firewall for SMB, RDP, and WMI attempts from infected IT hosts",
+          "Check OT DMZ jump hosts and patch servers for encrypted files or ransom notes",
+          "Inventory OT systems that share domain trust or credentials with the IT domain"
+        ],
+        "containment": [
+          "Convene plant manager, operations, and OT security to decide on island mode",
+          "Physically disconnect the IT-to-OT DMZ links per the separation procedure",
+          "Disable the IT-to-OT domain trust and any shared service accounts",
+          "Stop file replication and historian push jobs that cross into the IT network",
+          "Decide with operations whether a controlled shutdown is safer than continued running"
+        ],
+        "eradication": [
+          "Scan every OT DMZ server with offline signatures for the identified strain",
+          "Rebuild any OT DMZ host that shows encryption or persistence from known-good images",
+          "Reset all passwords for OT accounts that existed in or synced from the IT domain"
+        ],
+        "recovery": [
+          "Keep the conduit disconnected until IT declares the corporate side clean",
+          "Restore IT/OT connectivity one approved flow at a time through the DMZ",
+          "Resume historian replication and MES integration after validating data integrity",
+          "Monitor the DMZ firewall for blocked lateral movement attempts for 30 days"
+        ],
+        "lessons": [
+          "Measure time from IT detection to OT isolation decision",
+          "Identify OT dependencies on IT that forced or prevented island mode",
+          "Review whether production loss came from the attack or from precautionary shutdown",
+          "Update the separation procedure with contact gaps found during the incident"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Lateral movement protocols crossing the IT/OT boundary",
+          "phase": "identification",
+          "spl": "index=* sourcetype=pan:traffic dest_zone IN (\"ot-dmz\", \"ot\") src_zone=\"corp\" dest_port IN (135, 139, 445, 3389, 5985, 5986) | stats count values(action) as action by src_ip dest_ip dest_port | sort - count"
+        },
+        {
+          "title": "Ransomware-like file renames on OT DMZ servers",
+          "phase": "identification",
+          "spl": "index=* sourcetype=XmlWinEventLog:Microsoft-Windows-Sysmon/Operational host IN (<otdmz_hosts>) EventCode=11 | rex field=TargetFilename \"\\.(?<ext>[^\\.\\\\]+)$\" | stats dc(TargetFilename) as files by host Image ext | where files > 200"
+        },
+        {
+          "title": "Authentication into OT from IT domain accounts",
+          "phase": "containment",
+          "spl": "| tstats summariesonly=false count from datamodel=Authentication where Authentication.dest_category=ot Authentication.user_category=corp by Authentication.user Authentication.src Authentication.dest Authentication.action"
+        }
+      ]
+    },
+    {
+      "id": "lib-ot-ics-unapproved-vendor-remote-session",
+      "name": "Unapproved vendor remote access session into OT",
+      "summary": "Use when a vendor or integrator connects to OT assets through a remote access gateway, modem, or cellular router without an approved work request or outside the agreed window.",
+      "tags": [
+        "ot",
+        "ics",
+        "remote-access",
+        "third-party",
+        "vendor"
+      ],
+      "attack": [
+        "T0822",
+        "T0859",
+        "T0886"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Route all vendor OT access through a single gateway with session recording",
+          "Require a work order number and named technician before any vendor session is enabled",
+          "Maintain a list of every cellular modem and remote router installed on plant equipment",
+          "Agree contractually that vendors notify the plant before connecting"
+        ],
+        "identification": [
+          "Pull the remote access gateway session log for the vendor account, source IP, and targets",
+          "Check the work order system for an approved request matching the session time",
+          "Call the vendor's registered contact to confirm whether the session was theirs",
+          "Review the session recording for engineering software use or file transfers",
+          "Identify which controllers or HMIs the session reached and whether writes occurred"
+        ],
+        "containment": [
+          "Terminate the session in the gateway after confirming no maintenance is mid-step",
+          "Disable the vendor account and any shared credential it used",
+          "Physically disconnect any cellular modem on the target equipment if it was the path",
+          "Have operations verify the affected equipment is in a safe, known state"
+        ],
+        "eradication": [
+          "Compare logic and configuration of every touched asset to the approved baseline",
+          "Remove any tools or files the vendor session left on OT hosts",
+          "Issue the vendor new named, MFA-protected credentials if access continues"
+        ],
+        "recovery": [
+          "Re-enable vendor access only with just-in-time approval by OT operations",
+          "Require a plant engineer to observe the next vendor sessions live",
+          "Confirm the asset has run normally through at least one full production cycle"
+        ],
+        "lessons": [
+          "Review how the session was possible without approval and close that path",
+          "Add an alert for gateway sessions without a linked work order",
+          "Audit all vendors for shared or generic accounts",
+          "Report contract compliance gaps to procurement"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Remote access gateway sessions by vendor accounts",
+          "phase": "identification",
+          "spl": "index=ot sourcetype=remote_access:session (user=\"vendor-*\" OR user_group=\"Vendors\") | table _time user src_ip dest_host session_id duration bytes_in bytes_out | sort - _time"
+        },
+        {
+          "title": "Inbound connections to OT from outside the gateway",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest_zone=ot All_Traffic.src_zone=untrust by All_Traffic.src_ip All_Traffic.dest_ip All_Traffic.dest_port All_Traffic.app"
+        },
+        {
+          "title": "Authentication by the vendor account on OT hosts",
+          "phase": "containment",
+          "spl": "index=wineventlog sourcetype=WinEventLog:Security user=<vendor_user> EventCode IN (4624, 4625) | stats count by host Logon_Type action src_ip"
+        }
+      ]
+    },
+    {
+      "id": "lib-ot-ics-safety-instrumented-system-alert",
+      "name": "Safety instrumented system alert or unexpected SIS trip",
+      "summary": "Use when a safety instrumented system (SIS) controller trips, faults, changes mode, or reports a program change that cannot be explained by process conditions or maintenance.",
+      "tags": [
+        "ot",
+        "ics",
+        "sis",
+        "safety",
+        "process-safety"
+      ],
+      "attack": [
+        "T0880",
+        "T0837",
+        "T0889"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Keep the SIS on its own network segment with no routable path from IT",
+          "Record the SIS controller's approved program version, checksum, and key switch position",
+          "Write a joint procedure with process safety engineering for suspected SIS tampering",
+          "List the plant's emergency shutdown authority and the order of safety decisions"
+        ],
+        "identification": [
+          "Let process safety engineers first determine if the trip was a genuine process demand",
+          "Read the SIS sequence-of-events recorder for the trip cause and first-out alarm",
+          "Check the SIS controller for program mode, key switch state, and download timestamps",
+          "Review OT monitoring for any traffic to the SIS engineering port from non-SIS hosts",
+          "Verify whether the SIS engineering workstation was powered on and logged in at trip time"
+        ],
+        "containment": [
+          "Keep the process in its safe state; do not reset or bypass the SIS for investigation",
+          "Physically disconnect the SIS engineering workstation from the safety network",
+          "Lock the SIS key switch in RUN and secure the key with the shift supervisor",
+          "Notify plant management and process safety that a cyber cause is being investigated"
+        ],
+        "eradication": [
+          "Have the SIS vendor verify program integrity against the certified safety program",
+          "Preserve controller diagnostics and engineering workstation images before changes",
+          "Reload the certified safety program if any deviation is found, following functional safety rules"
+        ],
+        "recovery": [
+          "Complete proof testing of affected safety functions before restart",
+          "Restart the unit only with sign-off from process safety and operations management",
+          "Increase monitoring of SIS network traffic and diagnostics for the next month"
+        ],
+        "lessons": [
+          "Confirm whether the SIS and BPCS shared any network, workstation, or credential",
+          "Add alerting for any SIS mode change or engineering connection",
+          "Review whether trip investigation and cyber investigation ran in parallel effectively",
+          "Report findings to the functional safety management review"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Connections to SIS engineering ports from any host",
+          "phase": "identification",
+          "spl": "index=ot sourcetype=ot:network dest_ip IN (<sis_controller_ips>) | stats count min(_time) as first max(_time) as last values(protocol) as protocol by src_ip src_host | convert ctime(first) ctime(last)"
+        },
+        {
+          "title": "SIS controller mode and program events from OT monitoring",
+          "phase": "identification",
+          "spl": "index=ot sourcetype=ot:alerts asset_type=\"SIS\" (alert_type=\"*Mode*\" OR alert_type=\"*Program*\" OR alert_type=\"*Firmware*\") | table _time dest_ip alert_type severity description"
+        }
+      ]
+    },
+    {
+      "id": "lib-ot-ics-modbus-dnp3-anomalous-writes",
+      "name": "Anomalous Modbus or DNP3 write commands on the control network",
+      "summary": "Use when OT network monitoring sees write, control, or function codes (Modbus FC 5/6/15/16, DNP3 operate or direct operate) from unexpected sources or at unusual rates.",
+      "tags": [
+        "ot",
+        "ics",
+        "modbus",
+        "dnp3",
+        "network-monitoring"
+      ],
+      "attack": [
+        "T0855",
+        "T0836",
+        "T0831"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Baseline which masters are allowed to send write function codes to each outstation",
+          "Deploy passive OT monitoring with Modbus and DNP3 protocol decoding on SPAN ports",
+          "Map register and point addresses to physical equipment so writes can be interpreted",
+          "Enable DNP3 Secure Authentication where outstations support it"
+        ],
+        "identification": [
+          "List every source IP that sent write or operate function codes in the alert window",
+          "Translate the written registers or DNP3 points into the equipment and values affected",
+          "Confirm with operators whether the values written match operator commands",
+          "Check whether the source is a known SCADA master, a new host, or a spoofed address",
+          "Look for preceding read sweeps that suggest point mapping by an unknown host"
+        ],
+        "containment": [
+          "Block the unauthorized source at the zone firewall or industrial protocol firewall",
+          "Enable write-protection or read-only mode on the affected outstations where supported",
+          "Have operators verify field values with local gauges for the affected equipment"
+        ],
+        "eradication": [
+          "Locate the physical port and device behind the offending source and remove it",
+          "Restore any setpoints or registers the writes changed to engineering-approved values",
+          "Add deep packet inspection rules allowing writes only from authorized masters"
+        ],
+        "recovery": [
+          "Run the affected loops under observation and compare trends to pre-incident baselines",
+          "Remove temporary write-protection in step with operations once the path is closed",
+          "Keep the new protocol firewall rules in alert mode briefly before full block"
+        ],
+        "lessons": [
+          "Measure how long unauthorized writes went undetected",
+          "Add detection for write function codes from hosts outside the master allowlist",
+          "Review whether flat network design allowed the source to reach outstations",
+          "Document the register-to-equipment map gaps found during triage"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Modbus write function codes by source and target",
+          "phase": "identification",
+          "spl": "index=ot sourcetype=zeek:modbus func IN (\"WRITE_SINGLE_COIL\", \"WRITE_SINGLE_REGISTER\", \"WRITE_MULTIPLE_COILS\", \"WRITE_MULTIPLE_REGISTERS\") | stats count min(_time) as first by id.orig_h id.resp_h func | convert ctime(first) | sort - count"
+        },
+        {
+          "title": "DNP3 operate commands from non-master sources",
+          "phase": "identification",
+          "spl": "index=ot sourcetype=zeek:dnp3 fc_request IN (\"OPERATE\", \"DIRECT_OPERATE\", \"DIRECT_OPERATE_NR\", \"SELECT\") NOT id.orig_h IN (<scada_master_ips>) | table _time id.orig_h id.resp_h fc_request"
+        },
+        {
+          "title": "Read sweeps preceding the writes",
+          "phase": "identification",
+          "spl": "index=ot sourcetype=zeek:modbus func=\"READ_*\" id.orig_h=<suspect_ip> | bin _time span=5m | stats dc(id.resp_h) as targets count by _time id.orig_h"
+        }
+      ]
+    },
+    {
+      "id": "lib-ot-ics-historian-server-compromise",
+      "name": "Historian server compromised",
+      "summary": "Use when the process historian shows malware, unauthorized access, tampered data, or is being used as a pivot between the IT network and the control network.",
+      "tags": [
+        "ot",
+        "ics",
+        "historian",
+        "data-integrity",
+        "pivot"
+      ],
+      "attack": [
+        "T0811",
+        "T0866",
+        "T0882"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Place the historian replica in the OT DMZ so IT users never query the control zone directly",
+          "Back up historian archives and configuration to offline storage on a schedule",
+          "Document every interface feeding the historian and every consumer reading it",
+          "Forward historian OS and application audit logs to the SIEM"
+        ],
+        "identification": [
+          "Review historian application logs for new users, admin changes, or bulk exports",
+          "Check whether historian interface nodes initiated connections to new controllers",
+          "Compare archived tag values with field device logs to detect data tampering",
+          "Identify inbound connections to the historian from IT that bypass the DMZ replica",
+          "Look for web shells or scripts in historian web and API directories"
+        ],
+        "containment": [
+          "Break replication between the OT historian and the DMZ replica",
+          "Restrict historian inbound access to the interface nodes only",
+          "Tell operations and engineering that historical trends may be unreliable"
+        ],
+        "eradication": [
+          "Rebuild the historian server from clean media and restore configuration from backup",
+          "Restore archive files from backups taken before the earliest malicious activity",
+          "Rotate historian service accounts and interface credentials",
+          "Remove any unauthorized firewall exceptions that allowed IT-to-historian access"
+        ],
+        "recovery": [
+          "Backfill data gaps from interface node buffers after the rebuild",
+          "Re-enable DMZ replication and validate tag counts match on both sides",
+          "Notify regulatory reporting owners if emissions or compliance data was affected"
+        ],
+        "lessons": [
+          "Decide whether historian data integrity checks should be routine",
+          "Review whether the historian was dual-homed or had direct IT access",
+          "Add detections for historian bulk exports and new admin accounts",
+          "Record the effort required to rebuild archives and improve backup cadence"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Inbound connections to the historian by zone",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.dest_ip=<historian_ip> by All_Traffic.src_ip All_Traffic.src_zone All_Traffic.dest_port | sort - count"
+        },
+        {
+          "title": "Web shell indicators on the historian web tier",
+          "phase": "identification",
+          "spl": "index=* sourcetype=XmlWinEventLog:Microsoft-Windows-Sysmon/Operational host=<historian_host> EventCode=1 ParentImage IN (\"*\\\\w3wp.exe\", \"*\\\\httpd.exe\") Image IN (\"*\\\\cmd.exe\", \"*\\\\powershell.exe\") | table _time ParentImage Image CommandLine User"
+        },
+        {
+          "title": "Admin and group changes on the historian host",
+          "phase": "eradication",
+          "spl": "index=wineventlog sourcetype=WinEventLog:Security host=<historian_host> EventCode IN (4720, 4728, 4732, 4738) | table _time EventCode src_user user Group_Name"
+        }
+      ]
+    },
+    {
+      "id": "lib-ot-ics-rogue-device-control-network",
+      "name": "Rogue device discovered on the control network",
+      "summary": "Use when OT asset discovery or switch logs show an unknown laptop, Raspberry Pi, wireless bridge, or cellular router connected to a control network segment.",
+      "tags": [
+        "ot",
+        "ics",
+        "rogue-device",
+        "asset-inventory",
+        "physical"
+      ],
+      "attack": [
+        "T0848",
+        "T0864",
+        "T0887"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Maintain a complete OT asset inventory with MAC, IP, switch port, and owner",
+          "Enable port security or MAC alerting on managed OT switches",
+          "Lock control cabinets and network closets and log physical key issue",
+          "Run passive OT asset discovery that alerts on new MAC or OUI addresses"
+        ],
+        "identification": [
+          "Record the device MAC, vendor OUI, IP, and the first time it appeared on the network",
+          "Trace the device to a switch port and physical cabinet using the switch MAC table",
+          "Review which OT assets the rogue device communicated with and over which protocols",
+          "Ask maintenance and contractors whether anyone installed temporary equipment",
+          "Check badge and camera logs for access to the cabinet before first appearance"
+        ],
+        "containment": [
+          "Confirm with operations that the device is not providing a needed process function",
+          "Shut the switch port or remove the device under chain of custody",
+          "Photograph the device in place, including cabling and labels, before removal"
+        ],
+        "eradication": [
+          "Forensically image the device storage to identify tools and collected data",
+          "Check every asset the device talked to for configuration or logic changes",
+          "Disable unused switch ports in the affected cabinet"
+        ],
+        "recovery": [
+          "Restore any legitimate connection that was moved to make room for the device",
+          "Repeat asset discovery across all OT segments to find similar devices",
+          "Notify law enforcement or corporate security if the device was deliberately planted"
+        ],
+        "lessons": [
+          "Measure detection delay between device connection and alert",
+          "Decide whether 802.1X or sticky MAC is feasible on OT switches",
+          "Tighten contractor rules on bringing network equipment into the plant",
+          "Add cabinet intrusion sensors where physical access controls failed"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "New MAC addresses seen by OT asset discovery",
+          "phase": "identification",
+          "spl": "index=ot sourcetype=ot:assets event_type=\"new_asset\" | table _time mac ip vendor switch switch_port vlan first_seen"
+        },
+        {
+          "title": "Traffic from the rogue device to OT assets",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count values(All_Traffic.dest_port) as ports from datamodel=Network_Traffic where All_Traffic.src_ip=<rogue_ip> by All_Traffic.dest_ip | sort - count"
+        },
+        {
+          "title": "Switch port link events at the cabinet",
+          "phase": "identification",
+          "spl": "index=network sourcetype=cisco:ios host=<switch> (\"%LINK-3-UPDOWN\" OR \"%PORT_SECURITY\") | table _time host _raw"
+        }
+      ]
+    },
+    {
+      "id": "lib-ot-ics-ot-firewall-rule-change",
+      "name": "Unauthorized change to an OT zone firewall rule",
+      "summary": "Use when a firewall between IT and OT or between OT zones gets a new any-any rule, opened port, or disabled policy with no approved change request.",
+      "tags": [
+        "ot",
+        "ics",
+        "firewall",
+        "segmentation",
+        "change-management"
+      ],
+      "attack": [
+        "T0892",
+        "T0886"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Export and version control the OT firewall rulebase after every approved change",
+          "Send firewall configuration change logs to the SIEM with admin user and diff",
+          "Restrict firewall management to a dedicated admin VLAN with MFA",
+          "Define the documented allowed conduits between each OT zone"
+        ],
+        "identification": [
+          "Pull the firewall config audit log to find who made the change and from where",
+          "Diff the current rulebase against the last approved version in version control",
+          "Search change tickets for an approved request matching the new rule",
+          "Review traffic that matched the new rule since it was created"
+        ],
+        "containment": [
+          "Disable the unauthorized rule after checking no legitimate process traffic now relies on it",
+          "Lock the firewall admin account that made the change pending review",
+          "Block the source address of the admin session if it was not a known management host"
+        ],
+        "eradication": [
+          "Restore the last approved rulebase and verify the hash matches version control",
+          "Investigate hosts that connected through the rogue rule for compromise",
+          "Rotate firewall admin passwords and API keys"
+        ],
+        "recovery": [
+          "Confirm with operations that all required process flows still work after restore",
+          "Schedule a rulebase review with OT engineering for any rules found to be stale",
+          "Monitor for repeated config changes from the same admin or source"
+        ],
+        "lessons": [
+          "Add a SIEM alert for OT firewall config commits without a ticket reference",
+          "Review who holds OT firewall admin rights and remove unneeded ones",
+          "Decide whether two-person approval is required for OT conduit changes"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Firewall configuration commits on OT firewalls",
+          "phase": "identification",
+          "spl": "index=* sourcetype=pan:config host IN (<ot_firewalls>) | table _time host admin client cmd path before-change-detail after-change-detail | sort - _time"
+        },
+        {
+          "title": "Traffic matched by the new rule",
+          "phase": "identification",
+          "spl": "index=* sourcetype=pan:traffic rule=\"<new_rule_name>\" | stats count sum(bytes) as bytes by src_ip dest_ip dest_port app action"
+        },
+        {
+          "title": "Change data model events for OT network devices",
+          "phase": "lessons",
+          "spl": "| tstats summariesonly=false count from datamodel=Change where All_Changes.dest IN (<ot_firewalls>) by All_Changes.user All_Changes.action All_Changes.object _time span=1h"
+        }
+      ]
+    },
+    {
+      "id": "lib-ot-ics-loss-of-view-loss-of-control",
+      "name": "Loss of view or loss of control at the control room",
+      "summary": "Use when operators lose HMI visibility of the process or commands stop reaching field devices, and a cyber cause has not been ruled out.",
+      "tags": [
+        "ot",
+        "ics",
+        "loss-of-view",
+        "loss-of-control",
+        "availability"
+      ],
+      "attack": [
+        "T0829",
+        "T0827",
+        "T0814"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Write manual operation procedures for running each unit from local panels",
+          "Identify which loss-of-view scenarios require an immediate safe shutdown",
+          "Keep a network diagram showing every path between SCADA servers and field controllers",
+          "Stock spare switches, I/O cards, and communication modules on site"
+        ],
+        "identification": [
+          "Confirm with the control room lead the exact scope: which HMIs, units, and controllers",
+          "Check SCADA server health, redundancy failover status, and communication driver logs",
+          "Look for broadcast storms, ARP floods, or link flapping on the control network switches",
+          "Review OT monitoring for scans, denial of service patterns, or stop commands preceding the loss",
+          "Rule out non-cyber causes such as failed power supply, fiber cut, or license expiry"
+        ],
+        "containment": [
+          "Dispatch field operators to local panels and confirm safe process state first",
+          "Execute the documented safe shutdown if control cannot be restored within the limit",
+          "Isolate any host generating abnormal traffic from the control network",
+          "Fail over to the redundant SCADA server or network ring if available"
+        ],
+        "eradication": [
+          "Remove or rebuild any host found flooding the network or issuing stop commands",
+          "Replace failed communication modules and reload their verified configuration",
+          "Verify controller logic and firmware integrity on every affected controller"
+        ],
+        "recovery": [
+          "Restore view first, then confirm displayed values match field readings",
+          "Return control to the HMI unit by unit with operator acknowledgement",
+          "Hold a shift handover briefing covering residual manual workarounds"
+        ],
+        "lessons": [
+          "Record time in manual operation and production impact",
+          "Determine whether redundancy behaved as designed",
+          "Add alerting on SCADA communication failure rates before full loss",
+          "Run a loss-of-view tabletop with operations using this incident's timeline"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "SCADA communication failures over time",
+          "phase": "identification",
+          "spl": "index=ot sourcetype=scada:events (event=\"COMM FAIL\" OR event=\"*Bad Quality*\" OR event=\"*Timeout*\") | timechart span=1m count by device"
+        },
+        {
+          "title": "Traffic spikes on the control network",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count sum(All_Traffic.bytes) as bytes from datamodel=Network_Traffic where All_Traffic.dest_zone=ot by All_Traffic.src_ip _time span=1m | where count > 5000"
+        },
+        {
+          "title": "Stop or mode commands sent to controllers before the event",
+          "phase": "identification",
+          "spl": "index=ot sourcetype=ot:alerts (alert_type=\"PLC Stop\" OR alert_type=\"PLC Mode Change\" OR alert_type=\"*Scan*\") earliest=-2h | table _time src_ip dest_ip alert_type"
+        }
+      ]
+    },
+    {
+      "id": "lib-ot-ics-usb-malware-air-gapped",
+      "name": "USB-borne malware on an air-gapped plant network",
+      "summary": "Use when malware is found on an isolated OT network that has no external connectivity, implying it arrived on removable media, a laptop, or vendor equipment.",
+      "tags": [
+        "ot",
+        "ics",
+        "usb",
+        "removable-media",
+        "air-gap"
+      ],
+      "attack": [
+        "T0847",
+        "T0865",
+        "T0863"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Operate a USB scanning kiosk at the plant entrance with multiple AV engines",
+          "Issue registered, write-protected USB drives for OT file transfer",
+          "Enable USB device control or logging on OT Windows hosts where vendors allow",
+          "Keep offline AV signature update media and a process to refresh it"
+        ],
+        "identification": [
+          "Identify the USB device serial and the first host it was plugged into from USB logs",
+          "Collect the malicious file and run it through offline multi-engine scanning",
+          "List every OT host the same USB device or file has touched",
+          "Interview the person who brought the media in and the kiosk record for it",
+          "Check for the malware's autorun or LNK propagation artifacts on network shares"
+        ],
+        "containment": [
+          "Quarantine the USB device in an evidence bag and log chain of custody",
+          "Suspend all removable media use on the plant network until scoping is complete",
+          "Isolate infected hosts only after operations confirms alternate coverage"
+        ],
+        "eradication": [
+          "Update offline AV signatures on all OT hosts using verified clean media",
+          "Clean or reimage each infected host according to vendor-approved procedures",
+          "Remove malicious files and LNK shortcuts from OT file shares"
+        ],
+        "recovery": [
+          "Re-enable removable media only through the scanning kiosk and registered drives",
+          "Run a full offline scan of every OT host before declaring the network clean",
+          "Verify affected controllers' logic against the golden baseline"
+        ],
+        "lessons": [
+          "Determine why the kiosk or policy did not stop the media",
+          "Add detection for unregistered USB device serials on OT hosts",
+          "Review whether vendors brought laptops or media without scanning",
+          "Track how current offline AV signatures were at time of infection"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "USB storage device connections on OT hosts",
+          "phase": "identification",
+          "spl": "index=wineventlog source=\"WinEventLog:Microsoft-Windows-DriverFrameworks-UserMode/Operational\" EventCode IN (2003, 2100) host IN (<ot_hosts>) | rex \"USBSTOR#Disk&(?<device>[^#]+)#(?<serial>[^#&]+)\" | stats min(_time) as first by host device serial | convert ctime(first)"
+        },
+        {
+          "title": "Processes started from removable drives",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Endpoint.Processes where Processes.process_path IN (\"E:\\\\*\", \"F:\\\\*\", \"G:\\\\*\") by Processes.dest Processes.process_path Processes.user"
+        }
+      ]
+    },
+    {
+      "id": "lib-ot-ics-bms-hvac-compromise",
+      "name": "Building management system (BMS/HVAC) compromised",
+      "summary": "Use when a building automation server, BACnet controller, or HVAC interface shows unauthorized access, odd setpoints, or is exposed to the internet and being abused.",
+      "tags": [
+        "ot",
+        "bms",
+        "hvac",
+        "bacnet",
+        "facilities"
+      ],
+      "attack": [
+        "T0883",
+        "T0836",
+        "T0886"
+      ],
+      "severity": "High",
+      "tasks": {
+        "preparation": [
+          "Inventory BMS servers, BACnet controllers, and vendor cloud connectors with owners",
+          "Separate the BMS network from corporate VLANs and block internet ingress",
+          "Identify spaces with critical environmental needs such as data centers and labs",
+          "Get facilities and the BMS integrator into the IR contact list"
+        ],
+        "identification": [
+          "Review BMS audit logs for logins, schedule changes, and setpoint overrides",
+          "Check the BMS web interface for internet exposure via firewall NAT rules",
+          "Look for BACnet WriteProperty or device reinitialize commands from unusual sources",
+          "Confirm with facilities which temperature, airflow, or access changes they made"
+        ],
+        "containment": [
+          "Remove any internet-facing NAT or port forward to the BMS",
+          "Put critical HVAC units serving data centers or labs in local hand mode",
+          "Disable compromised BMS user accounts and the integrator's shared login"
+        ],
+        "eradication": [
+          "Patch or upgrade the BMS server and supervisory controllers to supported firmware",
+          "Restore controller schedules and setpoints from the integrator's approved backup",
+          "Change default passwords on all BACnet and BMS field controllers"
+        ],
+        "recovery": [
+          "Return HVAC units to automatic control after verifying setpoints",
+          "Monitor space temperatures and alarms in critical rooms for several days",
+          "Reconnect vendor remote support only through the corporate remote access gateway"
+        ],
+        "lessons": [
+          "Add facility systems to the vulnerability scanning scope",
+          "Add alerting for BMS logins from outside the facilities VLAN",
+          "Clarify ownership of BMS security between facilities and IT",
+          "Require BMS integrators to use named accounts with MFA"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Inbound internet traffic to BMS assets",
+          "phase": "identification",
+          "spl": "index=* sourcetype=pan:traffic dest_ip IN (<bms_ips>) src_zone=untrust | stats count values(dest_port) as ports by src_ip action | sort - count"
+        },
+        {
+          "title": "BACnet write and reinitialize requests",
+          "phase": "identification",
+          "spl": "index=ot sourcetype=zeek:bacnet bvlc_function=* (pdu_service=\"write-property\" OR pdu_service=\"reinitialize-device\" OR pdu_service=\"device-communication-control\") | stats count by id.orig_h id.resp_h pdu_service"
+        },
+        {
+          "title": "BMS application logins by user and source",
+          "phase": "containment",
+          "spl": "index=facilities sourcetype=bms:audit action=login | stats count min(_time) as first max(_time) as last by user src_ip result | convert ctime(first) ctime(last)"
+        }
+      ]
+    },
+    {
+      "id": "lib-ot-ics-iomt-medical-device-compromise",
+      "name": "Medical device (IoMT) compromised or behaving abnormally",
+      "summary": "Use when a networked medical device such as an infusion pump, imaging modality, or patient monitor shows malware, unexpected traffic, or tampering, with patient safety first.",
+      "tags": [
+        "iomt",
+        "medical-device",
+        "healthcare",
+        "patient-safety",
+        "ot"
+      ],
+      "attack": [
+        "T0866",
+        "T0831",
+        "T0882"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Maintain a medical device inventory with model, OS, MDS2 form, and clinical owner",
+          "Segment medical devices into VLANs by device class with deny-by-default rules",
+          "Agree with clinical engineering who can take a device out of service",
+          "Keep manufacturer security contacts and FDA recall/advisory references handy"
+        ],
+        "identification": [
+          "Ask clinical staff whether the device is in use on a patient right now",
+          "Have clinical engineering check the device for altered settings or drug library changes",
+          "Review network flows from the device for internet, SMB, or scanning activity",
+          "Check the manufacturer's advisories for the device model and software version"
+        ],
+        "containment": [
+          "Swap the device for a known-good unit before removing it from patient care",
+          "Move the device to a quarantine VLAN or disconnect it once clinically safe",
+          "Block identified malicious destinations for the whole device VLAN"
+        ],
+        "eradication": [
+          "Work with the manufacturer to reimage or patch the device using validated software",
+          "Do not install unvalidated EDR or patches that could void device certification",
+          "Check sibling devices of the same model for the same indicators"
+        ],
+        "recovery": [
+          "Have clinical engineering perform a functional and safety check before reuse",
+          "Return the device to service and monitor its traffic for a week",
+          "Inform the patient safety committee and risk management of the outcome"
+        ],
+        "lessons": [
+          "Evaluate whether a patient safety event report or regulator notification is needed",
+          "Add device-class traffic baselines to the IoMT monitoring platform",
+          "Review procurement requirements for supported OS and patch commitments",
+          "Track how long it took to find a replacement device"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "External connections from medical device VLANs",
+          "phase": "identification",
+          "spl": "| tstats summariesonly=false count from datamodel=Network_Traffic where All_Traffic.src_zone=\"medical-devices\" All_Traffic.dest_zone=untrust by All_Traffic.src_ip All_Traffic.dest_ip All_Traffic.dest_port | sort - count"
+        },
+        {
+          "title": "SMB and scanning behavior from the device",
+          "phase": "identification",
+          "spl": "index=* sourcetype=pan:traffic src_ip=<device_ip> | stats dc(dest_ip) as targets values(dest_port) as ports count by src_ip | where targets > 20"
+        },
+        {
+          "title": "IoMT platform alerts for the device model",
+          "phase": "eradication",
+          "spl": "index=iomt sourcetype=iomt:alerts device_model=\"<device_model>\" | stats count values(alert_name) as alerts by device_ip location"
+        }
+      ]
+    },
+    {
+      "id": "lib-ot-ics-water-scada-intrusion",
+      "name": "Water or wastewater SCADA intrusion",
+      "summary": "Use when a water or wastewater utility sees unauthorized SCADA access, chemical dosing setpoint changes, pump changes, or remote access misuse at treatment plants or lift stations.",
+      "tags": [
+        "ot",
+        "scada",
+        "water",
+        "critical-infrastructure",
+        "public-safety"
+      ],
+      "attack": [
+        "T0822",
+        "T0836",
+        "T0855"
+      ],
+      "severity": "Critical",
+      "tasks": {
+        "preparation": [
+          "Set hard high/low limits on chemical dosing in PLC logic, not only on the HMI",
+          "Remove direct internet exposure of SCADA and remote access tools at plants",
+          "Keep contacts for the state drinking water primacy agency, WaterISAC, and CISA",
+          "Document manual operation procedures for each treatment process and lift station"
+        ],
+        "identification": [
+          "Review HMI event logs for chemical feed, pump, or valve setpoint changes",
+          "Confirm every change with the operator on duty and the chief operator",
+          "Check remote access tool logs for sessions from unknown IPs or at odd hours",
+          "Pull lab and online analyzer readings to see if water quality was affected",
+          "Identify which remote stations communicate over cellular or radio links"
+        ],
+        "containment": [
+          "Reverse unauthorized setpoint changes and confirm with online analyzers",
+          "Disable remote access software on SCADA hosts and switch to on-site operation",
+          "Increase manual sampling frequency until water quality is confirmed",
+          "Notify the primacy agency and leadership if public health could be impacted"
+        ],
+        "eradication": [
+          "Remove remote access tools not managed through a secured gateway",
+          "Reset every SCADA account, especially shared operator logins",
+          "Review PLC logic at affected stations against backups"
+        ],
+        "recovery": [
+          "Restore secure remote access through an MFA gateway before resuming remote operation",
+          "Continue enhanced sampling until analyzers and lab results are stable",
+          "Coordinate public communication with the utility's PIO if a notice is needed"
+        ],
+        "lessons": [
+          "Confirm whether PLC-level dosing limits would have prevented the change",
+          "Add alerts for setpoint changes beyond normal ranges",
+          "Report the incident to CISA and sector partners with indicators",
+          "Fund replacement of unsupported HMI operating systems"
+        ]
+      },
+      "splunk": [
+        {
+          "title": "Chemical dosing and pump setpoint changes",
+          "phase": "identification",
+          "spl": "index=ot sourcetype=scada:events event_type=\"setpoint_change\" (tag=\"*NAOH*\" OR tag=\"*CL2*\" OR tag=\"*PUMP*\" OR tag=\"*FEED*\") | table _time station user hmi_host tag old_value new_value"
+        },
+        {
+          "title": "Remote access sessions to SCADA hosts",
+          "phase": "identification",
+          "spl": "index=* sourcetype=pan:traffic dest_ip IN (<scada_ips>) app IN (\"teamviewer\", \"anydesk\", \"vnc\", \"ms-rdp\") | stats count min(_time) as first by src_ip dest_ip app | convert ctime(first)"
+        }
+      ]
+    }
+  ]
+}

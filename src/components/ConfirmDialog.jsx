@@ -43,10 +43,10 @@ export function ConfirmHost() {
   if (!req) return null;
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
-      <div className="fixed inset-0 bg-black/70" onClick={() => finish(false)} />
-      <div role="alertdialog" aria-modal="true" aria-label={req.title} className="anim-in relative w-full max-w-md bg-surface-2 border border-line-2 rounded-2xl shadow-[0_30px_80px_-20px_rgba(0,0,0,.8)] p-6">
+      <div className="fixed inset-0 scrim" onClick={() => finish(false)} />
+      <div role="alertdialog" aria-modal="true" aria-label={req.title} className="anim-in relative w-full max-w-md bg-surface-2 border border-line-2 rounded-2xl shadow-pop p-6">
         <div className="flex gap-3.5">
-          <span className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${req.danger ? 'bg-rose-500/15 text-rose-300' : 'bg-raised text-ink-2 border border-line-2'}`}>
+          <span className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${req.danger ? 'bg-danger/10 text-danger' : 'bg-raised text-ink-2 border border-line-2'}`}>
             <TriangleAlert size={17} />
           </span>
           <div className="min-w-0">
@@ -58,7 +58,7 @@ export function ConfirmHost() {
           <button className={btn.secondary} onClick={() => finish(false)}>Cancel</button>
           <button
             ref={confirmRef}
-            className={req.danger ? 'inline-flex items-center justify-center gap-2 bg-rose-500 text-white px-3.5 py-2 rounded-lg text-sm font-semibold hover:brightness-110 transition' : btn.primary}
+            className={req.danger ? 'inline-flex items-center justify-center gap-2 bg-danger text-white dark:text-[#2a0710] px-3.5 py-2 rounded-lg text-sm font-semibold hover:brightness-110 transition' : btn.primary}
             onClick={() => finish(true)}
           >
             {req.confirmLabel}
